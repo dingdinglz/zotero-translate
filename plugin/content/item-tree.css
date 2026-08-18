@@ -1,0 +1,85 @@
+.spt-smart-tags-cell {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding-inline: 3px;
+  white-space: nowrap;
+}
+
+.spt-smart-tag {
+  --spt-smart-tag-accent: var(--tag-blue, #2ea8e5);
+
+  align-items: center;
+  background: color-mix(
+    in srgb,
+    var(--spt-smart-tag-accent) 13%,
+    var(--material-background, #fff)
+  );
+  border: 1px solid color-mix(
+    in srgb,
+    var(--spt-smart-tag-accent) 32%,
+    transparent
+  );
+  border-radius: 999px;
+  box-shadow:
+    0 1px 2px color-mix(in srgb, var(--fill-primary, #000) 7%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--material-background, #fff) 72%, transparent);
+  box-sizing: border-box;
+  color: color-mix(
+    in srgb,
+    var(--spt-smart-tag-accent) 55%,
+    var(--fill-primary, #111)
+  );
+  display: inline-flex;
+  flex: 0 1 auto;
+  font-size: 0.9em;
+  font-weight: 500;
+  height: 19px;
+  letter-spacing: 0.005em;
+  line-height: 17px;
+  max-width: 200px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spt-smart-tag--tone-1 {
+  --spt-smart-tag-accent: var(--tag-purple, #a28ae5);
+}
+
+.spt-smart-tag--tone-2 {
+  --spt-smart-tag-accent: var(--tag-teal, #009980);
+}
+
+.spt-smart-tag--tone-3 {
+  --spt-smart-tag-accent: var(--tag-orange, #f19837);
+}
+
+.spt-smart-tag--tone-4 {
+  --spt-smart-tag-accent: var(--tag-plum, #a6507b);
+}
+
+@media (prefers-contrast: more) {
+  .spt-smart-tag {
+    border-color: color-mix(
+      in srgb,
+      var(--spt-smart-tag-accent) 55%,
+      transparent
+    );
+    box-shadow: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .spt-smart-tag {
+    background: Canvas;
+    border-color: CanvasText;
+    box-shadow: none;
+    color: CanvasText;
+  }
+}

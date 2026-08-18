@@ -1,16 +1,18 @@
 # Smart Paper Translator
 
-Smart Paper Translator 0.1.3 是面向 Zotero 9 内置 PDF 阅读器的学术翻译插件。它会在原生文本选择弹窗中直接显示缓存译文，未命中时提供手动“翻译”按钮，并按论文保存摘要、术语和句段译文。
+Smart Paper Translator 0.1.5 是面向 Zotero 9 内置 PDF 阅读器的学术翻译插件。它会在原生文本选择弹窗中直接显示缓存译文，未命中时提供手动“翻译”按钮，并按论文保存摘要、术语、句段译文和智能标签。
 
 ## 功能
 
 - DeepSeek 内置配置，以及标准 Bearer 鉴权的 OpenAI Chat Completions 兼容服务。
 - 两套可编辑安全模板；划线翻译模板默认携带论文标题与 Zotero 父条目摘要。
 - 打开 PDF 时自动翻译尚未缓存的摘要；划线缓存命中时直接显示，未命中时必须点击“翻译”后才发送。
+- 根据论文标题与 Zotero 摘要生成 3–5 个英文智能标签，并在主页文献列表的独立列中以低饱和主题色胶囊展示；同一组标签配色稳定且互不重复，并自动适配深色与高对比模式。
 - Reader 工具栏提供独立翻译图标，可随时显示或隐藏悬浮窗。
 - 悬浮窗用两个独立 Tab 显示摘要译文和当前论文术语；缓存状态使用 Tag 呈现，不混入译文正文。
 - 标题栏支持连续拖动，右下角手柄支持自由调整宽高；位置和尺寸都会记住，内容独立滚动，不会挤压工具栏或 PDF 阅读区。
 - 每篇论文独立本机缓存；模型、目标语言、摘要或提示词改变后产生新缓存版本。
+- 主页智能标签列只读取本机缓存，不会因为选择或浏览文献而联网；标签不会写入 Zotero 原生 Tags，也不会随文库同步。
 - API Key 使用 Zotero/Mozilla Login Manager，与论文缓存和偏好设置分离。
 
 ## 设置与模板
@@ -26,10 +28,10 @@ Smart Paper Translator 0.1.3 是面向 Zotero 9 内置 PDF 阅读器的学术翻
 
 ## 数据与隐私
 
-- 摘要自动翻译会把 Zotero `abstractNote`、标题和模板发送给所选服务，并产生 API 用量。
+- 摘要自动翻译会把 Zotero `abstractNote`、标题和模板发送给所选服务，并产生 API 用量；缺少智能标签时会用标题与摘要额外发起一次最多 128 输出 token 的短请求。
 - 划线弹窗会先在本机检查当前配置对应的缓存；命中时直接显示且不联网，未命中时只有点击“翻译”后才发送。
 - 请求使用匿名 Cookie 容器、60 秒超时，关闭 Zotero 默认长时间 5xx 重试，并设置 `logBodyLength: 0`，不把论文正文写入 Zotero HTTP 调试日志。
-- 原文和译文以 JSON 保存在 Zotero 数据目录的 `smart-paper-translator/records/` 下，不随 Zotero 同步，也不加密。
+- 原文、译文和智能标签以 JSON 保存在 Zotero 数据目录的 `smart-paper-translator/records/` 下，不随 Zotero 同步，也不加密。
 - API Key 存在 Zotero 使用的 Login Manager 中，不写入偏好、JSON 缓存或插件包。
 
 ## 开发与验证

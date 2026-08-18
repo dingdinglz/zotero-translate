@@ -106,3 +106,49 @@ test("paper identity and async render guards are stable", () => {
   state.requestSerial++;
   assert.equal(Logic.isRenderCurrent(state, 4, 10), false);
 });
+
+test("smart-tag responses accept strict JSON, code fences, and safe deduplication", () => {
+  assert.deepEqual(
+    Logic.parseSmartTagsResponse('["World Model", "Model-Based RL", "Planning"]'),
+    ["World Model", "Model-Based RL", "Planning"]
+  );
+  assert.deepEqual(
+    Logic.parseSmartTagsResponse(
+      '```json\n{"tags":["World Model","world model","Reinforcement Learning","Latent Dynamics","Control","Extra"]}\n```'
+    ),
+    ["World Model", "Reinforcement Learning", "Latent Dynamics", "Control", "Extra"]
+  );
+  assert.deepEqual(
+    Logic.parseSmartTagsResponse(
+      '["<img src=x onerror=alert(1)>","World Model","Planning","Reinforcement Learning"]'
+    ),
+    ["World Model", "Planning", "Reinforcement Learning"]
+  );
+});
+
+test("smart-tag responses reject invalid JSON and fewer than three valid English terms", () => {
+  assert.throws(() => Logic.parseSmartTagsResponse("World Model, Planning"), {
+    code: "API_TAG_FORMAT"
+  });
+  assert.throws(() => Logic.parseSmartTagsResponse('["World Model", "世界模型", "Planning"]'), {
+    code: "API_TAG_FORMAT"
+  });
+});
+
+test("smart-tag source and model configuration both participate in signatures", () => {
+  const source = Logic.makeSmartTagsSourceSignature({ title: "Paper", abstract: "Abstract" });
+  const changedSource = Logic.makeSmartTagsSourceSignature({ title: "Paper", abstract: "Revised" });
+  assert.notEqual(source, changedSource);
+  const baseConfig = {
+    provider: "deepseek",
+    endpoint: "https://api.deepseek.com/chat/completions",
+    model: "deepseek-v4-flash"
+  };
+  assert.notEqual(
+    Logic.makeSmartTagsConfigSignature({ sourceSignature: source, config: baseConfig }),
+    Logic.makeSmartTagsConfigSignature({
+      sourceSignature: source,
+      config: { ...baseConfig, model: "deepseek-v4-pro" }
+    })
+  );
+});

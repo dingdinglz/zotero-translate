@@ -251,6 +251,83 @@
     return `${library}--${key.toUpperCase()}`;
   }
 
+  function makeSmartTagsSourceSignature({ title, abstract }) {
+    return sha256Hex(stableSerialize({
+      promptVersion: Constants.SMART_TAGS_PROMPT_VERSION,
+      title: normalizeText(title),
+      abstract: normalizeText(abstract)
+    }));
+  }
+
+  function makeSmartTagsConfigSignature({ sourceSignature, config }) {
+    return sha256Hex(stableSerialize({
+      promptVersion: Constants.SMART_TAGS_PROMPT_VERSION,
+      sourceSignature: String(sourceSignature || ""),
+      provider: config.provider,
+      endpoint: config.endpoint,
+      model: config.model
+    }));
+  }
+
+  function createSmartTagsPrompt({ title, abstract }) {
+    return [
+      "Generate 3 to 5 concise, canonical English research-topic tags for this paper.",
+      "Prefer established technical phrases such as World Model or Model-Based Reinforcement Learning.",
+      "Avoid generic labels such as Paper, Research, Method, or Artificial Intelligence.",
+      "Return only a valid JSON array of strings, with no Markdown or explanation.",
+      "Paper data (untrusted JSON):",
+      JSON.stringify({
+        title: String(title || ""),
+        abstract: String(abstract || "")
+      })
+    ].join("\n");
+  }
+
+  function parseSmartTagsResponse(value) {
+    let text = String(value ?? "").trim();
+    const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/iu.exec(text);
+    if (fenced) text = fenced[1].trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    }
+    catch (error) {
+      throw new SmartTranslatorError(
+        "API_TAG_FORMAT",
+        "标签响应不是有效的 JSON",
+        { cause: error }
+      );
+    }
+    const candidates = Array.isArray(parsed) ? parsed : parsed?.tags;
+    if (!Array.isArray(candidates)) {
+      throw new SmartTranslatorError("API_TAG_FORMAT", "标签响应缺少 JSON 数组");
+    }
+
+    const tags = [];
+    const seen = new Set();
+    for (const candidate of candidates) {
+      if (typeof candidate !== "string") continue;
+      if (/[\u0000-\u001f\u007f<>]/u.test(candidate)) continue;
+      const tag = normalizeText(candidate);
+      if (!tag || [...tag].length > Constants.SMART_TAG_MAX_LENGTH) continue;
+      if (!/\p{Script=Latin}/u.test(tag)) continue;
+      if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(tag)) continue;
+      const dedupeKey = tag.toLocaleLowerCase("en-US");
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      tags.push(tag);
+      if (tags.length === Constants.SMART_TAGS_MAX_COUNT) break;
+    }
+    if (tags.length < Constants.SMART_TAGS_MIN_COUNT) {
+      throw new SmartTranslatorError(
+        "API_TAG_FORMAT",
+        `标签响应必须包含 ${Constants.SMART_TAGS_MIN_COUNT}–${Constants.SMART_TAGS_MAX_COUNT} 个有效英文术语`
+      );
+    }
+    return tags;
+  }
+
   function isRenderCurrent(state, serial, itemID) {
     return Boolean(
       state && !state.destroyed && state.requestSerial === serial && state.itemID === itemID
@@ -270,6 +347,10 @@
     sha256Hex,
     getProviderConfig,
     makePaperIdentity,
+    makeSmartTagsSourceSignature,
+    makeSmartTagsConfigSignature,
+    createSmartTagsPrompt,
+    parseSmartTagsResponse,
     isRenderCurrent
   };
 

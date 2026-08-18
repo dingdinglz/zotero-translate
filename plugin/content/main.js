@@ -19,9 +19,10 @@ var SmartPaperTranslatorPlugin = {
     const Constants = modules.Constants;
     const getPreference = (name) => Zotero.Prefs.get(name, true);
     const setPreference = (name, value) => Zotero.Prefs.set(name, value, true);
-    const readerStylesheet = await Zotero.File.getResourceAsync(
-      rootURI + "content/reader.css"
-    );
+    const [readerStylesheet, itemTreeStylesheet] = await Promise.all([
+      Zotero.File.getResourceAsync(rootURI + "content/reader.css"),
+      Zotero.File.getResourceAsync(rootURI + "content/item-tree.css")
+    ]);
 
     this.credentials = new modules.Credentials.CredentialStore();
     this.cache = modules.Cache.createZoteroCache({
@@ -45,6 +46,13 @@ var SmartPaperTranslatorPlugin = {
       stylesheetText: readerStylesheet,
       log: (message, error) => this.log(message, error)
     });
+    this.itemTreeUI = new modules.ItemTreeUI.ItemTreeUI({
+      cache: this.cache,
+      service: this.service,
+      getPreference,
+      stylesheetText: itemTreeStylesheet,
+      log: (message, error) => this.log(message, error)
+    });
 
     await Zotero.PreferencePanes.register({
       pluginID: id,
@@ -58,6 +66,7 @@ var SmartPaperTranslatorPlugin = {
     this._installPreferenceBridge();
     this._observePreferences();
     this._observeItems();
+    this.itemTreeUI.init(id);
     this.readerUI.init(id);
     this.initialized = true;
     this.log(`Started ${version}`);
@@ -127,6 +136,7 @@ var SmartPaperTranslatorPlugin = {
     this.preferenceRefreshTimer = setTimeout(() => {
       this.preferenceRefreshTimer = null;
       this.readerUI?.onPreferencesChanged();
+      this.itemTreeUI?.onPreferencesChanged();
     }, 150);
   },
 
@@ -137,6 +147,7 @@ var SmartPaperTranslatorPlugin = {
           if (event !== "modify" || type !== "item") return;
           const flattened = ids.flat ? ids.flat(Infinity) : ids;
           this.readerUI?.refreshModifiedItems(flattened);
+          this.itemTreeUI?.invalidateModifiedItems(flattened);
         }
       },
       ["item"],
@@ -152,7 +163,10 @@ var SmartPaperTranslatorPlugin = {
 
   addToWindow(win) {
     if (!this.initialized || !win?.ZoteroPane || this.windowStates.has(win)) return;
-    this.windowStates.set(win, { cleanups: [] });
+    const state = { cleanups: [] };
+    this.windowStates.set(win, state);
+    const removeItemTreeUI = this.itemTreeUI?.addToWindow(win);
+    if (removeItemTreeUI) state.cleanups.push(removeItemTreeUI);
   },
 
   removeFromWindow(win) {
@@ -179,6 +193,7 @@ var SmartPaperTranslatorPlugin = {
     if (this.preferenceRefreshTimer) clearTimeout(this.preferenceRefreshTimer);
     this.preferenceRefreshTimer = null;
     this.readerUI?.shutdown();
+    this.itemTreeUI?.shutdown();
     this.service?.shutdown();
     if (this.notifierID != null) Zotero.Notifier.unregisterObserver(this.notifierID);
     this.notifierID = null;

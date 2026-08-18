@@ -61,6 +61,26 @@ test("custom local providers may omit API key and do not receive DeepSeek fields
   assert.equal("thinking" in JSON.parse(options.body), false);
 });
 
+test("callers may override the system message for bounded classifier requests", async () => {
+  let options;
+  const client = new OpenAIChatClient({
+    request: async (_method, _url, requestOptions) => {
+      options = requestOptions;
+      return { response: { choices: [{ message: { content: '["A","B","C"]' } }] } };
+    }
+  });
+  await client.complete({
+    config: config(),
+    apiKey: "sk-test",
+    prompt: "paper data",
+    systemMessage: "classifier contract",
+    maxTokens: 128
+  });
+  const body = JSON.parse(options.body);
+  assert.equal(body.messages[0].content, "classifier contract");
+  assert.equal(body.max_tokens, 128);
+});
+
 test("API response and status failures become safe actionable errors", () => {
   assert.equal(
     extractTranslation({ responseText: JSON.stringify({ choices: [{ message: { content: "  translated  " } }] }) }),

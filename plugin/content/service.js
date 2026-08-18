@@ -239,6 +239,113 @@
       });
     }
 
+    _prepareSmartTags(context) {
+      if (this.stopped) {
+        throw new Logic.SmartTranslatorError("PLUGIN_STOPPED", "插件已停止");
+      }
+      const config = this._settings();
+      const sourceSignature = Logic.makeSmartTagsSourceSignature({
+        title: context.paper.title,
+        abstract: context.abstract
+      });
+      const configSignature = Logic.makeSmartTagsConfigSignature({
+        sourceSignature,
+        config
+      });
+      return {
+        config,
+        sourceSignature,
+        configSignature,
+        prompt: Logic.createSmartTagsPrompt({
+          title: context.paper.title,
+          abstract: context.abstract
+        }),
+        cacheQuery: {
+          kind: Constants.SMART_TAGS_KIND,
+          normalizedSource: sourceSignature,
+          configSignature
+        }
+      };
+    }
+
+    async _readCachedSmartTags(context, prepared) {
+      const cached = await this.cache.getCached(context.paper, prepared.cacheQuery);
+      if (!cached || !Array.isArray(cached.tags)) return null;
+      const touched = await this.cache.touch(context.paper, cached.id);
+      const entry = touched || cached;
+      const result = {
+        status: "ready",
+        fromCache: true,
+        paper: context.paper,
+        entry,
+        tags: entry.tags.slice()
+      };
+      this._emit({ type: "smart-tags", ...result });
+      return result;
+    }
+
+    async ensureSmartTags(itemID) {
+      const context = await this.paperRepository.get(itemID);
+      if (!Logic.normalizeText(context.abstract)) {
+        return { status: "missing", paper: context.paper, tags: [], entry: null };
+      }
+      const prepared = this._prepareSmartTags(context);
+      const cachedResult = await this._readCachedSmartTags(context, prepared);
+      if (cachedResult) return cachedResult;
+
+      const flightKey = [
+        context.paper.storageKey,
+        Constants.SMART_TAGS_KIND,
+        prepared.configSignature
+      ].join("|");
+      if (this.inFlight.has(flightKey)) return this.inFlight.get(flightKey);
+
+      const operation = (async () => {
+        const apiKey = await this.credentials.get(prepared.config.provider);
+        const response = await this.apiClient.complete({
+          config: prepared.config,
+          apiKey,
+          prompt: prepared.prompt,
+          systemMessage: Constants.SMART_TAGS_SYSTEM_MESSAGE,
+          maxTokens: Constants.SMART_TAGS_MAX_TOKENS,
+          registerCancel: (cancel) => this._registerCancel(cancel)
+        });
+        const tags = Logic.parseSmartTagsResponse(response);
+        if (this.stopped) {
+          throw new Logic.SmartTranslatorError("PLUGIN_STOPPED", "插件已停止");
+        }
+        const timestamp = this.now();
+        const entry = await this.cache.append(context.paper, {
+          kind: Constants.SMART_TAGS_KIND,
+          normalizedSource: prepared.sourceSignature,
+          sourceSignature: prepared.sourceSignature,
+          tags,
+          provider: prepared.config.provider,
+          baseURL: prepared.config.baseURL,
+          model: prepared.config.model,
+          configSignature: prepared.configSignature,
+          createdAt: timestamp,
+          lastUsedAt: timestamp,
+          cacheHits: 0
+        });
+        const result = {
+          status: "ready",
+          fromCache: false,
+          paper: context.paper,
+          entry,
+          tags: entry.tags.slice()
+        };
+        this._emit({ type: "smart-tags", ...result });
+        return result;
+      })();
+      this.inFlight.set(flightKey, operation);
+      const cleanup = () => {
+        if (this.inFlight.get(flightKey) === operation) this.inFlight.delete(flightKey);
+      };
+      operation.then(cleanup, cleanup);
+      return operation;
+    }
+
     async getGlossaryForItem(itemID) {
       const context = await this.paperRepository.get(itemID);
       return {

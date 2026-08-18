@@ -11,6 +11,7 @@ function createService({ abstract = "An abstract.", apiComplete, prefs: supplied
   const prefs = suppliedPrefs || makePreferenceStore();
   const { cache } = makeCache();
   let apiCalls = 0;
+  const apiArguments = [];
   const service = new TranslationService({
     getPreference: prefs.get,
     paperRepository: {
@@ -23,6 +24,7 @@ function createService({ abstract = "An abstract.", apiComplete, prefs: supplied
     apiClient: {
       async complete(args) {
         apiCalls++;
+        apiArguments.push(args);
         return apiComplete ? apiComplete(args, apiCalls) : `译文-${apiCalls}`;
       }
     },
@@ -33,14 +35,19 @@ function createService({ abstract = "An abstract.", apiComplete, prefs: supplied
     cache,
     prefs,
     getAPICalls: () => apiCalls,
+    getAPIArguments: () => apiArguments.slice(),
     setAbstract: (value) => { currentAbstract = value; }
   };
 }
 
 test("missing metadata abstract never calls the API", async () => {
   const { service, getAPICalls } = createService({ abstract: "" });
-  const result = await service.ensureAbstract(10);
-  assert.equal(result.status, "missing");
+  const [abstractResult, tagsResult] = await Promise.all([
+    service.ensureAbstract(10),
+    service.ensureSmartTags(10)
+  ]);
+  assert.equal(abstractResult.status, "missing");
+  assert.equal(tagsResult.status, "missing");
   assert.equal(getAPICalls(), 0);
 });
 
@@ -65,6 +72,94 @@ test("abstract is translated on first load and served from per-paper cache after
   assert.equal(second.fromCache, true);
   assert.equal(first.translation, second.translation);
   assert.equal(getAPICalls(), 1);
+});
+
+test("new papers translate the abstract and generate independent bounded smart tags", async () => {
+  const { service, getAPICalls, getAPIArguments } = createService({
+    apiComplete: ({ systemMessage }) => systemMessage
+      ? '["World Model","Planning","Model-Based RL"]'
+      : "摘要译文"
+  });
+  const [abstractResult, tagResult] = await Promise.all([
+    service.ensureAbstract(10),
+    service.ensureSmartTags(10)
+  ]);
+  assert.equal(abstractResult.translation, "摘要译文");
+  assert.deepEqual(tagResult.tags, ["World Model", "Planning", "Model-Based RL"]);
+  assert.equal(getAPICalls(), 2);
+  const tagCall = getAPIArguments().find((args) => args.systemMessage);
+  assert.equal(tagCall.systemMessage, Constants.SMART_TAGS_SYSTEM_MESSAGE);
+  assert.equal(tagCall.maxTokens, 128);
+  assert.match(tagCall.prompt, /untrusted JSON/u);
+});
+
+test("legacy abstract cache is reused while smart tags are progressively backfilled", async () => {
+  const { service, getAPICalls } = createService({
+    apiComplete: ({ systemMessage }) => systemMessage
+      ? '["World Model","Planning","Reinforcement Learning"]'
+      : "已有摘要译文"
+  });
+  await service.ensureAbstract(10);
+  const cachedAbstract = await service.ensureAbstract(10);
+  const tags = await service.ensureSmartTags(10);
+  assert.equal(cachedAbstract.fromCache, true);
+  assert.deepEqual(tags.tags, ["World Model", "Planning", "Reinforcement Learning"]);
+  assert.equal(getAPICalls(), 2);
+});
+
+test("smart tags are cached, emitted, and invalidated by model changes", async () => {
+  const { service, prefs, getAPICalls } = createService({
+    apiComplete: () => '["World Model","Planning","Reinforcement Learning"]'
+  });
+  const events = [];
+  service.subscribe((event) => events.push(event));
+  const first = await service.ensureSmartTags(10);
+  const second = await service.ensureSmartTags(10);
+  assert.equal(first.fromCache, false);
+  assert.equal(second.fromCache, true);
+  assert.equal(getAPICalls(), 1);
+  assert.equal(events.filter((event) => event.type === "smart-tags").length, 2);
+
+  prefs.set(Constants.PREFS.deepseekModel, "deepseek-v4-pro");
+  await service.ensureSmartTags(10);
+  assert.equal(getAPICalls(), 2);
+});
+
+test("changing the paper abstract invalidates smart tags", async () => {
+  const { service, setAbstract, getAPICalls } = createService({
+    apiComplete: () => '["World Model","Planning","Reinforcement Learning"]'
+  });
+  await service.ensureSmartTags(10);
+  setAbstract("A revised abstract about policy optimization.");
+  await service.ensureSmartTags(10);
+  assert.equal(getAPICalls(), 2);
+});
+
+test("concurrent duplicate smart-tag requests share one API request", async () => {
+  let resolveAPI;
+  const response = new Promise((resolve) => { resolveAPI = resolve; });
+  const { service, getAPICalls } = createService({ apiComplete: () => response });
+  const first = service.ensureSmartTags(10);
+  const second = service.ensureSmartTags(10);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(getAPICalls(), 1);
+  resolveAPI('["World Model","Planning","Reinforcement Learning"]');
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(a.tags, b.tags);
+});
+
+test("invalid smart-tag output does not affect abstract translation", async () => {
+  const { service } = createService({
+    apiComplete: ({ systemMessage }) => systemMessage ? "not-json" : "摘要译文"
+  });
+  const [abstractResult, tagsResult] = await Promise.allSettled([
+    service.ensureAbstract(10),
+    service.ensureSmartTags(10)
+  ]);
+  assert.equal(abstractResult.status, "fulfilled");
+  assert.equal(abstractResult.value.translation, "摘要译文");
+  assert.equal(tagsResult.status, "rejected");
+  assert.equal(tagsResult.reason.code, "API_TAG_FORMAT");
 });
 
 test("selection cache probe is local-only and returns a matching cached translation", async () => {
@@ -166,6 +261,28 @@ test("shutdown cancels in-flight work and prevents late cache writes", async () 
     }
   });
   const pending = service.translateSelection(10, "policy", 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  service.shutdown();
+
+  await assert.rejects(pending, { code: "PLUGIN_STOPPED" });
+  assert.equal(cancelCalled, true);
+  assert.equal((await cache.getAllEntries(makePaper())).length, 0);
+});
+
+test("shutdown also cancels smart-tag requests and blocks late tag writes", async () => {
+  let finishRequest;
+  let cancelCalled = false;
+  const request = new Promise((resolve) => { finishRequest = resolve; });
+  const { service, cache } = createService({
+    apiComplete: async ({ registerCancel }) => {
+      registerCancel(() => {
+        cancelCalled = true;
+        finishRequest('["World Model","Planning","Reinforcement Learning"]');
+      });
+      return request;
+    }
+  });
+  const pending = service.ensureSmartTags(10);
   await new Promise((resolve) => setImmediate(resolve));
   service.shutdown();
 

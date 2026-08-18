@@ -113,7 +113,7 @@
   <groupbox data-search-strings-raw="隐私,数据,缓存,网络">
     <label><html:h2>隐私与存储</html:h2></label>
     <description>
-      打开论文时，未缓存的 Zotero 摘要会发送给所选 API；划线缓存命中时直接显示，未缓存文本只有点击“翻译”后才发送。译文与原文按论文保存在本机 Zotero 数据目录，不参与 Zotero 同步。API Key 单独保存在 Zotero 的登录信息存储中。
+      打开论文时，未缓存的摘要翻译会把标题和 Zotero 摘要发送给所选 API；缺少智能标签时会用相同数据额外发起一次短请求。主页智能标签列只读取本地缓存，不会联网，也不会写入 Zotero 原生标签。划线缓存命中时直接显示，未缓存文本只有点击“翻译”后才发送。译文、原文与智能标签按论文保存在本机 Zotero 数据目录，不参与 Zotero 同步。API Key 单独保存在 Zotero 的登录信息存储中。
     </description>
   </groupbox>
 </vbox>

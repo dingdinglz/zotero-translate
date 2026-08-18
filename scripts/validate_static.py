@@ -17,7 +17,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.3"
+    assert manifest["version"] == "0.1.5"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -48,6 +48,8 @@ def main() -> None:
         "prefs.js",
         "content/main.js",
         "content/preferences.xhtml",
+        "content/item-tree-ui.js",
+        "content/item-tree.css",
         "content/reader-ui.js",
     }
     present = {path.relative_to(PLUGIN).as_posix() for path in PLUGIN.rglob("*") if path.is_file()}

@@ -98,3 +98,43 @@ test("corrupt JSON is backed up before a clean record is created", async () => {
     tmpPath: "/records/1--ABCDEFGH.json.tmp"
   });
 });
+
+test("homepage smart-tag probes are exact and never mutate cache files", async () => {
+  const { cache, io } = makeCache();
+  const paper = makePaper();
+  await cache.append(paper, entry({
+    kind: "smart-tags",
+    normalizedSource: "source-a",
+    sourceSignature: "source-a",
+    configSignature: "tag-config-a",
+    tags: ["World Model", "Planning", "Reinforcement Learning"]
+  }));
+  const writesBeforeProbe = io.writeJSONCalls.length;
+  const hit = await cache.peekSmartTags(paper, {
+    sourceSignature: "source-a",
+    configSignature: "tag-config-a"
+  });
+  const miss = await cache.peekSmartTags(paper, {
+    sourceSignature: "source-a",
+    configSignature: "tag-config-b"
+  });
+  assert.deepEqual(hit.tags, ["World Model", "Planning", "Reinforcement Learning"]);
+  assert.equal(miss, null);
+  assert.equal(io.writeJSONCalls.length, writesBeforeProbe);
+});
+
+test("homepage smart-tag probes skip corrupt records without recovery writes", async () => {
+  const io = new MemoryIO();
+  const errors = [];
+  const { cache } = makeCache({ io, onError: (message) => errors.push(message) });
+  const paper = makePaper();
+  io.setText("/records/1--ABCDEFGH.json", "{not-json");
+  const result = await cache.peekSmartTags(paper, {
+    sourceSignature: "source-a",
+    configSignature: "tag-config-a"
+  });
+  assert.equal(result, null);
+  assert.equal(errors.length, 1);
+  assert.equal(io.writeJSONCalls.length, 0);
+  assert.deepEqual([...io.files.keys()], ["/records/1--ABCDEFGH.json"]);
+});

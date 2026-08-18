@@ -245,9 +245,13 @@ test("toolbar injects only an icon button and toggles the separately mounted pan
 });
 
 test("abstract cache state is a tag and never mutates the translation text", async () => {
+  const errors = [];
   const ui = new ReaderUI({
     service: {
       subscribe() { return () => {}; },
+      async ensureSmartTags() {
+        throw new Error("tag provider unavailable");
+      },
       async getGlossaryForItem() {
         return {
           paper: {
@@ -278,7 +282,8 @@ test("abstract cache state is a tag and never mutates the translation text", asy
       return -1;
     },
     setPreference() {},
-    stylesheetText: readerStylesheet
+    stylesheetText: readerStylesheet,
+    log(message) { errors.push(message); }
   });
   const doc = new FakeDocument();
   const reader = { itemID: 10 };
@@ -291,6 +296,7 @@ test("abstract cache state is a tag and never mutates the translation text", asy
   assert.doesNotMatch(state.summaryNode.textContent, /来自缓存/);
   assert.equal(state.summaryCacheTag.hidden, false);
   assert.equal(state.summaryCacheTag.textContent, "缓存");
+  assert.deepEqual(errors, ["智能标签生成失败"]);
 });
 
 test("panel drag uses pointer capture and persists its freely moved position", async () => {

@@ -19,6 +19,7 @@ async function startup({ id, version, rootURI }) {
     "content/cache.js",
     "content/api.js",
     "content/service.js",
+    "content/item-tree-ui.js",
     "content/reader-ui.js",
     "content/main.js"
   ];

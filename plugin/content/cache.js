@@ -175,6 +175,27 @@
       );
     }
 
+    async peekSmartTags(paper, { sourceSignature, configSignature }) {
+      const path = this._pathForPaper(paper);
+      if (!(await this.io.exists(path))) return null;
+      try {
+        const record = await this.io.readJSON(path);
+        if (!validateRecord(record, paper)) return null;
+        const matches = record.entries.filter((entry) =>
+          entry.kind === Constants.SMART_TAGS_KIND &&
+          entry.sourceSignature === sourceSignature &&
+          entry.configSignature === configSignature &&
+          Array.isArray(entry.tags)
+        );
+        matches.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+        return matches[0] || null;
+      }
+      catch (error) {
+        this.onError("无法读取智能标签缓存：" + path, error);
+        return null;
+      }
+    }
+
     async getAllEntries(paper) {
       const record = await this._loadUnsafe(paper);
       return record.entries.slice();

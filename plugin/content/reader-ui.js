@@ -602,6 +602,13 @@
       state.titleNode.textContent = "正在读取论文…";
       this._setSummary(state, "正在翻译或读取摘要缓存…", "muted");
 
+      if (typeof this.service.ensureSmartTags === "function") {
+        this.service.ensureSmartTags(itemID).catch((error) => {
+          if (!Logic.isRenderCurrent(state, serial, itemID)) return;
+          this.log("智能标签生成失败", error);
+        });
+      }
+
       this.service.getGlossaryForItem(itemID).then(({ paper, entries }) => {
         if (!Logic.isRenderCurrent(state, serial, itemID)) return;
         state.paperStorageKey = paper.storageKey;

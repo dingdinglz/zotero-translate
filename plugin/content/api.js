@@ -84,14 +84,14 @@
       this.timeoutMS = timeoutMS || Constants.REQUEST_TIMEOUT_MS;
     }
 
-    async complete({ config, apiKey, prompt, maxTokens, registerCancel }) {
+    async complete({ config, apiKey, prompt, systemMessage, maxTokens, registerCancel }) {
       if (config.provider === "deepseek" && !apiKey) {
         throw new Logic.SmartTranslatorError("CONFIG_API_KEY", "请先保存 DeepSeek API Key");
       }
       const payload = {
         model: config.model,
         messages: [
-          { role: "system", content: Constants.SYSTEM_MESSAGE },
+          { role: "system", content: systemMessage || Constants.SYSTEM_MESSAGE },
           { role: "user", content: prompt }
         ],
         stream: false
