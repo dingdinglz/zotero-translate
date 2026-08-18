@@ -7,5 +7,7 @@ pref("extensions.smart-paper-translator.targetLanguage", "简体中文");
 pref("extensions.smart-paper-translator.autoOpen", true);
 pref("extensions.smart-paper-translator.panelX", -1);
 pref("extensions.smart-paper-translator.panelY", 56);
+pref("extensions.smart-paper-translator.panelWidth", 390);
+pref("extensions.smart-paper-translator.panelHeight", 540);
 pref("extensions.smart-paper-translator.selectionPrompt", "请将 <source_text> 中的内容翻译为 {{targetLanguage}}。\n结合论文标题和摘要理解术语在本文中的准确含义。保留公式、符号、引用与专有名词；只输出译文，不要解释翻译过程。\n\n<paper_title>{{title}}</paper_title>\n<paper_abstract>{{abstract}}</paper_abstract>\n<page_number>{{pageNumber}}</page_number>\n<source_text>{{text}}</source_text>");
 pref("extensions.smart-paper-translator.abstractPrompt", "请将以下论文摘要准确翻译为 {{targetLanguage}}。保留术语、公式、符号和引用；只输出译文，不要补充原文不存在的信息。\n\n<paper_title>{{title}}</paper_title>\n<paper_abstract>{{abstract}}</paper_abstract>");

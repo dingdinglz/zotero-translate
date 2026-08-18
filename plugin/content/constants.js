@@ -17,7 +17,7 @@
   const Constants = Object.freeze({
     PLUGIN_ID: "smart-paper-translator@zotero.local",
     PLUGIN_NAME: "Smart Paper Translator",
-    VERSION: "0.1.0",
+    VERSION: "0.1.3",
     PREF_PREFIX,
     PREFS: Object.freeze({
       provider: PREF_PREFIX + "provider",
@@ -29,6 +29,8 @@
       autoOpen: PREF_PREFIX + "autoOpen",
       panelX: PREF_PREFIX + "panelX",
       panelY: PREF_PREFIX + "panelY",
+      panelWidth: PREF_PREFIX + "panelWidth",
+      panelHeight: PREF_PREFIX + "panelHeight",
       selectionPrompt: PREF_PREFIX + "selectionPrompt",
       abstractPrompt: PREF_PREFIX + "abstractPrompt"
     }),

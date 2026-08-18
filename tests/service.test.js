@@ -67,6 +67,23 @@ test("abstract is translated on first load and served from per-paper cache after
   assert.equal(getAPICalls(), 1);
 });
 
+test("selection cache probe is local-only and returns a matching cached translation", async () => {
+  const { service, prefs, getAPICalls } = createService();
+  const miss = await service.getCachedSelection(10, "model", 1);
+  assert.equal(miss, null);
+  assert.equal(getAPICalls(), 0);
+
+  await service.translateSelection(10, "model", 1);
+  const hit = await service.getCachedSelection(10, "model", 1);
+  assert.equal(hit.fromCache, true);
+  assert.equal(hit.translation, "译文-1");
+  assert.equal(getAPICalls(), 1);
+
+  prefs.set(Constants.PREFS.deepseekModel, "deepseek-v4-pro");
+  assert.equal(await service.getCachedSelection(10, "model", 1), null);
+  assert.equal(getAPICalls(), 1);
+});
+
 test("changing model invalidates cache without deleting old translation", async () => {
   const { service, cache, prefs, getAPICalls } = createService();
   await service.ensureAbstract(10);

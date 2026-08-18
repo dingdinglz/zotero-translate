@@ -2,46 +2,133 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { ReaderUI } = require("../plugin/content/reader-ui.js");
 
 class FakeElement {
-  constructor(tag) {
+  constructor(tag, namespaceURI = "http://www.w3.org/1999/xhtml") {
     this.tagName = tag;
+    this.namespaceURI = namespaceURI;
     this.children = [];
     this.listeners = new Map();
     this.dataset = {};
-    this.classList = { add() {}, toggle() {} };
+    this.attributes = new Map();
+    this.style = {};
+    this.classes = new Set();
+    this.classList = {
+      add: (...names) => names.forEach((name) => this.classes.add(name)),
+      remove: (...names) => names.forEach((name) => this.classes.delete(name)),
+      toggle: (name, force) => {
+        const active = force === undefined ? !this.classes.has(name) : Boolean(force);
+        if (active) this.classes.add(name);
+        else this.classes.delete(name);
+        return active;
+      },
+      contains: (name) => this.classes.has(name)
+    };
     this.isConnected = true;
     this.textContent = "";
     this.disabled = false;
+    this.hidden = false;
+    this.offsetWidth = 390;
+    this.offsetHeight = tag === "header" ? 52 : 300;
   }
-  append(...children) { this.children.push(...children); }
+  append(...children) {
+    for (const child of children) {
+      child.parentNode = this;
+      child.isConnected = true;
+      this.children.push(child);
+    }
+  }
+  replaceChildren(...children) {
+    this.children = [];
+    this.append(...children);
+  }
+  remove() {
+    if (this.parentNode) {
+      this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
+    }
+    this.parentNode = null;
+    this.isConnected = false;
+  }
   addEventListener(name, handler) { this.listeners.set(name, handler); }
   removeEventListener(name) { this.listeners.delete(name); }
-  setAttribute() {}
-  async dispatch(name) { return this.listeners.get(name)?.({}); }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  focus() { this.focused = true; }
+  closest(selector) { return selector === "button" && this.tagName === "button" ? this : null; }
+  setPointerCapture(pointerId) { this.capturedPointerId = pointerId; }
+  releasePointerCapture(pointerId) {
+    if (this.capturedPointerId === pointerId) this.capturedPointerId = null;
+  }
+  getBoundingClientRect() {
+    const numericStyle = (name, fallback) => {
+      const value = Number.parseFloat(this.style[name]);
+      return Number.isFinite(value) ? value : fallback;
+    };
+    return {
+      left: numericStyle("left", 500),
+      top: numericStyle("top", 56),
+      width: numericStyle("width", this.offsetWidth),
+      height: numericStyle("height", this.offsetHeight)
+    };
+  }
+  async dispatch(name, event = {}) {
+    const payload = Object.assign({
+      target: this,
+      currentTarget: this,
+      button: 0,
+      shiftKey: false,
+      stopPropagation() { this.propagationStopped = true; },
+      preventDefault() { this.defaultPrevented = true; }
+    }, event);
+    return this.listeners.get(name)?.(payload);
+  }
 }
 
 class FakeDocument {
   constructor() {
     this.head = new FakeElement("head");
+    this.body = new FakeElement("body");
     this.documentElement = { clientWidth: 900, clientHeight: 700 };
+    this.listeners = new Map();
   }
   querySelector() { return null; }
   createElement(tag) { return new FakeElement(tag); }
+  createElementNS(namespaceURI, tag) { return new FakeElement(tag, namespaceURI); }
+  addEventListener(name, handler) { this.listeners.set(name, handler); }
+  removeEventListener(name) { this.listeners.delete(name); }
+  async dispatch(name, event = {}) {
+    const payload = Object.assign({
+      target: this.body,
+      preventDefault() { this.defaultPrevented = true; }
+    }, event);
+    return this.listeners.get(name)?.(payload);
+  }
 }
 
-test("selection popup performs no translation until the user clicks", async () => {
+const readerStylesheet = fs.readFileSync(
+  path.join(__dirname, "../plugin/content/reader.css"),
+  "utf8"
+);
+
+test("selection popup performs no translation until the user clicks after a cache miss", async () => {
   let calls = 0;
+  let cacheLookups = 0;
   const ui = new ReaderUI({
     service: {
       subscribe() { return () => {}; },
+      async getCachedSelection() {
+        cacheLookups++;
+        return null;
+      },
       async translateSelection() {
         calls++;
         return { translation: "模型", fromCache: false };
       }
     },
-    rootURI: "resource://plugin/"
+    stylesheetText: readerStylesheet
   });
   const doc = new FakeDocument();
   const reader = { itemID: 10 };
@@ -54,9 +141,242 @@ test("selection popup performs no translation until the user clicks", async () =
   });
   assert.equal(calls, 0);
   const button = container.children[0];
+  assert.equal(button.disabled, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(cacheLookups, 1);
+  assert.equal(button.disabled, false);
   await button.dispatch("click");
   assert.equal(calls, 1);
-  assert.equal(container.children[2].textContent, "模型");
+  assert.equal(container.children[1].hidden, true);
+  assert.equal(container.children[2].textContent, "翻译完成");
+  assert.equal(container.children[3].textContent, "模型");
+});
+
+test("selection popup displays a cached translation immediately as a tag", async () => {
+  let translationCalls = 0;
+  const ui = new ReaderUI({
+    service: {
+      subscribe() { return () => {}; },
+      async getCachedSelection() {
+        return { translation: "模型", fromCache: true };
+      },
+      async translateSelection() {
+        translationCalls++;
+        return { translation: "不应调用", fromCache: false };
+      }
+    },
+    stylesheetText: readerStylesheet
+  });
+  const doc = new FakeDocument();
+  const reader = { itemID: 10 };
+  let container;
+
+  ui.handleSelectionPopup({
+    reader,
+    doc,
+    params: { annotation: { text: "model", position: { pageIndex: 1 } } },
+    append(node) { container = node; }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const [button, cacheTag, status, result] = container.children;
+  assert.equal(button.hidden, true);
+  assert.equal(cacheTag.hidden, false);
+  assert.equal(cacheTag.textContent, "缓存");
+  assert.equal(status.textContent, "");
+  assert.equal(result.textContent, "模型");
+  assert.equal(translationCalls, 0);
+});
+
+test("toolbar injects only an icon button and toggles the separately mounted panel", async () => {
+  const ui = new ReaderUI({
+    service: { subscribe() { return () => {}; } },
+    getPreference(name) {
+      if (name.endsWith("autoOpen")) return false;
+      return -1;
+    },
+    setPreference() {},
+    stylesheetText: readerStylesheet
+  });
+  ui.refreshState = () => {};
+  const doc = new FakeDocument();
+  const reader = { itemID: 10 };
+  const appended = [];
+
+  ui.handleToolbar({ reader, doc, append: (...nodes) => appended.push(...nodes) });
+
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].tagName, "button");
+  assert.equal(appended[0].children[0].tagName, "svg");
+  assert.equal(appended[0].getAttribute("aria-pressed"), "false");
+  assert.equal(doc.body.children.length, 1);
+  assert.equal(doc.body.children[0].tagName, "aside");
+  assert.notEqual(doc.body.children[0].parentNode, appended[0]);
+  assert.equal(doc.head.children[0].tagName, "style");
+  assert.match(doc.head.children[0].textContent, /\.spt-panel\s*\{[\s\S]*position:\s*fixed/);
+
+  const state = ui.states.get(reader);
+  assert.equal(state.resizeHandle.tagName, "button");
+  assert.equal(state.resizeHandle.getAttribute("aria-label"), "调整论文智译悬浮窗大小");
+  assert.equal(state.tabButtons.summary.getAttribute("aria-selected"), "true");
+  assert.equal(state.tabButtons.glossary.getAttribute("aria-selected"), "false");
+  assert.equal(state.tabPanels.summary.hidden, false);
+  assert.equal(state.tabPanels.glossary.hidden, true);
+
+  await state.tabButtons.glossary.dispatch("click");
+  assert.equal(state.tabButtons.summary.getAttribute("aria-selected"), "false");
+  assert.equal(state.tabButtons.glossary.getAttribute("aria-selected"), "true");
+  assert.equal(state.tabPanels.summary.hidden, true);
+  assert.equal(state.tabPanels.glossary.hidden, false);
+
+  await state.tabButtons.glossary.dispatch("keydown", { key: "ArrowLeft" });
+  assert.equal(state.tabButtons.summary.getAttribute("aria-selected"), "true");
+  assert.equal(state.tabButtons.summary.focused, true);
+
+  await appended[0].dispatch("click");
+  assert.equal(doc.body.children[0].hidden, false);
+  assert.equal(appended[0].getAttribute("aria-pressed"), "true");
+  assert.equal(appended[0].classList.contains("active"), true);
+
+  await appended[0].dispatch("click");
+  assert.equal(doc.body.children[0].hidden, true);
+  assert.equal(appended[0].getAttribute("aria-pressed"), "false");
+  assert.equal(appended[0].classList.contains("active"), false);
+});
+
+test("abstract cache state is a tag and never mutates the translation text", async () => {
+  const ui = new ReaderUI({
+    service: {
+      subscribe() { return () => {}; },
+      async getGlossaryForItem() {
+        return {
+          paper: {
+            storageKey: "1--ABCDEFGH",
+            attachmentID: 10,
+            parentItemID: 20,
+            title: "A Test Paper"
+          },
+          entries: []
+        };
+      },
+      async ensureAbstract() {
+        return {
+          status: "translated",
+          fromCache: true,
+          translation: "完整摘要译文",
+          paper: {
+            storageKey: "1--ABCDEFGH",
+            attachmentID: 10,
+            parentItemID: 20,
+            title: "A Test Paper"
+          }
+        };
+      }
+    },
+    getPreference(name) {
+      if (name.endsWith("autoOpen")) return true;
+      return -1;
+    },
+    setPreference() {},
+    stylesheetText: readerStylesheet
+  });
+  const doc = new FakeDocument();
+  const reader = { itemID: 10 };
+
+  ui.handleToolbar({ reader, doc, append() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const state = ui.states.get(reader);
+  assert.equal(state.summaryNode.textContent, "完整摘要译文");
+  assert.doesNotMatch(state.summaryNode.textContent, /来自缓存/);
+  assert.equal(state.summaryCacheTag.hidden, false);
+  assert.equal(state.summaryCacheTag.textContent, "缓存");
+});
+
+test("panel drag uses pointer capture and persists its freely moved position", async () => {
+  const saved = [];
+  const ui = new ReaderUI({
+    service: { subscribe() { return () => {}; } },
+    getPreference(name) {
+      if (name.endsWith("autoOpen")) return true;
+      if (name.endsWith("panelY")) return 56;
+      return -1;
+    },
+    setPreference(name, value) { saved.push([name, value]); },
+    stylesheetText: readerStylesheet
+  });
+  ui.refreshState = () => {};
+  const doc = new FakeDocument();
+  const reader = { itemID: 10 };
+
+  ui.handleToolbar({ reader, doc, append() {} });
+  const state = ui.states.get(reader);
+  await state.panelHeader.dispatch("pointerdown", {
+    pointerId: 7,
+    clientX: 600,
+    clientY: 80
+  });
+  assert.equal(state.panelHeader.capturedPointerId, 7);
+  assert.equal(state.panel.classList.contains("spt-dragging"), true);
+
+  await doc.dispatch("pointermove", {
+    pointerId: 7,
+    clientX: 320,
+    clientY: 260
+  });
+  assert.equal(state.panel.style.left, "220px");
+  assert.equal(state.panel.style.top, "236px");
+
+  await doc.dispatch("pointerup", { pointerId: 7 });
+  assert.equal(state.panelHeader.capturedPointerId, null);
+  assert.equal(state.panel.classList.contains("spt-dragging"), false);
+  assert.deepEqual(saved.map((entry) => entry[1]), [220, 236]);
+});
+
+test("panel resize handle changes both dimensions and persists them", async () => {
+  const saved = [];
+  const ui = new ReaderUI({
+    service: { subscribe() { return () => {}; } },
+    getPreference(name) {
+      if (name.endsWith("autoOpen")) return true;
+      if (name.endsWith("panelX")) return 100;
+      if (name.endsWith("panelY")) return 56;
+      if (name.endsWith("panelWidth")) return 390;
+      if (name.endsWith("panelHeight")) return 300;
+      return -1;
+    },
+    setPreference(name, value) { saved.push([name, value]); },
+    stylesheetText: readerStylesheet
+  });
+  ui.refreshState = () => {};
+  const doc = new FakeDocument();
+  const reader = { itemID: 10 };
+
+  ui.handleToolbar({ reader, doc, append() {} });
+  const state = ui.states.get(reader);
+  await state.resizeHandle.dispatch("pointerdown", {
+    pointerId: 9,
+    clientX: 490,
+    clientY: 356
+  });
+  assert.equal(state.resizeHandle.capturedPointerId, 9);
+  assert.equal(state.panel.classList.contains("spt-resizing"), true);
+
+  await doc.dispatch("pointermove", {
+    pointerId: 9,
+    clientX: 610,
+    clientY: 436
+  });
+  assert.equal(state.panel.style.width, "510px");
+  assert.equal(state.panel.style.height, "380px");
+
+  await doc.dispatch("pointerup", { pointerId: 9 });
+  assert.equal(state.resizeHandle.capturedPointerId, null);
+  assert.equal(state.panel.classList.contains("spt-resizing"), false);
+  assert.deepEqual(saved.map(([name, value]) => [name.split(".").pop(), value]), [
+    ["panelWidth", 510],
+    ["panelHeight", 380]
+  ]);
 });
 
 test("reopening a dismissed panel refreshes state", async () => {
@@ -72,7 +392,16 @@ test("reopening a dismissed panel refreshes state", async () => {
     panel: Object.assign(new FakeElement("aside"), { hidden: true, isConnected: false }),
     panelHeader: new FakeElement("header"),
     closeButton: new FakeElement("button"),
+    resizeHandle: new FakeElement("button"),
     toolbarButton: new FakeElement("button"),
+    tabButtons: {
+      summary: new FakeElement("button"),
+      glossary: new FakeElement("button")
+    },
+    tabPanels: {
+      summary: new FakeElement("section"),
+      glossary: new FakeElement("section")
+    },
     dismissed: true,
     manualOpen: false,
     requestSerial: 1,

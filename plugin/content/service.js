@@ -111,7 +111,7 @@
       return { config, prompt, configSignature };
     }
 
-    async _translateWithCache({ kind, context, source, pageNumber }) {
+    _buildCacheLookup(kind, context, source, pageNumber) {
       if (this.stopped) {
         throw new Logic.SmartTranslatorError("PLUGIN_STOPPED", "插件已停止");
       }
@@ -120,22 +120,36 @@
         throw new Logic.SmartTranslatorError("SOURCE_EMPTY", "没有可翻译的文本");
       }
       const prepared = this._prepare(kind, context, source, pageNumber);
-      const cacheQuery = {
-        kind,
+      return {
         normalizedSource,
-        configSignature: prepared.configSignature
+        prepared,
+        cacheQuery: {
+          kind,
+          normalizedSource,
+          configSignature: prepared.configSignature
+        }
       };
-      const cached = await this.cache.getCached(context.paper, cacheQuery);
-      if (cached) {
-        const touched = await this.cache.touch(context.paper, cached.id);
-        return {
-          status: "translated",
-          fromCache: true,
-          paper: context.paper,
-          entry: touched || cached,
-          translation: cached.translation
-        };
-      }
+    }
+
+    async _readCachedResult(context, lookup) {
+      const cached = await this.cache.getCached(context.paper, lookup.cacheQuery);
+      if (!cached) return null;
+      const touched = await this.cache.touch(context.paper, cached.id);
+      const entry = touched || cached;
+      return {
+        status: "translated",
+        fromCache: true,
+        paper: context.paper,
+        entry,
+        translation: entry.translation
+      };
+    }
+
+    async _translateWithCache({ kind, context, source, pageNumber }) {
+      const lookup = this._buildCacheLookup(kind, context, source, pageNumber);
+      const cachedResult = await this._readCachedResult(context, lookup);
+      if (cachedResult) return cachedResult;
+      const { normalizedSource, prepared } = lookup;
 
       const flightKey = [
         context.paper.storageKey,
@@ -199,6 +213,17 @@
         source: String(text ?? ""),
         pageNumber
       });
+    }
+
+    async getCachedSelection(itemID, text, pageNumber) {
+      const context = await this.paperRepository.get(itemID);
+      const lookup = this._buildCacheLookup(
+        "selection",
+        context,
+        String(text ?? ""),
+        pageNumber
+      );
+      return this._readCachedResult(context, lookup);
     }
 
     async ensureAbstract(itemID) {

@@ -9,5 +9,16 @@ python3 scripts/build_xpi.py \
   --output dist \
   --slug smart-paper-translator
 
-unzip -t dist/smart-paper-translator-0.1.0.xpi
-unzip -Z1 dist/smart-paper-translator-0.1.0.xpi
+VERSION=$(python3 -c 'import json; print(json.load(open("plugin/manifest.json", encoding="utf-8"))["version"])')
+case "$VERSION" in
+  ""|*[!0-9A-Za-z._-]*)
+    echo "Invalid manifest version: $VERSION" >&2
+    exit 2
+    ;;
+esac
+
+XPI_PATH="dist/smart-paper-translator-${VERSION}.xpi"
+test -f "$XPI_PATH"
+unzip -t "$XPI_PATH"
+unzip -Z1 "$XPI_PATH"
+shasum -a 256 "$XPI_PATH" > dist/SHA256SUMS

@@ -19,6 +19,9 @@ var SmartPaperTranslatorPlugin = {
     const Constants = modules.Constants;
     const getPreference = (name) => Zotero.Prefs.get(name, true);
     const setPreference = (name, value) => Zotero.Prefs.set(name, value, true);
+    const readerStylesheet = await Zotero.File.getResourceAsync(
+      rootURI + "content/reader.css"
+    );
 
     this.credentials = new modules.Credentials.CredentialStore();
     this.cache = modules.Cache.createZoteroCache({
@@ -39,7 +42,7 @@ var SmartPaperTranslatorPlugin = {
       service: this.service,
       getPreference,
       setPreference,
-      rootURI,
+      stylesheetText: readerStylesheet,
       log: (message, error) => this.log(message, error)
     });
 

@@ -14,7 +14,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.0`
+- 当前版本：`0.1.3`
 - 目标平台：macOS Zotero 9.0.6
 - 清单兼容范围：Zotero `9.0`–`9.0.*`
 - 插件源码根目录：`plugin/`
@@ -42,10 +42,10 @@ zotero-translate/
 │       ├── credentials.js            # Mozilla Login Manager 密钥存储
 │       ├── cache.js                  # 逐论文持久化、原子写入和损坏恢复
 │       ├── api.js                    # OpenAI Chat Completions 客户端
-│       ├── service.js                # 翻译、摘要、缓存及并发协调
-│       ├── reader-ui.js              # 阅读器弹窗、工具栏和悬浮面板
-│       ├── reader.css                # 阅读器 UI 样式
-│       ├── main.js                   # 模块组装、观察者和设置页注册
+│       ├── service.js                # 翻译、摘要、本地缓存探测及并发协调
+│       ├── reader-ui.js              # 划线缓存直显、工具栏图标和可拖拽缩放悬浮面板
+│       ├── reader.css                # Reader 按钮、悬浮面板、缩放手柄和划线弹窗样式
+│       ├── main.js                   # 模块组装、Reader 样式加载、观察者和设置页注册
 │       ├── preferences.xhtml         # 中文设置页结构
 │       ├── preferences.js            # 设置页交互与密钥操作
 │       └── preferences.css           # 设置页样式
@@ -55,15 +55,18 @@ zotero-translate/
 │   ├── credentials.test.js           # API Key 隔离测试
 │   ├── cache.test.js                 # 缓存、并发、原子写入和损坏恢复
 │   ├── api.test.js                   # 请求结构、隐私和错误映射
-│   ├── service.test.js               # 摘要、缓存失效、并发与取消
-│   └── reader-ui.test.js             # 点击后翻译和陈旧 UI 防护
+│   ├── service.test.js               # 摘要、缓存探测、缓存失效、并发与取消
+│   └── reader-ui.test.js             # 缓存直显、工具栏、Tabs、拖拽缩放和陈旧 UI 防护
 ├── scripts/
 │   ├── build.sh                      # 完整 XPI 构建与归档检查入口
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.0.xpi
-    ├── smart-paper-translator-0.1.0-source.zip
+    ├── smart-paper-translator-0.1.3.xpi
+    ├── smart-paper-translator-0.1.2.xpi          # 上一版本归档
+    ├── smart-paper-translator-0.1.1.xpi          # 历史版本归档
+    ├── smart-paper-translator-0.1.0.xpi          # 历史版本归档
+    ├── smart-paper-translator-0.1.0-source.zip   # 历史版本源码归档
     └── SHA256SUMS
 ```
 

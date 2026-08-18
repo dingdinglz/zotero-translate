@@ -65,6 +65,8 @@ function makePreferenceStore(overrides = {}) {
     [Constants.PREFS.autoOpen, true],
     [Constants.PREFS.panelX, -1],
     [Constants.PREFS.panelY, 56],
+    [Constants.PREFS.panelWidth, 390],
+    [Constants.PREFS.panelHeight, 540],
     [Constants.PREFS.selectionPrompt, Constants.DEFAULT_SELECTION_PROMPT],
     [Constants.PREFS.abstractPrompt, Constants.DEFAULT_ABSTRACT_PROMPT]
   ]);
