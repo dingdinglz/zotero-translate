@@ -62,6 +62,7 @@ function makePreferenceStore(overrides = {}) {
     [Constants.PREFS.customBaseURL, ""],
     [Constants.PREFS.customModel, ""],
     [Constants.PREFS.targetLanguage, "简体中文"],
+    [Constants.PREFS.autoTranslateSelection, false],
     [Constants.PREFS.autoOpen, true],
     [Constants.PREFS.panelX, -1],
     [Constants.PREFS.panelY, 56],

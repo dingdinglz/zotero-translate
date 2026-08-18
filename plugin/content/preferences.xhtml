@@ -100,6 +100,19 @@
     </html:div>
   </groupbox>
 
+  <groupbox data-search-strings-raw="划线,选中文本,自动翻译,发送">
+    <label><html:h2>划线翻译</html:h2></label>
+    <checkbox
+      id="spt-auto-translate-selection"
+      native="true"
+      preference="extensions.smart-paper-translator.autoTranslateSelection"
+      label="划线后自动翻译"
+    />
+    <description>
+      默认关闭。打开后，未命中本地缓存的选中文本会立即发送给所选 API 并产生用量，无需再点击“翻译”。
+    </description>
+  </groupbox>
+
   <groupbox data-search-strings-raw="悬浮窗,自动打开,显示">
     <label><html:h2>阅读器显示</html:h2></label>
     <checkbox
@@ -113,7 +126,7 @@
   <groupbox data-search-strings-raw="隐私,数据,缓存,网络">
     <label><html:h2>隐私与存储</html:h2></label>
     <description>
-      打开论文时，未缓存的摘要翻译会把标题和 Zotero 摘要发送给所选 API；缺少智能标签时会用相同数据额外发起一次短请求。主页智能标签列只读取本地缓存，不会联网，也不会写入 Zotero 原生标签。划线缓存命中时直接显示，未缓存文本只有点击“翻译”后才发送。译文、原文与智能标签按论文保存在本机 Zotero 数据目录，不参与 Zotero 同步。API Key 单独保存在 Zotero 的登录信息存储中。
+      打开论文时，未缓存的摘要翻译会把标题和 Zotero 摘要发送给所选 API；缺少智能标签时会用相同数据额外发起一次短请求。主页智能标签列只读取本地缓存，不会联网，也不会写入 Zotero 原生标签。划线缓存命中时直接显示；未命中文本在自动模式关闭时只有点击“翻译”后才发送，打开时会在划线后立即发送。译文、原文与智能标签按论文保存在本机 Zotero 数据目录，不参与 Zotero 同步。API Key 单独保存在 Zotero 的登录信息存储中。
     </description>
   </groupbox>
 </vbox>

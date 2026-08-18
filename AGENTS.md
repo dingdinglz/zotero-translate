@@ -14,7 +14,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.5`
+- 当前版本：`0.1.6`
 - 目标平台：macOS Zotero 9.0.6
 - 清单兼容范围：Zotero `9.0`–`9.0.*`
 - 插件源码根目录：`plugin/`
@@ -45,7 +45,7 @@ zotero-translate/
 │       ├── service.js                # 翻译、摘要、智能标签、本地缓存探测及并发协调
 │       ├── item-tree-ui.js           # 主页智能标签列、本地懒加载索引与列刷新
 │       ├── item-tree.css             # 智能标签列、主题色胶囊与无障碍模式样式
-│       ├── reader-ui.js              # 划线缓存直显、工具栏图标和可拖拽缩放悬浮面板
+│       ├── reader-ui.js              # 划线缓存直显、自动/手动翻译、工具栏图标和可拖拽缩放悬浮面板
 │       ├── reader.css                # Reader 按钮、悬浮面板、缩放手柄和划线弹窗样式
 │       ├── main.js                   # 模块组装、多窗口样式、观察者和设置页注册
 │       ├── preferences.xhtml         # 中文设置页结构
@@ -59,14 +59,15 @@ zotero-translate/
 │   ├── api.test.js                   # 请求结构、隐私和错误映射
 │   ├── service.test.js               # 摘要、缓存探测、缓存失效、并发与取消
 │   ├── item-tree-ui.test.js          # 智能标签列、异步刷新、渲染安全与清理
-│   └── reader-ui.test.js             # 缓存直显、工具栏、Tabs、拖拽缩放和陈旧 UI 防护
+│   └── reader-ui.test.js             # 划线自动/手动翻译、缓存直显、工具栏、Tabs、拖拽缩放和陈旧 UI 防护
 ├── scripts/
 │   ├── build.sh                      # 完整 XPI 构建与归档检查入口
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.5.xpi
-    ├── smart-paper-translator-0.1.4.xpi          # 上一版本归档
+    ├── smart-paper-translator-0.1.6.xpi
+    ├── smart-paper-translator-0.1.5.xpi          # 上一版本归档
+    ├── smart-paper-translator-0.1.4.xpi          # 历史版本归档
     ├── smart-paper-translator-0.1.3.xpi          # 历史版本归档
     ├── smart-paper-translator-0.1.2.xpi          # 历史版本归档
     ├── smart-paper-translator-0.1.1.xpi          # 历史版本归档

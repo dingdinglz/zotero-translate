@@ -113,7 +113,7 @@ const readerStylesheet = fs.readFileSync(
   "utf8"
 );
 
-test("selection popup performs no translation until the user clicks after a cache miss", async () => {
+test("selection popup waits for a click after a cache miss when automatic mode is off", async () => {
   let calls = 0;
   let cacheLookups = 0;
   const ui = new ReaderUI({
@@ -127,6 +127,9 @@ test("selection popup performs no translation until the user clicks after a cach
         calls++;
         return { translation: "模型", fromCache: false };
       }
+    },
+    getPreference(name) {
+      if (name.endsWith("autoTranslateSelection")) return false;
     },
     stylesheetText: readerStylesheet
   });
@@ -152,6 +155,49 @@ test("selection popup performs no translation until the user clicks after a cach
   assert.equal(container.children[3].textContent, "模型");
 });
 
+test("selection popup translates automatically after a cache miss when enabled", async () => {
+  let calls = 0;
+  let cacheLookups = 0;
+  const ui = new ReaderUI({
+    service: {
+      subscribe() { return () => {}; },
+      async getCachedSelection() {
+        cacheLookups++;
+        return null;
+      },
+      async translateSelection() {
+        calls++;
+        return { translation: "模型", fromCache: false };
+      }
+    },
+    getPreference(name) {
+      if (name.endsWith("autoTranslateSelection")) return true;
+    },
+    stylesheetText: readerStylesheet
+  });
+  const doc = new FakeDocument();
+  const reader = { itemID: 10 };
+  let container;
+
+  ui.handleSelectionPopup({
+    reader,
+    doc,
+    params: { annotation: { text: "model", position: { pageIndex: 1 } } },
+    append(node) { container = node; }
+  });
+  assert.equal(calls, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const [button, cacheTag, status, result] = container.children;
+  assert.equal(cacheLookups, 1);
+  assert.equal(calls, 1);
+  assert.equal(button.hidden, true);
+  assert.equal(button.disabled, true);
+  assert.equal(cacheTag.hidden, true);
+  assert.equal(status.textContent, "翻译完成");
+  assert.equal(result.textContent, "模型");
+});
+
 test("selection popup displays a cached translation immediately as a tag", async () => {
   let translationCalls = 0;
   const ui = new ReaderUI({
@@ -164,6 +210,9 @@ test("selection popup displays a cached translation immediately as a tag", async
         translationCalls++;
         return { translation: "不应调用", fromCache: false };
       }
+    },
+    getPreference(name) {
+      if (name.endsWith("autoTranslateSelection")) return true;
     },
     stylesheetText: readerStylesheet
   });

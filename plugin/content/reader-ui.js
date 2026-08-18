@@ -691,15 +691,63 @@
       append(container);
 
       const isCurrent = () => container.isConnected && reader.itemID === itemID;
-      const renderTranslation = (result) => {
+      const renderTranslation = (result, { hideButton = false } = {}) => {
         const fromCache = Boolean(result.fromCache);
         cacheTag.hidden = !fromCache;
         status.textContent = fromCache ? "" : "翻译完成";
         resultNode.classList.remove("spt-error");
         resultNode.textContent = result.translation;
         button.disabled = true;
-        button.hidden = fromCache;
+        button.hidden = fromCache || hideButton;
       };
+
+      let translating = false;
+      const runTranslation = async ({ automatic = false } = {}) => {
+        if (translating || !text || !isCurrent()) return;
+        translating = true;
+        button.disabled = true;
+        button.hidden = automatic;
+        button.textContent = "翻译";
+        cacheTag.hidden = true;
+        status.textContent = "翻译中…";
+        resultNode.textContent = "";
+        try {
+          const result = await this.service.translateSelection(itemID, text, pageNumber);
+          if (!isCurrent()) return;
+          renderTranslation(result, { hideButton: automatic });
+        }
+        catch (error) {
+          if (!isCurrent()) return;
+          cacheTag.hidden = true;
+          status.textContent = "翻译失败";
+          resultNode.textContent = error.message || "无法翻译所选内容";
+          resultNode.classList.add("spt-error");
+          button.hidden = false;
+          button.disabled = false;
+          button.textContent = "重试";
+        }
+        finally {
+          translating = false;
+        }
+      };
+
+      const continueAfterCacheMiss = () => {
+        const automatic = Boolean(
+          this.getPreference?.(Constants.PREFS.autoTranslateSelection)
+        );
+        if (automatic) {
+          void runTranslation({ automatic: true });
+          return;
+        }
+        status.textContent = "";
+        button.hidden = false;
+        button.disabled = false;
+      };
+
+      button.addEventListener("click", () => {
+        if (button.disabled || button.hidden) return;
+        return runTranslation();
+      });
 
       if (text) {
         Promise.resolve(this.service.getCachedSelection(itemID, text, pageNumber)).then((cached) => {
@@ -708,37 +756,13 @@
             renderTranslation(cached);
             return;
           }
-          status.textContent = "";
-          button.disabled = false;
+          continueAfterCacheMiss();
         }).catch((error) => {
           if (!isCurrent()) return;
           this.log("检查划线翻译缓存失败", error);
-          status.textContent = "";
-          button.disabled = false;
+          continueAfterCacheMiss();
         });
       }
-
-      button.addEventListener("click", async () => {
-        if (button.disabled || button.hidden) return;
-        button.disabled = true;
-        cacheTag.hidden = true;
-        status.textContent = "翻译中…";
-        resultNode.textContent = "";
-        try {
-          const result = await this.service.translateSelection(itemID, text, pageNumber);
-          if (!isCurrent()) return;
-          renderTranslation(result);
-        }
-        catch (error) {
-          if (!isCurrent()) return;
-          cacheTag.hidden = true;
-          status.textContent = "翻译失败";
-          resultNode.textContent = error.message || "无法翻译所选内容";
-          resultNode.classList.add("spt-error");
-          button.disabled = false;
-          button.textContent = "重试";
-        }
-      });
     }
 
     onPreferencesChanged() {

@@ -117,6 +117,7 @@ var SmartPaperTranslatorPlugin = {
       prefs.customBaseURL,
       prefs.customModel,
       prefs.targetLanguage,
+      prefs.autoTranslateSelection,
       prefs.autoOpen,
       prefs.selectionPrompt,
       prefs.abstractPrompt
