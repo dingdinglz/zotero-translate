@@ -1,0 +1,4 @@
+interface:
+  display_name: "Zotero 插件开发"
+  short_description: "开发、调试、打包并验证 Zotero 桌面客户端插件"
+  default_prompt: "使用 $develop-zotero-plugins 开发并验证这个 Zotero 桌面插件需求。"

@@ -1,0 +1,119 @@
+<vbox
+  xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+  xmlns:html="http://www.w3.org/1999/xhtml"
+  id="smart-paper-translator-preferences-pane"
+  onload="SmartPaperTranslatorPreferences.init(window)"
+  onunload="SmartPaperTranslatorPreferences.destroy()"
+>
+  <groupbox data-search-strings-raw="翻译,DeepSeek,OpenAI,API,模型">
+    <label><html:h2>翻译服务</html:h2></label>
+    <html:div class="spt-prefs-grid">
+      <html:label for="spt-provider">供应商</html:label>
+      <html:select
+        id="spt-provider"
+        preference="extensions.smart-paper-translator.provider"
+      >
+        <html:option value="deepseek">DeepSeek</html:option>
+        <html:option value="custom">自定义 OpenAI 兼容服务</html:option>
+      </html:select>
+
+      <html:label for="spt-deepseek-base-url" data-provider="deepseek">Base URL</html:label>
+      <html:input
+        id="spt-deepseek-base-url"
+        data-provider="deepseek"
+        type="url"
+        preference="extensions.smart-paper-translator.deepseekBaseURL"
+      />
+      <html:label for="spt-deepseek-model" data-provider="deepseek">模型</html:label>
+      <html:div class="spt-prefs-inline" data-provider="deepseek">
+        <html:input
+          id="spt-deepseek-model"
+          type="text"
+          preference="extensions.smart-paper-translator.deepseekModel"
+        />
+        <html:button id="spt-reset-deepseek" type="button">恢复默认</html:button>
+      </html:div>
+
+      <html:label for="spt-custom-base-url" data-provider="custom">Base URL</html:label>
+      <html:input
+        id="spt-custom-base-url"
+        data-provider="custom"
+        type="url"
+        placeholder="https://api.example.com/v1"
+        preference="extensions.smart-paper-translator.customBaseURL"
+      />
+      <html:label for="spt-custom-model" data-provider="custom">模型</html:label>
+      <html:input
+        id="spt-custom-model"
+        data-provider="custom"
+        type="text"
+        placeholder="模型 ID"
+        preference="extensions.smart-paper-translator.customModel"
+      />
+
+      <html:label for="spt-api-key">API Key</html:label>
+      <html:div class="spt-prefs-key-row">
+        <html:input id="spt-api-key" type="password" autocomplete="new-password" placeholder="留空不会改变已保存密钥" />
+        <html:button id="spt-save-key" type="button">保存密钥</html:button>
+        <html:button id="spt-remove-key" type="button">移除密钥</html:button>
+      </html:div>
+
+      <html:span></html:span>
+      <html:div class="spt-prefs-inline">
+        <html:button id="spt-test-connection" type="button">测试连接</html:button>
+        <html:span id="spt-connection-status" class="spt-prefs-status" role="status"></html:span>
+      </html:div>
+
+      <html:label for="spt-target-language">目标语言</html:label>
+      <html:input
+        id="spt-target-language"
+        type="text"
+        preference="extensions.smart-paper-translator.targetLanguage"
+      />
+    </html:div>
+    <description>
+      DeepSeek 使用非思考模式。自定义服务调用 OpenAI Chat Completions 的 /chat/completions；API Key 可留空以连接本机服务。
+    </description>
+  </groupbox>
+
+  <groupbox data-search-strings-raw="提示词,Prompt,模板,摘要">
+    <label><html:h2>提示词模板</html:h2></label>
+    <description>
+      仅支持安全变量插值。划线模板可用 {{text}}、{{abstract}}、{{title}}、{{targetLanguage}}、{{pageNumber}}；摘要模板可用 {{abstract}}、{{title}}、{{targetLanguage}}。
+    </description>
+    <html:label class="spt-prefs-block-label" for="spt-selection-prompt">划线翻译模板</html:label>
+    <html:textarea
+      id="spt-selection-prompt"
+      rows="9"
+      preference="extensions.smart-paper-translator.selectionPrompt"
+    ></html:textarea>
+    <html:label class="spt-prefs-block-label" for="spt-abstract-prompt">摘要翻译模板</html:label>
+    <html:textarea
+      id="spt-abstract-prompt"
+      rows="7"
+      preference="extensions.smart-paper-translator.abstractPrompt"
+    ></html:textarea>
+    <html:div class="spt-prefs-inline">
+      <html:button id="spt-reset-prompts" type="button">恢复默认模板</html:button>
+      <html:button id="spt-validate-prompts" type="button">验证模板</html:button>
+      <html:span id="spt-template-status" class="spt-prefs-status" role="status"></html:span>
+    </html:div>
+  </groupbox>
+
+  <groupbox data-search-strings-raw="悬浮窗,自动打开,显示">
+    <label><html:h2>阅读器显示</html:h2></label>
+    <checkbox
+      id="spt-auto-open"
+      native="true"
+      preference="extensions.smart-paper-translator.autoOpen"
+      label="打开 PDF 时自动显示论文智译悬浮窗"
+    />
+  </groupbox>
+
+  <groupbox data-search-strings-raw="隐私,数据,缓存,网络">
+    <label><html:h2>隐私与存储</html:h2></label>
+    <description>
+      打开论文时，未缓存的 Zotero 摘要会发送给所选 API；划线文本只有点击“翻译”后才发送。译文与原文按论文保存在本机 Zotero 数据目录，不参与 Zotero 同步。API Key 单独保存在 Zotero 的登录信息存储中。
+    </description>
+  </groupbox>
+</vbox>

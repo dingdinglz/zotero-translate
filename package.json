@@ -1,0 +1,15 @@
+{
+  "name": "smart-paper-translator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A privacy-conscious academic translation plugin for Zotero 9",
+  "scripts": {
+    "check:js": "find plugin tests -name '*.js' -type f -print0 | xargs -0 -n1 node --check",
+    "test": "node --test tests/*.test.js",
+    "check:static": "python3 scripts/validate_static.py",
+    "check": "npm run check:js && npm test && npm run check:static"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
