@@ -691,40 +691,81 @@
       append(container);
 
       const isCurrent = () => container.isConnected && reader.itemID === itemID;
+      let forceRefreshOnClick = false;
+      const configureButton = ({ mode, disabled = false, hidden = false }) => {
+        forceRefreshOnClick = mode === "retranslate";
+        button.disabled = disabled;
+        button.hidden = hidden;
+        if (mode === "retranslate") {
+          button.textContent = "重新翻译";
+          button.title = "忽略本地缓存并重新调用翻译 API";
+          button.setAttribute("aria-label", "重新翻译选中文本，将调用翻译 API");
+        }
+        else if (mode === "retry") {
+          button.textContent = "重试";
+          button.title = "重试翻译选中文本";
+          button.setAttribute("aria-label", "重试翻译选中文本");
+        }
+        else {
+          button.textContent = "翻译";
+          button.title = "翻译选中文本";
+          button.setAttribute("aria-label", "翻译选中文本");
+        }
+      };
       const renderTranslation = (result, { hideButton = false } = {}) => {
         const fromCache = Boolean(result.fromCache);
         cacheTag.hidden = !fromCache;
         status.textContent = fromCache ? "" : "翻译完成";
+        status.classList.remove("spt-error");
         resultNode.classList.remove("spt-error");
         resultNode.textContent = result.translation;
-        button.disabled = true;
-        button.hidden = fromCache || hideButton;
+        configureButton({
+          mode: fromCache ? "retranslate" : "translate",
+          disabled: !fromCache,
+          hidden: !fromCache && hideButton
+        });
       };
 
       let translating = false;
-      const runTranslation = async ({ automatic = false } = {}) => {
+      const runTranslation = async ({ automatic = false, forceRefresh = false } = {}) => {
         if (translating || !text || !isCurrent()) return;
         translating = true;
-        button.disabled = true;
-        button.hidden = automatic;
-        button.textContent = "翻译";
-        cacheTag.hidden = true;
-        status.textContent = "翻译中…";
-        resultNode.textContent = "";
+        const retainCachedResult = forceRefresh && !cacheTag.hidden && Boolean(resultNode.textContent);
+        configureButton({
+          mode: forceRefresh ? "retranslate" : "translate",
+          disabled: true,
+          hidden: automatic
+        });
+        if (forceRefresh) button.textContent = "重新翻译中…";
+        if (!retainCachedResult) {
+          cacheTag.hidden = true;
+          resultNode.textContent = "";
+        }
+        status.classList.remove("spt-error");
+        resultNode.classList.remove("spt-error");
+        status.textContent = forceRefresh ? "正在重新翻译…" : "翻译中…";
         try {
-          const result = await this.service.translateSelection(itemID, text, pageNumber);
+          const result = await this.service.translateSelection(itemID, text, pageNumber, {
+            forceRefresh
+          });
           if (!isCurrent()) return;
-          renderTranslation(result, { hideButton: automatic });
+          renderTranslation(result, { hideButton: automatic || forceRefresh });
         }
         catch (error) {
           if (!isCurrent()) return;
-          cacheTag.hidden = true;
-          status.textContent = "翻译失败";
-          resultNode.textContent = error.message || "无法翻译所选内容";
-          resultNode.classList.add("spt-error");
-          button.hidden = false;
-          button.disabled = false;
-          button.textContent = "重试";
+          if (retainCachedResult) {
+            cacheTag.hidden = false;
+            status.textContent = `重新翻译失败：${error.message || "无法翻译所选内容"}`;
+            status.classList.add("spt-error");
+            configureButton({ mode: "retranslate" });
+          }
+          else {
+            cacheTag.hidden = true;
+            status.textContent = "翻译失败";
+            resultNode.textContent = error.message || "无法翻译所选内容";
+            resultNode.classList.add("spt-error");
+            configureButton({ mode: "retry" });
+          }
         }
         finally {
           translating = false;
@@ -746,7 +787,7 @@
 
       button.addEventListener("click", () => {
         if (button.disabled || button.hidden) return;
-        return runTranslation();
+        return runTranslation({ forceRefresh: forceRefreshOnClick });
       });
 
       if (text) {

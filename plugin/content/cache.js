@@ -148,6 +148,26 @@
       });
     }
 
+    async replaceMatching(paper, entry) {
+      return this._enqueue(paper.storageKey, async () => {
+        const record = await this._loadUnsafe(paper);
+        const existingIndex = record.entries.findIndex((candidate) =>
+          candidate.kind === entry.kind &&
+          candidate.normalizedSource === entry.normalizedSource &&
+          candidate.configSignature === entry.configSignature
+        );
+        const existing = existingIndex === -1 ? null : record.entries[existingIndex];
+        const stored = {
+          ...entry,
+          id: existing?.id || this.randomID()
+        };
+        if (existingIndex === -1) record.entries.push(stored);
+        else record.entries[existingIndex] = stored;
+        await this._writeUnsafe(paper, record);
+        return stored;
+      });
+    }
+
     async touch(paper, entryID) {
       return this._enqueue(paper.storageKey, async () => {
         const record = await this._loadUnsafe(paper);

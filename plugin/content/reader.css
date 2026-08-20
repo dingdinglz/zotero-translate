@@ -417,6 +417,11 @@
   font-size: 11px;
 }
 
+.spt-selection-status.spt-error,
+.spt-selection-result.spt-error {
+  color: var(--accent-red, #db2c3a);
+}
+
 .spt-selection-status:empty,
 .spt-selection-result:empty {
   display: none;

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Smart Paper Translator",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Context-aware academic translation and smart tags for Zotero",
   "author": "Local Developer",
   "applications": {

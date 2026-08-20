@@ -145,10 +145,12 @@
       };
     }
 
-    async _translateWithCache({ kind, context, source, pageNumber }) {
+    async _translateWithCache({ kind, context, source, pageNumber, forceRefresh = false }) {
       const lookup = this._buildCacheLookup(kind, context, source, pageNumber);
-      const cachedResult = await this._readCachedResult(context, lookup);
-      if (cachedResult) return cachedResult;
+      if (!forceRefresh) {
+        const cachedResult = await this._readCachedResult(context, lookup);
+        if (cachedResult) return cachedResult;
+      }
       const { normalizedSource, prepared } = lookup;
 
       const flightKey = [
@@ -171,7 +173,7 @@
           throw new Logic.SmartTranslatorError("PLUGIN_STOPPED", "插件已停止");
         }
         const timestamp = this.now();
-        const entry = await this.cache.append(context.paper, {
+        const cacheEntry = {
           kind,
           source: String(source).trim(),
           normalizedSource,
@@ -186,7 +188,10 @@
           createdAt: timestamp,
           lastUsedAt: timestamp,
           cacheHits: 0
-        });
+        };
+        const entry = forceRefresh
+          ? await this.cache.replaceMatching(context.paper, cacheEntry)
+          : await this.cache.append(context.paper, cacheEntry);
         const result = {
           status: "translated",
           fromCache: false,
@@ -205,13 +210,14 @@
       return operation;
     }
 
-    async translateSelection(itemID, text, pageNumber) {
+    async translateSelection(itemID, text, pageNumber, { forceRefresh = false } = {}) {
       const context = await this.paperRepository.get(itemID);
       return this._translateWithCache({
         kind: "selection",
         context,
         source: String(text ?? ""),
-        pageNumber
+        pageNumber,
+        forceRefresh: Boolean(forceRefresh)
       });
     }
 

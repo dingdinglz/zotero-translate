@@ -44,6 +44,32 @@ test("cache persists entries, touches hits, and retains configuration variants",
   assert.equal((await cache.getAllEntries(paper)).length, 2);
 });
 
+test("replacing a matching cache entry preserves its identity and other variants", async () => {
+  const { cache, io } = makeCache();
+  const paper = makePaper();
+  const original = await cache.append(paper, entry({ translation: "模型（旧）" }));
+  await cache.append(paper, entry({
+    translation: "模型（另一配置）",
+    configSignature: "signature-b"
+  }));
+
+  const replacement = await cache.replaceMatching(paper, entry({
+    translation: "模型（新）",
+    createdAt: "2026-08-20T00:00:00.000Z",
+    lastUsedAt: "2026-08-20T00:00:00.000Z"
+  }));
+  const entries = await cache.getAllEntries(paper);
+
+  assert.equal(replacement.id, original.id);
+  assert.equal(replacement.translation, "模型（新）");
+  assert.equal(entries.length, 2);
+  assert.equal(entries.find((candidate) => candidate.configSignature === "signature-a").translation, "模型（新）");
+  assert.equal(entries.find((candidate) => candidate.configSignature === "signature-b").translation, "模型（另一配置）");
+  assert.deepEqual(io.writeJSONCalls.at(-1).options, {
+    tmpPath: "/records/1--ABCDEFGH.json.tmp"
+  });
+});
+
 test("concurrent appends are serialized without losing records", async () => {
   const { cache, io } = makeCache();
   const paper = makePaper();

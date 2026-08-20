@@ -179,6 +179,42 @@ test("selection cache probe is local-only and returns a matching cached translat
   assert.equal(getAPICalls(), 1);
 });
 
+test("forced selection refresh bypasses and atomically replaces the matching cache entry", async () => {
+  const { service, cache, getAPICalls } = createService();
+  const first = await service.translateSelection(10, "model", 1);
+  const refreshed = await service.translateSelection(10, "model", 1, {
+    forceRefresh: true
+  });
+  const cached = await service.getCachedSelection(10, "model", 1);
+
+  assert.equal(first.translation, "译文-1");
+  assert.equal(refreshed.translation, "译文-2");
+  assert.equal(refreshed.fromCache, false);
+  assert.equal(cached.translation, "译文-2");
+  assert.equal(getAPICalls(), 2);
+  assert.equal((await cache.getAllEntries(makePaper())).length, 1);
+});
+
+test("failed forced selection refresh leaves the previous cached translation intact", async () => {
+  const { service, cache, getAPICalls } = createService({
+    apiComplete(_args, callNumber) {
+      if (callNumber === 2) throw new Error("temporary failure");
+      return "已有译文";
+    }
+  });
+  await service.translateSelection(10, "model", 1);
+
+  await assert.rejects(
+    service.translateSelection(10, "model", 1, { forceRefresh: true }),
+    /temporary failure/u
+  );
+  const cached = await service.getCachedSelection(10, "model", 1);
+
+  assert.equal(cached.translation, "已有译文");
+  assert.equal(getAPICalls(), 2);
+  assert.equal((await cache.getAllEntries(makePaper())).length, 1);
+});
+
 test("changing model invalidates cache without deleting old translation", async () => {
   const { service, cache, prefs, getAPICalls } = createService();
   await service.ensureAbstract(10);
