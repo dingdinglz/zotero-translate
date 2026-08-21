@@ -162,6 +162,29 @@ test("Codex settings bridge serializes diagnostics before crossing into the pref
   );
 });
 
+test("Codex developer mode is default-off and wired to preference refresh", () => {
+  const prefs = fs.readFileSync(
+    path.join(__dirname, "../plugin/prefs.js"),
+    "utf8"
+  );
+  const xhtml = fs.readFileSync(
+    path.join(__dirname, "../plugin/content/preferences.xhtml"),
+    "utf8"
+  );
+  const main = fs.readFileSync(
+    path.join(__dirname, "../plugin/content/main.js"),
+    "utf8"
+  );
+  assert.equal(
+    Constants.PREFS.codexDeveloperMode,
+    "extensions.smart-paper-translator.codexDeveloperMode"
+  );
+  assert.match(prefs, /codexDeveloperMode", false/u);
+  assert.match(xhtml, /preference="extensions\.smart-paper-translator\.codexDeveloperMode"/u);
+  assert.match(main, /prefs\.codexDeveloperMode/u);
+  assert.match(main, /notifyDeveloperModeChanged\(\)/u);
+});
+
 test("Codex settings enable cached defaults and use model-specific reasoning choices", () => {
   const { manager, elements } = loadPreferencesManager();
   manager.codexCatalog = {

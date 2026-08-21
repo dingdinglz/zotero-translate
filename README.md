@@ -1,6 +1,6 @@
 # Smart Paper Translator
 
-Smart Paper Translator 0.1.17 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并新增一个连接本机 Codex 的原生右侧栏。Codex 对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
+Smart Paper Translator 0.1.18 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并新增一个连接本机 Codex 的原生右侧栏。Codex 对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
 
 ## 功能
 
@@ -23,6 +23,7 @@ Smart Paper Translator 0.1.17 是面向 macOS Zotero 9 内置 PDF Reader 的学�
 - 超宽工具输出、路径和表格被限制在 Item Pane 内，不再把用户消息推到侧栏可视区域之外。
 - `execute`、文件读取、图片查看和搜索等常见工具会显示为语义卡片，只呈现命令、工作目录、目标文件、关键词、输出与退出码，不再把内部 ID、时间戳及原始事件 JSON 暴露在界面中；权限审批使用同一套可读展示。
 - Codex 思考增量中的最新非空状态行会显示在输入框上方的加载栏中；空白分隔块被忽略，历史思考不再堆成可展开卡片，任务结束后加载栏自动隐藏。
+- 设置页提供默认关闭的“开发者模式”。只有开启后，Codex 侧栏才显示“复制日志”按钮，并在内存中记录当前实时 turn 的工具调用与思考事件；关闭后立即清空且停止采集。日志会脱敏用户主目录和常见密钥字段，并限制事件、字符串及集合大小，但复制前仍应检查其中的命令、路径和工具输出。
 - 首轮实际发送给 ACP 的论文安全边界和 `resource_link` 只作为协议上下文保存；用户消息气泡始终只显示用户输入的问题，远端回放也会做同样的展示归一化。
 - 设置页的模型与推理强度只作为新会话默认值；首条消息发送前即可在侧栏为当前 PDF 单独选择，创建后也可继续修改同一个 session。模型变化时会使用该模型实际支持的推理强度列表。
 - 支持 ACP 权限请求和表单 elicitation。命令、cwd、主机、读写位置及适配器提供的授权选项会在侧栏显示；插件不会自动批准。
@@ -39,6 +40,7 @@ Smart Paper Translator 0.1.17 是面向 macOS Zotero 9 内置 PDF Reader 的学�
 3. 首次使用必须明确点击“准备并检测 ACP 1.6.2”。这是唯一允许 npx 下载的入口，执行固定包 `@agentclientprotocol/codex-acp@1.6.2`，随后验证版本、ACP 握手、登录状态、能力和动态模型选项。若失败，设置页会显示阶段、错误代码、目标包、退出码以及脱敏后的 stdout/stderr，便于继续定位。
 4. 日常聊天以 npm 离线模式启动已准备的适配器。缓存缺失、路径变化或版本不匹配时直接报错，不静默下载或升级。
 5. 模型和推理强度取自适配器返回并原子缓存的动态配置。设置值只提供新 session 默认值；每个 PDF 可在侧栏保存自己的选择，已存在 session 保留自己的选择。保存的选项若已不可用，发送会被阻止，不会静默换模型。
+6. 调试侧栏事件时，可在设置页单独开启“开发者模式”。开启后运行一轮对话，再点击侧栏“复制日志”；日志只驻留内存、不会自动写文件或上传。关闭开关会立刻清空已收集内容。
 
 适配器通过 `CODEX_PATH` 使用所选本机 Codex，并继承其账号、配置、全局指令、Skills 与 MCP。插件不保存或展示 token。模式固定为受审批的 `agent`：专用工作区可写、网络默认关闭；代码拒绝启用 `agent-full-access`。
 
@@ -71,6 +73,7 @@ smart-paper-translator/
 - 第一条 Codex 消息会把 PDF 的本地快照交给本机 Codex；后续消息只发送文本。同一 thread 中 Codex 仍可读取自己的工作区和上下文。
 - 本机 Codex 的 Skills/MCP 可能访问论文之外的数据或服务；实际访问仍受 Codex 配置、沙箱和逐次权限审批约束。
 - 原始 HTML 不会渲染，远程图片不会自动加载；Markdown、公式、Codex 指令、工具输出和权限详情均通过受限 DOM/MathML 节点显示，不使用 `innerHTML`。
+- 开发者模式默认关闭。开启时只收集当前实时 turn 的工具与思考事件，不收集用户消息或最终回答；内存日志采用有界环形缓冲并做密钥和用户目录脱敏，关闭模式、重建会话或退出插件时清空。
 - 翻译请求继续使用匿名 Cookie 容器、60 秒超时和 `logBodyLength: 0`，不把论文正文写入 Zotero HTTP 调试日志。
 
 ## 开发与验证
@@ -81,7 +84,7 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.17.xpi
+unzip -t dist/smart-paper-translator-0.1.18.xpi
 ```
 
 真实 npx 下载、Codex 用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。

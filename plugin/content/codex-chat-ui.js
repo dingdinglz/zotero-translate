@@ -876,6 +876,16 @@
     return button;
   }
 
+  async function copyTextToClipboard(doc, value) {
+    if (global.Zotero?.Utilities?.Internal?.copyTextToClipboard) {
+      global.Zotero.Utilities.Internal.copyTextToClipboard(value);
+      return;
+    }
+    const clipboard = doc.defaultView?.navigator?.clipboard;
+    if (!clipboard?.writeText) throw new Error("当前窗口无法访问剪贴板");
+    await clipboard.writeText(value);
+  }
+
   class CodexChatUI {
     constructor({ service, stylesheetText, rootURI, log } = {}) {
       this.service = service;
@@ -979,9 +989,12 @@
       reload.title = "从 Codex thread 重新同步当前论文的对话";
       const workspace = makeButton(doc, "工作区", () => this._run(body, "workspace"), "spt-codex-button-subtle");
       workspace.title = "在 Finder 中显示当前论文的 Codex 工作区";
+      const copyLog = makeButton(doc, "复制日志", () => this._run(body, "copy-log"), "spt-codex-button-subtle");
+      copyLog.title = "复制当前实时 turn 的脱敏工具与思考事件日志";
+      copyLog.hidden = true;
       const reset = makeButton(doc, "新建会话", () => this._run(body, "reset"), "spt-codex-danger-button");
       reset.title = "归档当前映射并为这篇论文新建会话";
-      toolbarActions.append(reload, workspace, reset);
+      toolbarActions.append(reload, workspace, copyLog, reset);
       toolbar.append(statusGroup, toolbarActions);
       const configuration = doc.createElement("div");
       configuration.className = "spt-codex-config";
@@ -1024,7 +1037,7 @@
         setSectionSummary,
         elements: {
           status, configuration, notices, messages, activity, activityText, input, send, stop,
-          reload, workspace, reset
+          reload, workspace, copyLog, reset
         },
         cleanups: []
       };
@@ -1081,6 +1094,15 @@
         else if (action === "reload") await this.service.reload(view.attachmentID);
         else if (action === "cancel") await this.service.cancel(view.attachmentID);
         else if (action === "workspace") await this.service.openWorkspace(view.attachmentID);
+        else if (action === "copy-log") {
+          const report = await this.service.getDiagnosticReport(view.attachmentID);
+          await copyTextToClipboard(
+            body.ownerDocument,
+            JSON.stringify(report, null, 2)
+          );
+          view.elements.copyLog.dataset.copiedCount = String(report.eventCount);
+          view.elements.copyLog.textContent = `已复制 ${report.eventCount} 条`;
+        }
         else if (action === "reset") {
           const confirmed = body.ownerDocument.defaultView.confirm(
             "新建会话会归档当前映射并保留旧工作区，不会删除 Codex thread。继续吗？"
@@ -1401,6 +1423,17 @@
       view.elements.send.disabled = busy || waiting || state.sourceChanged || state.historyReadOnly;
       view.elements.input.disabled = busy || waiting || state.sourceChanged || state.historyReadOnly;
       view.elements.reset.disabled = busy || waiting;
+      if (view.elements.copyLog) {
+        const eventCount = Number(state.diagnosticEventCount) || 0;
+        view.elements.copyLog.hidden = !state.developerMode;
+        view.elements.copyLog.disabled = !state.developerMode;
+        if (view.elements.copyLog.dataset.copiedCount !== String(eventCount)) {
+          delete view.elements.copyLog.dataset.copiedCount;
+          view.elements.copyLog.textContent = eventCount
+            ? `复制日志 (${eventCount})`
+            : "复制日志";
+        }
+      }
       this._renderConfig(view, state);
       this._renderNotices(view, state);
       this._renderTranscript(view, state);
@@ -1426,7 +1459,8 @@
     captureTranscriptViewport,
     restoreTranscriptViewport,
     describeToolEntry,
-    appendToolDetails
+    appendToolDetails,
+    copyTextToClipboard
   };
   if (typeof module !== "undefined" && module.exports) module.exports = modules.CodexChatUI;
 })(typeof globalThis !== "undefined" ? globalThis : this);

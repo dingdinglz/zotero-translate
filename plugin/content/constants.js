@@ -20,7 +20,7 @@
   const Constants = Object.freeze({
     PLUGIN_ID: "smart-paper-translator@zotero.local",
     PLUGIN_NAME: "Smart Paper Translator",
-    VERSION: "0.1.17",
+    VERSION: "0.1.18",
     PREF_PREFIX,
     PREFS: Object.freeze({
       provider: PREF_PREFIX + "provider",
@@ -43,7 +43,8 @@
       codexPreparedVersion: PREF_PREFIX + "codexPreparedVersion",
       codexPreparedFingerprint: PREF_PREFIX + "codexPreparedFingerprint",
       codexDefaultModel: PREF_PREFIX + "codexDefaultModel",
-      codexDefaultReasoningEffort: PREF_PREFIX + "codexDefaultReasoningEffort"
+      codexDefaultReasoningEffort: PREF_PREFIX + "codexDefaultReasoningEffort",
+      codexDeveloperMode: PREF_PREFIX + "codexDeveloperMode"
     }),
     PROVIDERS: Object.freeze({
       deepseek: Object.freeze({

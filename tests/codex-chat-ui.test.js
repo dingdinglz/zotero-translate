@@ -286,12 +286,15 @@ test("live thought text appears as a loading status and historical thought cards
       input: makeElement("textarea"),
       send: makeElement("button"),
       stop: makeElement("button"),
-      reset: makeElement("button")
+      reset: makeElement("button"),
+      copyLog: makeElement("button")
     }
   };
   const state = {
     status: "generating",
     activityText: "Extracting and inspecting PDF text for sections",
+    developerMode: false,
+    diagnosticEventCount: 0,
     error: null,
     sourceChanged: false,
     historyReadOnly: false,
@@ -311,12 +314,47 @@ test("live thought text appears as a loading status and historical thought cards
   ui._updateView(view, state);
   assert.equal(view.elements.activity.hidden, false);
   assert.equal(view.elements.activityText.textContent, state.activityText);
+  assert.equal(view.elements.copyLog.hidden, true);
   assert.equal(view.elements.messages.children.length, 1);
   assert.equal(view.elements.messages.children[0].localName, "article");
 
   state.status = "ready";
+  state.developerMode = true;
+  state.diagnosticEventCount = 7;
   ui._updateView(view, state);
   assert.equal(view.elements.activity.hidden, true);
+  assert.equal(view.elements.copyLog.hidden, false);
+  assert.equal(view.elements.copyLog.textContent, "复制日志 (7)");
+});
+
+test("copy log action writes the developer report to the clipboard", async () => {
+  const doc = new Document();
+  let copied = "";
+  doc.defaultView.navigator.clipboard.writeText = async (value) => { copied = value; };
+  const body = { ownerDocument: doc };
+  const copyLog = new Node("button");
+  const ui = new CodexChatUI({
+    service: {
+      async getDiagnosticReport(attachmentID) {
+        assert.equal(attachmentID, 10);
+        return { schemaVersion: 1, eventCount: 2, events: [{ sessionUpdate: "tool_call" }] };
+      }
+    }
+  });
+  ui.views.set(body, {
+    body,
+    attachmentID: 10,
+    elements: {
+      input: new Node("textarea"),
+      notices: new Node("div"),
+      copyLog
+    }
+  });
+
+  await ui._run(body, "copy-log");
+  assert.equal(JSON.parse(copied).eventCount, 2);
+  assert.equal(copyLog.textContent, "已复制 2 条");
+  assert.equal(copyLog.dataset.copiedCount, "2");
 });
 
 test("source contains no innerHTML sink and the only configured ACP mode is agent", () => {

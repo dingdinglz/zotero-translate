@@ -137,6 +137,19 @@
     </description>
   </groupbox>
 
+  <groupbox data-search-strings-raw="开发者模式,Codex,日志,复制日志,调试">
+    <label><html:h2>开发者模式</html:h2></label>
+    <checkbox
+      id="spt-codex-developer-mode"
+      native="true"
+      preference="extensions.smart-paper-translator.codexDeveloperMode"
+      label="在 Codex 侧栏显示“复制日志”按钮"
+    />
+    <description>
+      默认关闭。开启后，插件只在内存中记录当前实时 turn 的工具调用与思考状态事件；侧栏会显示“复制日志”按钮。关闭时立即清空日志并停止采集。日志不会自动落盘或上传，但复制内容可能包含脱敏后的命令、路径与工具输出，请在分享前确认范围。
+    </description>
+  </groupbox>
+
   <groupbox data-search-strings-raw="提示词,Prompt,模板,摘要">
     <label><html:h2>提示词模板</html:h2></label>
     <description>

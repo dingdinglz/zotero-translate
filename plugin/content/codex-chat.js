@@ -8,6 +8,17 @@
   const Logic = modules.Logic || (
     typeof require === "function" ? require("./logic.js") : null
   );
+  const DIAGNOSTIC_EVENT_LIMIT = 300;
+  const DIAGNOSTIC_STRING_LIMIT = 12000;
+  const DIAGNOSTIC_COLLECTION_LIMIT = 48;
+  const DIAGNOSTIC_DEPTH_LIMIT = 6;
+  const DIAGNOSTIC_UPDATE_KINDS = new Set([
+    "agent_thought_chunk",
+    "tool_call",
+    "tool_call_update",
+    "plan"
+  ]);
+  const DIAGNOSTIC_SECRET_KEY = /(?:api[_-]?key|authorization|credential|password|secret|token)/iu;
 
   class CodexChatError extends Error {
     constructor(code, message, details) {
@@ -22,11 +33,100 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  function sanitizeDiagnosticString(value) {
+    let sanitized = String(value ?? "")
+      .replace(/\/Users\/[^/\s"'\\]+/gu, "/Users/<user>")
+      .replace(/\/home\/[^/\s"'\\]+/gu, "/home/<user>")
+      .replace(/[A-Z]:\\Users\\[^\\/\s"']+/giu, "C:\\Users\\<user>")
+      .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, "Bearer <redacted>")
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "<redacted>")
+      .replace(
+        /((?:"|')?(?:api[_-]?key|authorization|credential|password|secret|token)(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/giu,
+        "$1<redacted>"
+      );
+    if (sanitized.length > DIAGNOSTIC_STRING_LIMIT) {
+      const omitted = sanitized.length - DIAGNOSTIC_STRING_LIMIT;
+      sanitized = `${sanitized.slice(0, DIAGNOSTIC_STRING_LIMIT)}\n… [truncated ${omitted} chars]`;
+    }
+    return sanitized;
+  }
+
+  function sanitizeDiagnosticValue(value, depth = 0) {
+    if (value == null || typeof value === "boolean" || typeof value === "number") return value;
+    if (typeof value === "string") return sanitizeDiagnosticString(value);
+    if (typeof value === "bigint") return String(value);
+    if (depth >= DIAGNOSTIC_DEPTH_LIMIT) return "[depth limit]";
+    if (Array.isArray(value)) {
+      const items = value.slice(0, DIAGNOSTIC_COLLECTION_LIMIT)
+        .map((entry) => sanitizeDiagnosticValue(entry, depth + 1));
+      if (value.length > DIAGNOSTIC_COLLECTION_LIMIT) {
+        items.push(`[truncated ${value.length - DIAGNOSTIC_COLLECTION_LIMIT} items]`);
+      }
+      return items;
+    }
+    if (typeof value === "object") {
+      const result = {};
+      const entries = Object.entries(value).slice(0, DIAGNOSTIC_COLLECTION_LIMIT);
+      for (const [key, nested] of entries) {
+        result[key] = DIAGNOSTIC_SECRET_KEY.test(key)
+          ? "<redacted>"
+          : sanitizeDiagnosticValue(nested, depth + 1);
+      }
+      if (Object.keys(value).length > DIAGNOSTIC_COLLECTION_LIMIT) {
+        result.__truncatedKeys = Object.keys(value).length - DIAGNOSTIC_COLLECTION_LIMIT;
+      }
+      return result;
+    }
+    return sanitizeDiagnosticString(value);
+  }
+
   function textFromContent(content) {
     if (typeof content === "string") return content;
     if (content?.type === "text") return String(content.text || "");
     if (Array.isArray(content)) return content.map(textFromContent).join("");
     return "";
+  }
+
+  function diagnosticEventFromUpdate(update, sequence, observedAt) {
+    const sessionUpdate = String(update?.sessionUpdate || update?.type || "");
+    if (!DIAGNOSTIC_UPDATE_KINDS.has(sessionUpdate)) return null;
+    const event = {
+      sequence,
+      observedAt,
+      sessionUpdate,
+      updateKeys: Object.keys(update || {}).sort()
+    };
+    if (sessionUpdate === "agent_thought_chunk") {
+      event.text = sanitizeDiagnosticString(textFromContent(update.content));
+      event.content = sanitizeDiagnosticValue(update.content);
+      if (update.messageId != null) {
+        event.messageId = sanitizeDiagnosticString(update.messageId);
+      }
+      return event;
+    }
+    if (sessionUpdate === "plan") {
+      event.entries = sanitizeDiagnosticValue(update.entries || []);
+      return event;
+    }
+    event.toolCallId = sanitizeDiagnosticString(update.toolCallId || update.id || "");
+    event.title = sanitizeDiagnosticString(update.title || "");
+    event.toolKind = sanitizeDiagnosticString(update.kind || "");
+    event.status = sanitizeDiagnosticString(update.status || "");
+    for (const key of ["content", "locations", "rawInput", "rawOutput"]) {
+      if (Object.prototype.hasOwnProperty.call(update, key)) {
+        event[key] = sanitizeDiagnosticValue(update[key]);
+      }
+    }
+    return event;
+  }
+
+  function emptyDiagnosticLog(startedAt = null) {
+    return {
+      startedAt,
+      sequence: 0,
+      droppedEventCount: 0,
+      events: []
+    };
   }
 
   const FIRST_PROMPT_SAFETY_PREFIX =
@@ -182,6 +282,9 @@
       this.initializing = null;
       this.catalogRefresh = null;
       this.stopped = false;
+      this.developerModeEnabled = Boolean(
+        this.getPreference?.(Constants.PREFS.codexDeveloperMode)
+      );
       this.cleanups = [
         this.acp.subscribe((event) => this._handleACPEvent(event)),
         this.acp.onRequest("session/request_permission", (params) => this._requestPermission(params)),
@@ -302,6 +405,57 @@
       };
     }
 
+    _resetDiagnosticLog(state, startedAt = null) {
+      state.diagnosticLog = emptyDiagnosticLog(startedAt);
+    }
+
+    _captureDiagnosticUpdate(state, update) {
+      if (!this.developerModeEnabled || state.replay || !state.turn) return;
+      const log = state.diagnosticLog || emptyDiagnosticLog(this.now());
+      state.diagnosticLog = log;
+      log.sequence += 1;
+      const event = diagnosticEventFromUpdate(update, log.sequence, this.now());
+      if (!event) return;
+      if (log.events.length >= DIAGNOSTIC_EVENT_LIMIT) {
+        log.events.shift();
+        log.droppedEventCount += 1;
+      }
+      log.events.push(event);
+    }
+
+    notifyDeveloperModeChanged() {
+      const enabled = Boolean(this.getPreference?.(Constants.PREFS.codexDeveloperMode));
+      if (enabled === this.developerModeEnabled) return enabled;
+      this.developerModeEnabled = enabled;
+      for (const state of this.states.values()) {
+        this._resetDiagnosticLog(state);
+        this._emit(state);
+      }
+      return enabled;
+    }
+
+    async getDiagnosticReport(attachmentID) {
+      const state = await this._stateForAttachment(attachmentID);
+      if (!this.developerModeEnabled) {
+        throw new CodexChatError(
+          "DEVELOPER_MODE_DISABLED",
+          "请先在插件设置中开启开发者模式"
+        );
+      }
+      const log = state.diagnosticLog || emptyDiagnosticLog();
+      return clone({
+        schemaVersion: 1,
+        pluginVersion: Constants.VERSION,
+        adapterVersion: Constants.ACP_PACKAGE_VERSION,
+        capturedAt: this.now(),
+        scope: "current-turn-tool-and-thought-events",
+        privacy: "memory-only; secrets and user-home segments redacted; strings and collections bounded",
+        eventCount: log.events.length,
+        droppedEventCount: log.droppedEventCount,
+        events: log.events
+      });
+    }
+
     _emit(state) {
       const snapshot = this._snapshot(state);
       for (const listener of this.listeners.get(Number(state.paper.attachmentID)) || []) {
@@ -322,6 +476,8 @@
         configOptions: this._effectiveConfigurationOptions(state),
         pendingInteractions: [...state.interactions.values()].map((entry) => entry.public),
         activityText: state.activityText,
+        developerMode: this.developerModeEnabled,
+        diagnosticEventCount: state.diagnosticLog?.events?.length || 0,
         adapter: this.acp.getStatus()
       });
     }
@@ -351,7 +507,8 @@
           remoteReady: false,
           modeInfo: null,
           saveTimer: null,
-          activityText: null
+          activityText: null,
+          diagnosticLog: emptyDiagnosticLog()
         };
         this.states.set(storageKey, state);
         if (record.session.id) this.sessionStates.set(record.session.id, state);
@@ -746,6 +903,7 @@
       }
 
       state.activityText = null;
+      this._resetDiagnosticLog(state, this.developerModeEnabled ? this.now() : null);
       const turn = { userEntryID: null, firstPrompt: false, cancelled: false };
       state.turn = turn;
       state.status = "connecting";
@@ -911,6 +1069,7 @@
       state.remoteReady = false;
       state.interactions.clear();
       state.activityText = null;
+      this._resetDiagnosticLog(state);
       this._emit(state);
       return { ...this._snapshot(state), archivePath: result.archivePath };
     }
@@ -1032,6 +1191,7 @@
       if (!state) return;
       const update = params.update || {};
       const kind = update.sessionUpdate || update.type;
+      this._captureDiagnosticUpdate(state, update);
       const transcript = this._targetTranscript(state);
       if (kind === "user_message_chunk") {
         const text = textFromContent(update.content);
@@ -1194,6 +1354,7 @@
       this.stopped = true;
       for (const state of this.states.values()) {
         this._clearScheduledSave(state);
+        this._resetDiagnosticLog(state);
         for (const interaction of state.interactions.values()) interaction.cancel();
         state.interactions.clear();
       }
@@ -1271,6 +1432,9 @@
     visibleUserQuestion,
     normalizeTranscriptUserMessages,
     latestThoughtStatus,
+    sanitizeDiagnosticString,
+    sanitizeDiagnosticValue,
+    diagnosticEventFromUpdate,
     configValues,
     sourceMatches,
     createZoteroFileSystem

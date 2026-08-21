@@ -282,7 +282,8 @@ var SmartPaperTranslatorPlugin = {
       prefs.codexNpxCliPath,
       prefs.codexExecutablePath,
       prefs.codexDefaultModel,
-      prefs.codexDefaultReasoningEffort
+      prefs.codexDefaultReasoningEffort,
+      prefs.codexDeveloperMode
     ];
     for (const name of names) {
       const symbol = Zotero.Prefs.registerObserver(
@@ -300,6 +301,7 @@ var SmartPaperTranslatorPlugin = {
       this.preferenceRefreshTimer = null;
       this.readerUI?.onPreferencesChanged();
       this.itemTreeUI?.onPreferencesChanged();
+      this.codexChatService?.notifyDeveloperModeChanged();
       this.codexChatService?.notifyDefaultConfigurationChanged();
     }, 150);
   },

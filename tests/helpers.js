@@ -108,7 +108,8 @@ function makePreferenceStore(overrides = {}) {
     [Constants.PREFS.codexPreparedVersion, ""],
     [Constants.PREFS.codexPreparedFingerprint, ""],
     [Constants.PREFS.codexDefaultModel, ""],
-    [Constants.PREFS.codexDefaultReasoningEffort, ""]
+    [Constants.PREFS.codexDefaultReasoningEffort, ""],
+    [Constants.PREFS.codexDeveloperMode, false]
   ]);
   for (const [key, value] of Object.entries(overrides)) values.set(key, value);
   return {

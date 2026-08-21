@@ -19,3 +19,4 @@ pref("extensions.smart-paper-translator.codexPreparedVersion", "");
 pref("extensions.smart-paper-translator.codexPreparedFingerprint", "");
 pref("extensions.smart-paper-translator.codexDefaultModel", "");
 pref("extensions.smart-paper-translator.codexDefaultReasoningEffort", "");
+pref("extensions.smart-paper-translator.codexDeveloperMode", false);

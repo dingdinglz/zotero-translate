@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const Constants = require("../plugin/content/constants.js");
 const { CodexChatCache } = require("../plugin/content/chat-cache.js");
 const { CodexChatService, latestThoughtStatus } = require("../plugin/content/codex-chat.js");
 const { MemoryIO, makePaper, makePreferenceStore } = require("./helpers.js");
@@ -260,6 +261,116 @@ test("thought chunks expose only the latest non-empty line as transient activity
   assert.ok(activities.includes("Preparing to analyze AIM-based PDF source"));
   assert.ok(activities.includes("Planning text extraction from PDF"));
   assert.equal((await service.load(10)).activityText, null);
+});
+
+test("developer mode alone captures bounded redacted tool and thought diagnostics", async () => {
+  const acp = new FakeACP();
+  acp.promptHook = async (params, client) => {
+    for (const update of [
+      {
+        sessionUpdate: "user_message_chunk",
+        content: { type: "text", text: "private user question must not enter diagnostics" }
+      },
+      {
+        sessionUpdate: "agent_thought_chunk",
+        messageId: "thought-1",
+        content: { type: "text", text: "Inspecting /Users/alice/private/source.pdf" }
+      },
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "exec-1",
+        title: "Read /Users/alice/private/source.pdf",
+        kind: "read",
+        status: "in_progress",
+        rawInput: {
+          path: "/Users/alice/private/source.pdf",
+          authorization: "Bearer very-secret-token"
+        }
+      },
+      {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "exec-1",
+        status: "completed",
+        rawOutput: {
+          formatted_output: "apiKey=sk-1234567890abcdef",
+          exit_code: 0
+        }
+      },
+      {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "private answer must not enter diagnostics" }
+      }
+    ]) {
+      client.emit("session/update", { sessionId: params.sessionId, update });
+    }
+    return { stopReason: "end_turn" };
+  };
+  const { service, prefs } = makeHarness({ acp });
+
+  await service.send(10, "developer mode is off");
+  let state = await service.load(10);
+  assert.equal(state.developerMode, false);
+  assert.equal(state.diagnosticEventCount, 0);
+  await assert.rejects(service.getDiagnosticReport(10), { code: "DEVELOPER_MODE_DISABLED" });
+
+  prefs.set(Constants.PREFS.codexDeveloperMode, true);
+  assert.equal(service.notifyDeveloperModeChanged(), true);
+  await service.send(10, "capture this turn");
+  state = await service.load(10);
+  assert.equal(state.developerMode, true);
+  assert.equal(state.diagnosticEventCount, 3);
+
+  const report = await service.getDiagnosticReport(10);
+  assert.equal(report.pluginVersion, "0.1.18");
+  assert.equal(report.eventCount, 3);
+  assert.deepEqual(report.events.map((entry) => entry.sessionUpdate), [
+    "agent_thought_chunk",
+    "tool_call",
+    "tool_call_update"
+  ]);
+  assert.deepEqual(report.events.map((entry) => entry.sequence), [2, 3, 4]);
+  const serialized = JSON.stringify(report);
+  assert.doesNotMatch(serialized, /private user question|private answer|\/Users\/alice/u);
+  assert.doesNotMatch(serialized, /very-secret-token|sk-1234567890abcdef/u);
+  assert.match(serialized, /\/Users\/<user>|<redacted>/u);
+
+  prefs.set(Constants.PREFS.codexDeveloperMode, false);
+  assert.equal(service.notifyDeveloperModeChanged(), false);
+  state = await service.load(10);
+  assert.equal(state.diagnosticEventCount, 0);
+  await assert.rejects(service.getDiagnosticReport(10), { code: "DEVELOPER_MODE_DISABLED" });
+});
+
+test("developer diagnostics retain only the latest bounded event window", async () => {
+  const acp = new FakeACP();
+  acp.promptHook = async (params, client) => {
+    for (let index = 0; index < 305; index += 1) {
+      client.emit("session/update", {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: `tool-${index}`,
+          title: `Tool ${index}`,
+          kind: "other",
+          status: "completed"
+        }
+      });
+    }
+    return { stopReason: "end_turn" };
+  };
+  const { service } = makeHarness({
+    acp,
+    preferenceOverrides: {
+      [Constants.PREFS.codexDeveloperMode]: true
+    }
+  });
+
+  await service.send(10, "stress diagnostic window");
+  const report = await service.getDiagnosticReport(10);
+  assert.equal(report.eventCount, 300);
+  assert.equal(report.droppedEventCount, 5);
+  assert.equal(report.events[0].toolCallId, "tool-5");
+  assert.equal(report.events.at(-1).toolCallId, "tool-304");
 });
 
 test("missing pdftotext invokes verified PDFWorker fallback while retaining the real PDF", async () => {
