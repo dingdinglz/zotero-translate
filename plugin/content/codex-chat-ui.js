@@ -35,114 +35,604 @@
     return Number.isSafeInteger(attachmentID) && attachmentID > 0 ? attachmentID : null;
   }
 
-  function appendSafeInline(doc, parent, text) {
-    const pattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/giu;
-    let index = 0;
-    let match;
-    while ((match = pattern.exec(text))) {
-      parent.append(doc.createTextNode(text.slice(index, match.index)));
-      const link = doc.createElement("a");
-      link.textContent = match[1];
-      link.href = match[2];
-      link.rel = "noopener noreferrer";
-      link.target = "_blank";
-      parent.append(link);
-      index = match.index + match[0].length;
-    }
-    parent.append(doc.createTextNode(text.slice(index)));
+  const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
+
+  function createMathElement(doc, name, text = null) {
+    const element = typeof doc.createElementNS === "function"
+      ? doc.createElementNS(MATHML_NS, name)
+      : doc.createElement(name);
+    if (text !== null) element.textContent = text;
+    return element;
   }
 
-  function renderSafeMarkdown(doc, container, source) {
-    container.replaceChildren();
-    const lines = String(source || "").split(/\r?\n/u);
-    let code = null;
-    let language = "";
-    let paragraph = [];
+  function setAttribute(element, name, value) {
+    if (typeof element.setAttribute === "function") element.setAttribute(name, value);
+    else element[name] = value;
+  }
 
-    const flushParagraph = () => {
-      if (!paragraph.length) return;
-      const element = doc.createElement("p");
-      appendSafeInline(doc, element, paragraph.join("\n"));
-      container.append(element);
-      paragraph = [];
+  function parseTexMath(doc, source) {
+    const value = String(source || "").trim();
+    let index = 0;
+    const commands = {
+      alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", theta: "θ",
+      lambda: "λ", mu: "μ", pi: "π", rho: "ρ", sigma: "σ", tau: "τ", phi: "φ",
+      chi: "χ", psi: "ψ", omega: "ω", Gamma: "Γ", Delta: "Δ", Theta: "Θ",
+      Lambda: "Λ", Pi: "Π", Sigma: "Σ", Phi: "Φ", Psi: "Ψ", Omega: "Ω",
+      lor: "∨", vee: "∨", land: "∧", wedge: "∧", in: "∈", notin: "∉",
+      le: "≤", leq: "≤", ge: "≥", geq: "≥", ne: "≠", neq: "≠",
+      times: "×", cdot: "·", pm: "±", mp: "∓", approx: "≈", sim: "∼",
+      to: "→", rightarrow: "→", leftarrow: "←", Leftrightarrow: "⇔",
+      subset: "⊂", subseteq: "⊆", supset: "⊃", supseteq: "⊇",
+      cup: "∪", cap: "∩", sum: "∑", prod: "∏", int: "∫", infty: "∞",
+      partial: "∂", nabla: "∇", forall: "∀", exists: "∃", emptyset: "∅"
     };
-    const flushCode = () => {
-      const wrapper = doc.createElement("div");
-      wrapper.className = "spt-codex-code";
-      const header = doc.createElement("div");
-      header.className = "spt-codex-code-header";
-      const label = doc.createElement("span");
-      label.textContent = language || "code";
-      const copy = doc.createElement("button");
-      copy.type = "button";
-      copy.textContent = "复制";
-      const value = code.join("\n");
-      copy.addEventListener("click", async () => {
-        try {
-          if (global.Zotero?.Utilities?.Internal?.copyTextToClipboard) {
-            global.Zotero.Utilities.Internal.copyTextToClipboard(value);
-          }
-          else {
-            await doc.defaultView.navigator.clipboard.writeText(value);
-          }
-          copy.textContent = "已复制";
+    const operatorCharacters = new Set("=+-−*/×·<>≤≥≠≈∈∉∨∧→←⇔∪∩,;:()[]|".split(""));
+
+    const row = (...children) => {
+      const element = createMathElement(doc, "mrow");
+      element.append(...children.filter(Boolean));
+      return element;
+    };
+    const skipSpace = () => {
+      while (/\s/u.test(value[index] || "")) index++;
+    };
+    const readRawGroup = () => {
+      skipSpace();
+      if (value[index] !== "{") return "";
+      const start = ++index;
+      let depth = 1;
+      while (index < value.length && depth) {
+        if (value[index] === "{" && value[index - 1] !== "\\") depth++;
+        else if (value[index] === "}" && value[index - 1] !== "\\") depth--;
+        index++;
+      }
+      return value.slice(start, depth ? value.length : index - 1);
+    };
+    const parseExpression = (stopAtBrace = false) => {
+      const output = [];
+      while (index < value.length) {
+        if (stopAtBrace && value[index] === "}") break;
+        let atom = parseAtom();
+        if (!atom) continue;
+        let subscript = null;
+        let superscript = null;
+        skipSpace();
+        while (value[index] === "_" || value[index] === "^") {
+          const marker = value[index++];
+          skipSpace();
+          const script = value[index] === "{"
+            ? (index++, parseExpression(true))
+            : parseAtom();
+          if (value[index] === "}") index++;
+          if (marker === "_") subscript = script;
+          else superscript = script;
+          skipSpace();
         }
-        catch (_error) {
-          copy.textContent = "复制失败";
+        if (subscript && superscript) {
+          const scripted = createMathElement(doc, "msubsup");
+          scripted.append(atom, subscript, superscript);
+          atom = scripted;
         }
-      });
-      header.append(label, copy);
-      const pre = doc.createElement("pre");
-      const codeElement = doc.createElement("code");
-      codeElement.textContent = value;
-      pre.append(codeElement);
-      wrapper.append(header, pre);
-      container.append(wrapper);
-      code = null;
-      language = "";
+        else if (subscript || superscript) {
+          const scripted = createMathElement(doc, subscript ? "msub" : "msup");
+          scripted.append(atom, subscript || superscript);
+          atom = scripted;
+        }
+        output.push(atom);
+      }
+      return row(...output);
+    };
+    const parseRequiredGroup = () => {
+      skipSpace();
+      if (value[index] !== "{") return parseAtom() || createMathElement(doc, "mrow");
+      index++;
+      const group = parseExpression(true);
+      if (value[index] === "}") index++;
+      return group;
+    };
+    const parseAtom = () => {
+      if (index >= value.length) return null;
+      if (/\s/u.test(value[index])) {
+        skipSpace();
+        const space = createMathElement(doc, "mspace");
+        setAttribute(space, "width", "0.25em");
+        return space;
+      }
+      if (value[index] === "{") {
+        index++;
+        const group = parseExpression(true);
+        if (value[index] === "}") index++;
+        return group;
+      }
+      if (value[index] === "\\") {
+        index++;
+        const match = value.slice(index).match(/^[A-Za-z]+/u);
+        const command = match ? match[0] : value[index] || "";
+        index += command.length;
+        if ([",", ";", ":", "!", "quad", "qquad"].includes(command)) {
+          const space = createMathElement(doc, "mspace");
+          setAttribute(space, "width", command === "qquad" ? "2em" : command === "quad" ? "1em" : "0.25em");
+          return space;
+        }
+        if (command === "frac") {
+          const fraction = createMathElement(doc, "mfrac");
+          fraction.append(parseRequiredGroup(), parseRequiredGroup());
+          return fraction;
+        }
+        if (command === "sqrt") {
+          const root = createMathElement(doc, "msqrt");
+          root.append(parseRequiredGroup());
+          return root;
+        }
+        if (["text", "textrm", "operatorname"].includes(command)) {
+          return createMathElement(doc, "mtext", readRawGroup().replace(/\\([{}])/gu, "$1"));
+        }
+        if (["mathrm", "mathbf", "mathit", "mathsf", "mathtt", "mathcal"].includes(command)) {
+          const styled = parseRequiredGroup();
+          setAttribute(styled, "mathvariant", {
+            mathrm: "normal", mathbf: "bold", mathit: "italic", mathsf: "sans-serif",
+            mathtt: "monospace", mathcal: "script"
+          }[command]);
+          return styled;
+        }
+        if (command === "left" || command === "right") {
+          skipSpace();
+          return parseAtom();
+        }
+        if (commands[command]) return createMathElement(doc, "mo", commands[command]);
+        return createMathElement(doc, "mtext", `\\${command}`);
+      }
+      if (/\d/u.test(value[index])) {
+        const match = value.slice(index).match(/^\d+(?:\.\d+)?/u)[0];
+        index += match.length;
+        return createMathElement(doc, "mn", match);
+      }
+      if (/[A-Za-z]/u.test(value[index])) {
+        const match = value.slice(index).match(/^[A-Za-z]+/u)[0];
+        index += match.length;
+        return createMathElement(doc, "mi", match);
+      }
+      const character = value[index++];
+      return createMathElement(doc, operatorCharacters.has(character) ? "mo" : "mtext", character);
     };
 
-    for (const line of lines) {
-      const fence = line.match(/^```([^`]*)$/u);
-      if (fence) {
-        if (code) flushCode();
-        else {
-          flushParagraph();
-          code = [];
-          language = fence[1].trim();
-        }
-        continue;
-      }
-      if (code) {
-        code.push(line);
-        continue;
-      }
-      if (!line.trim()) {
-        flushParagraph();
-        continue;
-      }
-      const heading = line.match(/^(#{1,3})\s+(.+)$/u);
-      if (heading) {
-        flushParagraph();
-        const element = doc.createElement(`h${Math.min(heading[1].length + 2, 5)}`);
-        appendSafeInline(doc, element, heading[2]);
-        container.append(element);
-      }
-      else if (/^[-*]\s+/u.test(line)) {
-        flushParagraph();
-        let list = container.lastElementChild;
-        if (!list || list.localName !== "ul") {
-          list = doc.createElement("ul");
-          container.append(list);
-        }
-        const item = doc.createElement("li");
-        appendSafeInline(doc, item, line.replace(/^[-*]\s+/u, ""));
-        list.append(item);
-      }
-      else paragraph.push(line);
+    try {
+      return parseExpression();
     }
-    if (code) flushCode();
-    flushParagraph();
+    catch (_error) {
+      return createMathElement(doc, "mtext", value);
+    }
+  }
+
+  function appendMath(doc, parent, source, display = false) {
+    const math = createMathElement(doc, "math");
+    setAttribute(math, "class", display ? "spt-codex-math spt-codex-math-block" : "spt-codex-math");
+    setAttribute(math, "display", display ? "block" : "inline");
+    setAttribute(math, "aria-label", String(source || ""));
+    math.append(parseTexMath(doc, source));
+    parent.append(math);
+  }
+
+  function parseDirectiveAttributes(source) {
+    const attributes = {};
+    const pattern = /([A-Za-z_][\w-]*)\s*=\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^\s}]+))/gu;
+    let match;
+    while ((match = pattern.exec(source))) {
+      attributes[match[1]] = String(match[2] ?? match[3] ?? match[4] ?? "")
+        .replace(/\\([\\"'])/gu, "$1");
+    }
+    return attributes;
+  }
+
+  function parseCodexDirectiveAt(source, start) {
+    const heading = source.slice(start).match(/^::([A-Za-z][\w-]*)\{/u);
+    if (!heading) return null;
+    let index = start + heading[0].length;
+    const attributesStart = index;
+    let quote = null;
+    let escaped = false;
+    while (index < source.length) {
+      const character = source[index];
+      if (escaped) escaped = false;
+      else if (character === "\\" && quote) escaped = true;
+      else if (quote && character === quote) quote = null;
+      else if (!quote && (character === '"' || character === "'")) quote = character;
+      else if (!quote && character === "}") {
+        const raw = source.slice(start, index + 1);
+        return {
+          raw,
+          length: raw.length,
+          name: heading[1],
+          attributes: parseDirectiveAttributes(source.slice(attributesStart, index))
+        };
+      }
+      index++;
+    }
+    return null;
+  }
+
+  function basename(path) {
+    return String(path || "").split(/[\\/]/u).filter(Boolean).at(-1) || "文件";
+  }
+
+  function appendCodexDirective(doc, parent, directive, options) {
+    const attributes = directive.attributes;
+    if (directive.name === "codex-file-citation") {
+      const path = attributes.path || attributes.file;
+      if (!path) return false;
+      const start = attributes.line || attributes.start || attributes.line_range_start;
+      const end = attributes.end || attributes.line_range_end;
+      const label = `${basename(path)}${start ? `:${start}${end && end !== start ? `–${end}` : ""}` : ""}`;
+      const citation = doc.createElement(typeof options.onFileCitation === "function" ? "button" : "span");
+      citation.className = "spt-codex-file-citation";
+      citation.textContent = `▧ ${label}`;
+      citation.title = path;
+      if (citation.localName === "button") {
+        citation.type = "button";
+        citation.addEventListener("click", () => options.onFileCitation({ path, start, end }));
+      }
+      parent.append(citation);
+      return true;
+    }
+    if (directive.name === "code-comment") {
+      const file = attributes.file || attributes.path;
+      const start = attributes.start || attributes.line;
+      const comment = doc.createElement("span");
+      comment.className = "spt-codex-code-comment";
+      const location = file ? `${basename(file)}${start ? `:${start}` : ""}` : "代码审查";
+      comment.textContent = `${attributes.title || "代码批注"} · ${location}`;
+      comment.title = attributes.body || file || "";
+      parent.append(comment);
+      return true;
+    }
+    if (directive.name === "created-thread") {
+      const badge = doc.createElement("span");
+      badge.className = "spt-codex-directive-badge";
+      badge.textContent = "已创建 Codex 任务";
+      parent.append(badge);
+      return true;
+    }
+    return false;
+  }
+
+  function appendSafeInline(doc, parent, source, options = {}, depth = 0) {
+    const text = String(source || "");
+    if (depth > 12) {
+      parent.append(doc.createTextNode(text));
+      return;
+    }
+    let index = 0;
+    const appendNested = (element, value) => {
+      appendSafeInline(doc, element, value, options, depth + 1);
+      parent.append(element);
+    };
+    while (index < text.length) {
+      if (text[index] === "\n") {
+        parent.append(doc.createElement("br"));
+        index++;
+        continue;
+      }
+      if (text[index] === "\\" && text[index + 1] === "(") {
+        const end = text.indexOf("\\)", index + 2);
+        if (end !== -1) {
+          appendMath(doc, parent, text.slice(index + 2, end));
+          index = end + 2;
+          continue;
+        }
+      }
+      if (text[index] === "\\" && /[\\`*_[\]{}()#+.!~-]/u.test(text[index + 1] || "")) {
+        parent.append(doc.createTextNode(text[index + 1]));
+        index += 2;
+        continue;
+      }
+      if (text[index] === "`" && text[index + 1] !== "`") {
+        const end = text.indexOf("`", index + 1);
+        if (end !== -1) {
+          const code = doc.createElement("code");
+          code.className = "spt-codex-inline-code";
+          code.textContent = text.slice(index + 1, end);
+          parent.append(code);
+          index = end + 1;
+          continue;
+        }
+      }
+      if (text.startsWith("::", index)) {
+        const directive = parseCodexDirectiveAt(text, index);
+        if (directive && appendCodexDirective(doc, parent, directive, options)) {
+          index += directive.length;
+          continue;
+        }
+      }
+      if (text.startsWith("![", index)) {
+        const image = text.slice(index).match(/^!\[([^\]]*)\]\(([^\s)]+)(?:\s+["'][^"']*["'])?\)/u);
+        if (image) {
+          const placeholder = doc.createElement("span");
+          placeholder.className = "spt-codex-image-placeholder";
+          placeholder.textContent = image[1] ? `图片：${image[1]}（未自动加载）` : "图片（未自动加载）";
+          parent.append(placeholder);
+          index += image[0].length;
+          continue;
+        }
+      }
+      if (text[index] === "[") {
+        const linkMatch = text.slice(index).match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)(?:\s+["'][^"']*["'])?\)/iu);
+        if (linkMatch) {
+          const link = doc.createElement("a");
+          link.href = linkMatch[2];
+          link.rel = "noopener noreferrer";
+          link.target = "_blank";
+          appendSafeInline(doc, link, linkMatch[1], options, depth + 1);
+          parent.append(link);
+          index += linkMatch[0].length;
+          continue;
+        }
+      }
+      if (text.startsWith("**", index) || text.startsWith("__", index)) {
+        const marker = text.slice(index, index + 2);
+        const end = text.indexOf(marker, index + 2);
+        if (end > index + 2) {
+          appendNested(doc.createElement("strong"), text.slice(index + 2, end));
+          index = end + 2;
+          continue;
+        }
+      }
+      if (text.startsWith("~~", index)) {
+        const end = text.indexOf("~~", index + 2);
+        if (end > index + 2) {
+          appendNested(doc.createElement("del"), text.slice(index + 2, end));
+          index = end + 2;
+          continue;
+        }
+      }
+      if (text[index] === "*" || text[index] === "_") {
+        const marker = text[index];
+        const end = text.indexOf(marker, index + 1);
+        const previous = text[index - 1] || " ";
+        const next = text[index + 1] || " ";
+        if (end > index + 1 && (!/\w/u.test(previous) || marker === "*") && !/\s/u.test(next)) {
+          appendNested(doc.createElement("em"), text.slice(index + 1, end));
+          index = end + 1;
+          continue;
+        }
+      }
+      if (text[index] === "<") {
+        const autolink = text.slice(index).match(/^<(https?:\/\/[^>\s]+)>/iu);
+        if (autolink) {
+          const link = doc.createElement("a");
+          link.href = autolink[1];
+          link.rel = "noopener noreferrer";
+          link.target = "_blank";
+          link.textContent = autolink[1];
+          parent.append(link);
+          index += autolink[0].length;
+          continue;
+        }
+      }
+      if (text[index] === "$" && text[index + 1] !== "$") {
+        const end = text.indexOf("$", index + 1);
+        if (end > index + 1 && !/\s/u.test(text[index + 1]) && !/\s/u.test(text[end - 1])) {
+          appendMath(doc, parent, text.slice(index + 1, end));
+          index = end + 1;
+          continue;
+        }
+      }
+      const special = "\n\\`![:*_~<$";
+      let end = index + 1;
+      while (end < text.length && !special.includes(text[end])) end++;
+      parent.append(doc.createTextNode(text.slice(index, end)));
+      index = end;
+    }
+  }
+
+  function appendCodeBlock(doc, container, value, language) {
+    const wrapper = doc.createElement("div");
+    wrapper.className = "spt-codex-code";
+    const header = doc.createElement("div");
+    header.className = "spt-codex-code-header";
+    const label = doc.createElement("span");
+    label.textContent = language || "code";
+    const copy = doc.createElement("button");
+    copy.type = "button";
+    copy.textContent = "复制";
+    copy.addEventListener("click", async () => {
+      try {
+        if (global.Zotero?.Utilities?.Internal?.copyTextToClipboard) {
+          global.Zotero.Utilities.Internal.copyTextToClipboard(value);
+        }
+        else {
+          await doc.defaultView.navigator.clipboard.writeText(value);
+        }
+        copy.textContent = "已复制";
+      }
+      catch (_error) {
+        copy.textContent = "复制失败";
+      }
+    });
+    header.append(label, copy);
+    const pre = doc.createElement("pre");
+    const code = doc.createElement("code");
+    code.textContent = value;
+    pre.append(code);
+    wrapper.append(header, pre);
+    container.append(wrapper);
+  }
+
+  function splitTableRow(line) {
+    const value = line.trim().replace(/^\|/u, "").replace(/\|$/u, "");
+    const cells = [];
+    let cell = "";
+    let escaped = false;
+    for (const character of value) {
+      if (escaped) {
+        cell += character;
+        escaped = false;
+      }
+      else if (character === "\\") escaped = true;
+      else if (character === "|") {
+        cells.push(cell.trim());
+        cell = "";
+      }
+      else cell += character;
+    }
+    cells.push(cell.trim());
+    return cells;
+  }
+
+  function isTableDelimiter(line) {
+    const cells = splitTableRow(line);
+    return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell));
+  }
+
+  function renderSafeMarkdown(doc, container, source, options = {}) {
+    container.replaceChildren();
+    const lines = String(source || "").replace(/\r\n?/gu, "\n").split("\n");
+    const isBlockStart = (line, next) => Boolean(
+      /^\s*(?:#{1,6}\s+|>\s?|[-+*]\s+|\d+[.)]\s+|```|~~~|\\\[|\$\$|(?:-{3,}|\*{3,}|_{3,})\s*$)/u.test(line) ||
+      (next !== undefined && line.includes("|") && isTableDelimiter(next))
+    );
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index];
+      if (!line.trim()) {
+        index++;
+        continue;
+      }
+
+      const fence = line.match(/^\s{0,3}(`{3,}|~{3,})\s*([^`]*)$/u);
+      if (fence) {
+        const marker = fence[1];
+        const language = fence[2].trim();
+        const code = [];
+        index++;
+        while (index < lines.length && !new RegExp(`^\\s{0,3}${marker[0]}{${marker.length},}\\s*$`, "u").test(lines[index])) {
+          code.push(lines[index++]);
+        }
+        if (index < lines.length) index++;
+        appendCodeBlock(doc, container, code.join("\n"), language);
+        continue;
+      }
+
+      if (/^\s*(?:\\\[|\$\$)/u.test(line)) {
+        const bracket = /^\s*\\\[/u.test(line);
+        const opener = bracket ? /\\\[/u : /\$\$/u;
+        const closer = bracket ? /\\\]/u : /\$\$/u;
+        let math = line.replace(opener, "");
+        if (closer.test(math)) {
+          math = math.replace(closer, "");
+          index++;
+        }
+        else {
+          const parts = [math];
+          index++;
+          while (index < lines.length && !closer.test(lines[index])) parts.push(lines[index++]);
+          if (index < lines.length) {
+            parts.push(lines[index].replace(closer, ""));
+            index++;
+          }
+          math = parts.join("\n");
+        }
+        appendMath(doc, container, math.trim(), true);
+        continue;
+      }
+
+      const heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*$/u);
+      if (heading) {
+        const element = doc.createElement(`h${Math.min(heading[1].length + 2, 6)}`);
+        appendSafeInline(doc, element, heading[2], options);
+        container.append(element);
+        index++;
+        continue;
+      }
+
+      if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/u.test(line)) {
+        container.append(doc.createElement("hr"));
+        index++;
+        continue;
+      }
+
+      if (/^\s*>/u.test(line)) {
+        const quoteLines = [];
+        while (index < lines.length && /^\s*>/u.test(lines[index])) {
+          quoteLines.push(lines[index++].replace(/^\s*>\s?/u, ""));
+        }
+        const quote = doc.createElement("blockquote");
+        renderSafeMarkdown(doc, quote, quoteLines.join("\n"), options);
+        container.append(quote);
+        continue;
+      }
+
+      const listStart = line.match(/^\s*([-+*]|\d+[.)])\s+(.+)$/u);
+      if (listStart) {
+        const ordered = /^\d/u.test(listStart[1]);
+        const list = doc.createElement(ordered ? "ol" : "ul");
+        while (index < lines.length) {
+          const itemMatch = lines[index].match(/^\s*([-+*]|\d+[.)])\s+(.+)$/u);
+          if (!itemMatch || /^\d/u.test(itemMatch[1]) !== ordered) break;
+          const item = doc.createElement("li");
+          const task = itemMatch[2].match(/^\[([ xX])\]\s+(.+)$/u);
+          if (task) {
+            const checkbox = doc.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.checked = task[1].toLowerCase() === "x";
+            checkbox.disabled = true;
+            item.append(checkbox, doc.createTextNode(" "));
+            appendSafeInline(doc, item, task[2], options);
+          }
+          else appendSafeInline(doc, item, itemMatch[2], options);
+          list.append(item);
+          index++;
+        }
+        container.append(list);
+        continue;
+      }
+
+      if (index + 1 < lines.length && line.includes("|") && isTableDelimiter(lines[index + 1])) {
+        const headers = splitTableRow(line);
+        const alignments = splitTableRow(lines[index + 1]).map((cell) =>
+          cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : "left"
+        );
+        const table = doc.createElement("table");
+        const head = doc.createElement("thead");
+        const headRow = doc.createElement("tr");
+        headers.forEach((cell, cellIndex) => {
+          const header = doc.createElement("th");
+          header.style ||= {};
+          header.style.textAlign = alignments[cellIndex] || "left";
+          appendSafeInline(doc, header, cell, options);
+          headRow.append(header);
+        });
+        head.append(headRow);
+        const body = doc.createElement("tbody");
+        index += 2;
+        while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+          const row = doc.createElement("tr");
+          splitTableRow(lines[index++]).forEach((cell, cellIndex) => {
+            const data = doc.createElement("td");
+            data.style ||= {};
+            data.style.textAlign = alignments[cellIndex] || "left";
+            appendSafeInline(doc, data, cell, options);
+            row.append(data);
+          });
+          body.append(row);
+        }
+        table.append(head, body);
+        const scroller = doc.createElement("div");
+        scroller.className = "spt-codex-table-wrap";
+        scroller.append(table);
+        container.append(scroller);
+        continue;
+      }
+
+      const paragraph = [line];
+      index++;
+      while (
+        index < lines.length && lines[index].trim() &&
+        !isBlockStart(lines[index], lines[index + 1])
+      ) paragraph.push(lines[index++]);
+      const element = doc.createElement("p");
+      appendSafeInline(doc, element, paragraph.join("\n"), options);
+      container.append(element);
+    }
   }
 
   function stringifyDetails(value) {
@@ -150,11 +640,238 @@
     catch (_error) { return String(value || ""); }
   }
 
+  const TRANSCRIPT_BOTTOM_THRESHOLD = 24;
+
+  function transcriptEntryKey(entry, index) {
+    return String(entry?.id || entry?.remoteID || `${entry?.kind || "entry"}-${index}`);
+  }
+
+  function captureTranscriptViewport(container, renderedBefore) {
+    const expanded = new Set();
+    const innerScroll = new Map();
+    for (const child of Array.from(container.children || [])) {
+      const key = child.getAttribute?.("data-entry-key");
+      if (!key || String(child.localName || "").toLowerCase() !== "details") continue;
+      if (child.open) expanded.add(key);
+      const content = Array.from(child.children || []).find((candidate) =>
+        String(candidate.className || "").split(/\s+/u).includes("spt-codex-event-content")
+      );
+      if (content) innerScroll.set(key, Number(content.scrollTop) || 0);
+    }
+    const scrollTop = Number(container.scrollTop) || 0;
+    const scrollHeight = Number(container.scrollHeight) || 0;
+    const clientHeight = Number(container.clientHeight) || 0;
+    return {
+      expanded,
+      innerScroll,
+      scrollTop,
+      pinnedToBottom: Boolean(
+        renderedBefore && scrollHeight > 0 &&
+        scrollHeight - clientHeight - scrollTop <= TRANSCRIPT_BOTTOM_THRESHOLD
+      )
+    };
+  }
+
+  function restoreTranscriptViewport(container, snapshot, renderedBefore) {
+    if (!renderedBefore || snapshot.pinnedToBottom) {
+      container.scrollTop = Number(container.scrollHeight) || 0;
+      return;
+    }
+    container.scrollTop = snapshot.scrollTop;
+  }
+
+  function truncateLabel(value, limit = 96) {
+    const text = String(value || "").replace(/\s+/gu, " ").trim();
+    return text.length > limit ? text.slice(0, limit - 1) + "…" : text;
+  }
+
+  function fileNameFromPath(path) {
+    const parts = String(path || "").replace(/\\/gu, "/").split("/").filter(Boolean);
+    return parts[parts.length - 1] || String(path || "");
+  }
+
+  function displayToolPath(path, workspacePath = "") {
+    const value = String(path || "").trim();
+    if (!value) return "";
+    const workspace = String(workspacePath || "").replace(/\/+$/u, "");
+    if (workspace && value === workspace) return "当前论文工作区";
+    if (workspace && value.startsWith(workspace + "/")) {
+      return "工作区/" + value.slice(workspace.length + 1);
+    }
+    return value.replace(/^\/Users\/[^/]+/u, "/Users/<user>");
+  }
+
+  function resourcePathFromContent(content) {
+    for (const item of Array.isArray(content) ? content : []) {
+      if (item?.type === "resource_link") return item.uri || item.name || "";
+      if (item?.content?.type === "resource_link") {
+        return item.content.uri || item.content.name || "";
+      }
+    }
+    return "";
+  }
+
+  function toolPath(entry) {
+    const direct = entry?.rawInput?.path || entry?.locations?.[0]?.path ||
+      resourcePathFromContent(entry?.content);
+    if (direct) return String(direct);
+    const match = String(entry?.title || "").match(/^(?:Read file|View Image)\s+['"]?(.+?)['"]?$/iu);
+    return match?.[1] || "";
+  }
+
+  function toolOutputText(rawOutput) {
+    if (typeof rawOutput === "string") return rawOutput;
+    if (typeof rawOutput?.formatted_output === "string") return rawOutput.formatted_output;
+    if (typeof rawOutput?.output === "string") return rawOutput.output;
+    if (typeof rawOutput?.text === "string") return rawOutput.text;
+    return "";
+  }
+
+  function describeToolEntry(entry, workspacePath = "") {
+    const title = String(entry?.title || "").trim();
+    const kind = String(entry?.toolKind || "").toLowerCase();
+    const path = toolPath(entry);
+    const visiblePath = displayToolPath(path, workspacePath);
+    const output = toolOutputText(entry?.rawOutput);
+    const exitCode = Object.prototype.hasOwnProperty.call(entry?.rawOutput || {}, "exit_code")
+      ? entry.rawOutput.exit_code
+      : null;
+    const result = {
+      category: "other",
+      icon: "⌘",
+      label: "工具调用",
+      subject: truncateLabel(title || kind || "工具"),
+      command: "",
+      fields: [],
+      output,
+      outputLabel: "工具输出",
+      exitCode,
+      emptyMessage: "工具已完成，未返回文本输出"
+    };
+
+    if (kind === "execute" || entry?.rawInput?.command) {
+      const command = String(entry?.rawInput?.command || title);
+      result.category = "execute";
+      result.icon = ">_";
+      result.label = "运行命令";
+      result.subject = truncateLabel(command);
+      result.command = command;
+      result.outputLabel = "命令输出";
+      result.emptyMessage = "命令尚未返回输出";
+      const cwd = displayToolPath(entry?.rawInput?.cwd, workspacePath);
+      if (cwd) result.fields.push({ label: "工作目录", value: cwd, code: true });
+    }
+    else if (kind === "search" || /^Search for\s+/iu.test(title)) {
+      const match = title.match(/^Search for\s+['"](.+)['"]\s+in\s+(.+)$/iu);
+      const query = match?.[1] || title.replace(/^Search for\s+/iu, "");
+      const target = match?.[2] || path;
+      result.category = "search";
+      result.icon = "⌕";
+      result.label = "搜索内容";
+      result.subject = truncateLabel(fileNameFromPath(target) || query);
+      result.outputLabel = "搜索结果";
+      result.emptyMessage = "搜索已完成，没有文本结果";
+      if (query) result.fields.push({ label: "关键词", value: query, code: true });
+      if (target) {
+        result.fields.push({
+          label: "范围",
+          value: displayToolPath(target, workspacePath),
+          code: true
+        });
+      }
+    }
+    else if (kind === "read" || /^(?:Read file|View Image)\s+/iu.test(title)) {
+      const isImage = /^View Image\s+/iu.test(title) ||
+        /\.(?:avif|gif|jpe?g|png|webp)$/iu.test(path);
+      result.category = isImage ? "image" : "read";
+      result.icon = isImage ? "▧" : "▤";
+      result.label = isImage ? "查看图片" : "读取文件";
+      result.subject = truncateLabel(fileNameFromPath(path) || title);
+      result.outputLabel = isImage ? "图片信息" : "读取内容";
+      result.emptyMessage = isImage ? "图片已读取" : "文件已读取，未返回文本内容";
+      if (visiblePath) result.fields.push({ label: "位置", value: visiblePath, code: true });
+    }
+    else {
+      for (const [name, value] of Object.entries(entry?.rawInput || {})) {
+        if (!["string", "number", "boolean"].includes(typeof value)) continue;
+        result.fields.push({ label: name, value: String(value), code: true });
+      }
+    }
+
+    if (!result.output) {
+      if (entry?.status === "pending") result.emptyMessage = "等待授权或执行";
+      else if (entry?.status === "in_progress") result.emptyMessage = "正在执行…";
+      else if (entry?.status === "failed") result.emptyMessage = "工具调用失败，未返回文本输出";
+    }
+
+    result.summary = result.subject ? `${result.label} · ${result.subject}` : result.label;
+    return result;
+  }
+
+  function appendToolDetails(doc, container, entry, workspacePath = "") {
+    const presentation = describeToolEntry(entry, workspacePath);
+    if (presentation.command) {
+      const section = doc.createElement("section");
+      section.className = "spt-codex-tool-section";
+      const heading = doc.createElement("strong");
+      heading.textContent = "命令";
+      const command = doc.createElement("pre");
+      command.className = "spt-codex-tool-command";
+      command.textContent = presentation.command;
+      section.append(heading, command);
+      container.append(section);
+    }
+    if (presentation.fields.length) {
+      const fields = doc.createElement("dl");
+      fields.className = "spt-codex-tool-fields";
+      for (const field of presentation.fields) {
+        const row = doc.createElement("div");
+        const term = doc.createElement("dt");
+        term.textContent = field.label;
+        const description = doc.createElement("dd");
+        description.textContent = field.value;
+        if (field.code) description.className = "spt-codex-tool-value-code";
+        row.append(term, description);
+        fields.append(row);
+      }
+      container.append(fields);
+    }
+    if (presentation.output) {
+      const section = doc.createElement("section");
+      section.className = "spt-codex-tool-section";
+      const header = doc.createElement("div");
+      header.className = "spt-codex-tool-output-header";
+      const heading = doc.createElement("strong");
+      heading.textContent = presentation.outputLabel;
+      header.append(heading);
+      if (presentation.exitCode !== null && presentation.exitCode !== undefined) {
+        const exit = doc.createElement("span");
+        exit.className = Number(presentation.exitCode) === 0
+          ? "spt-codex-tool-exit spt-codex-tool-exit-ok"
+          : "spt-codex-tool-exit spt-codex-tool-exit-error";
+        exit.textContent = `退出码 ${presentation.exitCode}`;
+        header.append(exit);
+      }
+      const output = doc.createElement("pre");
+      output.className = "spt-codex-tool-output";
+      output.textContent = presentation.output;
+      section.append(header, output);
+      container.append(section);
+    }
+    else {
+      const empty = doc.createElement("p");
+      empty.className = "spt-codex-tool-empty";
+      empty.textContent = presentation.emptyMessage;
+      container.append(empty);
+    }
+    return presentation;
+  }
+
   function makeButton(doc, label, action, className = "") {
     const button = doc.createElement("button");
     button.type = "button";
     button.textContent = label;
-    if (className) button.className = className;
+    button.className = ["spt-codex-button", className].filter(Boolean).join(" ");
     button.addEventListener("click", action);
     return button;
   }
@@ -247,13 +964,25 @@
       root.className = "spt-codex-chat";
       const toolbar = doc.createElement("div");
       toolbar.className = "spt-codex-toolbar";
+      const statusGroup = doc.createElement("div");
+      statusGroup.className = "spt-codex-status-group";
+      const statusDot = doc.createElement("span");
+      statusDot.className = "spt-codex-status-dot";
+      statusDot.setAttribute("aria-hidden", "true");
       const status = doc.createElement("span");
       status.className = "spt-codex-status";
       status.textContent = "本地历史";
-      const reload = makeButton(doc, "重新加载", () => this._run(body, "reload"));
-      const workspace = makeButton(doc, "打开工作区", () => this._run(body, "workspace"));
+      statusGroup.append(statusDot, status);
+      const toolbarActions = doc.createElement("div");
+      toolbarActions.className = "spt-codex-toolbar-actions";
+      const reload = makeButton(doc, "重新加载", () => this._run(body, "reload"), "spt-codex-button-subtle");
+      reload.title = "从 Codex thread 重新同步当前论文的对话";
+      const workspace = makeButton(doc, "工作区", () => this._run(body, "workspace"), "spt-codex-button-subtle");
+      workspace.title = "在 Finder 中显示当前论文的 Codex 工作区";
       const reset = makeButton(doc, "新建会话", () => this._run(body, "reset"), "spt-codex-danger-button");
-      toolbar.append(status, reload, workspace, reset);
+      reset.title = "归档当前映射并为这篇论文新建会话";
+      toolbarActions.append(reload, workspace, reset);
+      toolbar.append(statusGroup, toolbarActions);
       const configuration = doc.createElement("div");
       configuration.className = "spt-codex-config";
       const notices = doc.createElement("div");
@@ -263,6 +992,18 @@
       messages.setAttribute("aria-live", "polite");
       const composer = doc.createElement("div");
       composer.className = "spt-codex-composer";
+      const activity = doc.createElement("div");
+      activity.className = "spt-codex-activity";
+      activity.hidden = true;
+      activity.setAttribute("role", "status");
+      activity.setAttribute("aria-live", "polite");
+      activity.setAttribute("aria-atomic", "true");
+      const activitySpinner = doc.createElement("span");
+      activitySpinner.className = "spt-codex-activity-spinner";
+      activitySpinner.setAttribute("aria-hidden", "true");
+      const activityText = doc.createElement("span");
+      activityText.className = "spt-codex-activity-text";
+      activity.append(activitySpinner, activityText);
       const input = doc.createElement("textarea");
       input.rows = 3;
       input.placeholder = "围绕当前 PDF 向本机 Codex 提问…";
@@ -271,7 +1012,7 @@
       stop.hidden = true;
       const send = makeButton(doc, "发送", () => this._run(body, "send"), "spt-codex-primary-button");
       actions.append(stop, send);
-      composer.append(input, actions);
+      composer.append(activity, input, actions);
       root.append(toolbar, configuration, notices, messages, composer);
       body.append(root);
       const view = {
@@ -279,8 +1020,12 @@
         root,
         attachmentID: null,
         state: null,
+        transcriptRendered: false,
         setSectionSummary,
-        elements: { status, configuration, notices, messages, input, send, stop, reload, workspace, reset },
+        elements: {
+          status, configuration, notices, messages, activity, activityText, input, send, stop,
+          reload, workspace, reset
+        },
         cleanups: []
       };
       const keydown = (event) => {
@@ -309,6 +1054,7 @@
       if (view.attachmentID !== attachmentID) {
         view.unsubscribe?.();
         view.attachmentID = attachmentID;
+        view.transcriptRendered = false;
         view.unsubscribe = this.service.subscribe(attachmentID, (state) => this._updateView(view, state));
       }
       try {
@@ -452,8 +1198,17 @@
       heading.textContent = interaction.type === "permission" ? interaction.title : interaction.message;
       card.append(heading);
       if (interaction.type === "permission") {
-        const details = doc.createElement("pre");
-        details.textContent = stringifyDetails(interaction.toolCall);
+        const details = doc.createElement("div");
+        details.className = "spt-codex-permission-tool";
+        appendToolDetails(doc, details, {
+          kind: "tool",
+          title: interaction.title,
+          toolKind: interaction.toolCall.kind,
+          rawInput: interaction.toolCall.rawInput,
+          content: interaction.toolCall.content,
+          locations: interaction.toolCall.locations,
+          status: "pending"
+        }, view.state?.record?.session?.workspacePath || "");
         card.append(details);
         const actions = doc.createElement("div");
         actions.className = "spt-codex-interaction-actions";
@@ -519,40 +1274,101 @@
     _renderTranscript(view, state) {
       const doc = view.body.ownerDocument;
       const container = view.elements.messages;
+      const renderedBefore = Boolean(view.transcriptRendered);
+      const viewport = captureTranscriptViewport(container, renderedBefore);
       container.replaceChildren();
       if (!state.record.transcript.length) {
         const empty = doc.createElement("p");
         empty.className = "spt-codex-empty";
         empty.textContent = "首条消息会复制当前 PDF 到专用工作区并附加给 Codex；后续消息只发送文本。";
         container.append(empty);
+        view.transcriptRendered = true;
+        restoreTranscriptViewport(container, viewport, renderedBefore);
         return;
       }
-      for (const entry of state.record.transcript) {
+      for (const [index, entry] of state.record.transcript.entries()) {
+        if (entry.kind === "thought") continue;
+        const entryKey = transcriptEntryKey(entry, index);
         if (entry.kind === "message") {
           const article = doc.createElement("article");
           article.className = `spt-codex-message spt-codex-${entry.role}`;
+          article.setAttribute("data-entry-key", entryKey);
+          const header = doc.createElement("header");
+          header.className = "spt-codex-message-header";
+          const avatar = doc.createElement("span");
+          avatar.className = "spt-codex-message-avatar";
+          avatar.textContent = entry.role === "user" ? "你" : "C";
+          avatar.setAttribute("aria-hidden", "true");
           const label = doc.createElement("strong");
           label.textContent = entry.role === "user" ? "你" : "Codex";
+          header.append(avatar, label);
           const content = doc.createElement("div");
           content.className = "spt-codex-markdown";
-          renderSafeMarkdown(doc, content, entry.text);
-          article.append(label, content);
+          renderSafeMarkdown(doc, content, entry.text, {
+            onFileCitation: ({ path }) => {
+              this.service.revealCitation(view.attachmentID, path).catch((error) => {
+                view.elements.notices.textContent = error.message || "无法打开引用文件";
+              });
+            }
+          });
+          article.append(header, content);
           container.append(article);
         }
         else {
           const details = doc.createElement("details");
-          details.className = "spt-codex-event";
+          details.className = `spt-codex-event spt-codex-event-${entry.kind}`;
+          details.setAttribute("data-entry-key", entryKey);
+          details.open = viewport.expanded.has(entryKey);
           const summary = doc.createElement("summary");
-          summary.textContent = entry.kind === "tool"
-            ? `${entry.title || "工具调用"} · ${entry.status || ""}`
+          const toolPresentation = entry.kind === "tool"
+            ? describeToolEntry(entry, state.record.session.workspacePath)
+            : null;
+          const eventIcon = doc.createElement("span");
+          eventIcon.className = "spt-codex-event-icon";
+          eventIcon.textContent = toolPresentation?.icon || (entry.kind === "plan" ? "☷" : "✦");
+          eventIcon.setAttribute("aria-hidden", "true");
+          const eventTitle = doc.createElement("span");
+          eventTitle.className = "spt-codex-event-title";
+          eventTitle.textContent = entry.kind === "tool"
+            ? toolPresentation.summary
             : entry.kind === "plan" ? "计划" : "思考过程";
-          const pre = doc.createElement("pre");
-          pre.textContent = entry.kind === "thought" ? entry.text : stringifyDetails(entry);
-          details.append(summary, pre);
+          summary.append(eventIcon, eventTitle);
+          if (entry.kind === "tool" && entry.status) {
+            const eventStatus = doc.createElement("span");
+            eventStatus.className = `spt-codex-event-status spt-codex-event-status-${entry.status}`;
+            eventStatus.textContent = {
+              completed: "完成", failed: "失败", pending: "等待", in_progress: "进行中"
+            }[entry.status] || entry.status;
+            summary.append(eventStatus);
+          }
+          const eventContent = doc.createElement("div");
+          eventContent.className = "spt-codex-event-content";
+          if (entry.kind === "tool") {
+            appendToolDetails(doc, eventContent, entry, state.record.session.workspacePath);
+          }
+          else if (entry.kind === "plan" && Array.isArray(entry.entries)) {
+            const list = doc.createElement("ol");
+            for (const item of entry.entries) {
+              const listItem = doc.createElement("li");
+              listItem.textContent = typeof item === "string"
+                ? item
+                : String(item?.content || item?.text || item?.description || stringifyDetails(item));
+              list.append(listItem);
+            }
+            eventContent.append(list);
+          }
+          else {
+            const pre = doc.createElement("pre");
+            pre.textContent = stringifyDetails(entry);
+            eventContent.append(pre);
+          }
+          details.append(summary, eventContent);
           container.append(details);
+          eventContent.scrollTop = viewport.innerScroll.get(entryKey) || 0;
         }
       }
-      container.scrollTop = container.scrollHeight;
+      view.transcriptRendered = true;
+      restoreTranscriptViewport(container, viewport, renderedBefore);
     }
 
     _updateView(view, state) {
@@ -570,7 +1386,17 @@
         "thread-missing": "thread 缺失",
         "waiting-approval": "等待授权"
       }[state.status] || state.status;
+      view.root.dataset.status = state.status;
       view.setSectionSummary?.(waiting ? "等待授权" : (state.record.session.id ? "已绑定会话" : "未创建会话"));
+      const activityLabel = {
+        connecting: "正在连接本地 Codex…",
+        generating: state.activityText || "Codex 正在思考…",
+        cancelling: "正在停止当前任务…",
+        "waiting-approval": "等待你的授权…"
+      }[state.status] || "";
+      view.elements.activity.hidden = !activityLabel;
+      view.elements.activity.dataset.status = state.status;
+      view.elements.activityText.textContent = activityLabel;
       view.elements.stop.hidden = state.status !== "generating" && !waiting;
       view.elements.send.disabled = busy || waiting || state.sourceChanged || state.historyReadOnly;
       view.elements.input.disabled = busy || waiting || state.sourceChanged || state.historyReadOnly;
@@ -596,7 +1422,11 @@
     CODEX_SIDENAV_L10N_ID,
     ensureCodexLocalization,
     resolveReaderAttachmentID,
-    renderSafeMarkdown
+    renderSafeMarkdown,
+    captureTranscriptViewport,
+    restoreTranscriptViewport,
+    describeToolEntry,
+    appendToolDetails
   };
   if (typeof module !== "undefined" && module.exports) module.exports = modules.CodexChatUI;
 })(typeof globalThis !== "undefined" ? globalThis : this);

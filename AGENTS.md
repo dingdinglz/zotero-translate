@@ -14,7 +14,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.14`
+- 当前版本：`0.1.17`
 - 目标平台：macOS Zotero 9.0.6
 - 清单兼容范围：Zotero `9.0`–`9.0.*`
 - 插件源码根目录：`plugin/`
@@ -24,6 +24,7 @@
 - 动态模型选项检测使用不发送提示词的临时空 session，并以 `session/close` 释放；不得为清理该空 session 调用会归档 thread 的 `session/delete`。
 - Codex 会话必须固定使用受审批的 `agent` 模式；不得启用 `agent-full-access`，不得把 session 权限升级为插件全局授权。
 - Codex Item Pane 只能用 `tabID → Zotero.Reader.getByTabID()` 精确解析 Reader PDF 附件；失败时禁用，不得猜测父条目附件。独立 Reader 窗口不注册聊天。
+- Codex 消息中的文件引用只能在当前 PDF 的专用工作区内定位；不得让模型输出的路径越过工作区边界。首轮安全前缀和资源链接不得作为用户问题显示。
 
 ## 当前项目结构
 
@@ -52,9 +53,9 @@ zotero-translate/
 │       ├── api.js                    # OpenAI Chat Completions 客户端与安全错误映射
 │       ├── service.js                # 翻译、摘要、智能标签、缓存探测/强制刷新及并发协调
 │       ├── acp-client.js             # 固定版本准备、脱敏诊断、stdio JSON-RPC、握手、通知、取消与进程清理
-│       ├── codex-chat.js             # 每 PDF session、动态配置探测、首轮 PDF、回放对账、权限和配置状态机
-│       ├── codex-chat-ui.js          # 原生 Item Pane 侧栏、本地化热更新防护、安全 Markdown、审批与会话操作
-│       ├── codex-chat.css            # Codex 侧栏、消息、工具事件与权限表单样式
+│       ├── codex-chat.js             # 每 PDF session、动态配置、回放归一化、引用边界、权限状态机和实时思考状态
+│       ├── codex-chat-ui.js          # 原生 Item Pane、安全 Markdown/MathML/Codex 指令、语义工具卡片、实时状态栏和会话操作
+│       ├── codex-chat.css            # Codex 侧栏、横向边界、消息、工具卡片、加载状态与权限表单样式
 │       ├── codex.svg                 # Codex Item Pane/Sidenav 单色图标
 │       ├── item-tree-ui.js           # 主页智能标签列、本地懒加载索引与列刷新
 │       ├── item-tree.css             # 智能标签列、主题色胶囊与无障碍模式样式
@@ -83,8 +84,11 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.14.xpi
-    ├── smart-paper-translator-0.1.13.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.17.xpi
+    ├── smart-paper-translator-0.1.16.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.15.xpi         # 历史版本归档
+    ├── smart-paper-translator-0.1.14.xpi         # 历史版本归档
+    ├── smart-paper-translator-0.1.13.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.12.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.11.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.10.xpi         # 历史版本归档

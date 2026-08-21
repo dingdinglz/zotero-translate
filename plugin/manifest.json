@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Smart Paper Translator",
-  "version": "0.1.14",
+  "version": "0.1.17",
   "description": "Academic translation, smart tags, and local Codex ACP chat for Zotero",
   "author": "Local Developer",
   "applications": {
