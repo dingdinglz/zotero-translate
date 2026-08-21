@@ -17,7 +17,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.7"
+    assert manifest["version"] == "0.1.14"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -34,6 +34,42 @@ def main() -> None:
     )
     for forbidden in ("reader._window", "reader._iframeWindow"):
         assert forbidden not in executable, f"private reader API used: {forbidden}"
+
+    constants = (PLUGIN / "content" / "constants.js").read_text(encoding="utf-8")
+    acp_client = (PLUGIN / "content" / "acp-client.js").read_text(encoding="utf-8")
+    chat_ui = (PLUGIN / "content" / "codex-chat-ui.js").read_text(encoding="utf-8")
+    bootstrap = (PLUGIN / "bootstrap.js").read_text(encoding="utf-8")
+    assert 'ACP_PACKAGE_SPEC: "@agentclientprotocol/codex-acp@1.6.2"' in constants
+    assert 'ACP_MODE: "agent"' in constants
+    assert 'npm_config_offline: "true"' in acp_client
+    assert 'INITIAL_AGENT_MODE: Constants.ACP_MODE' in acp_client
+    codex_chat = (PLUGIN / "content" / "codex-chat.js").read_text(encoding="utf-8")
+    assert 'this.acp.request("session/close"' in codex_chat
+    assert 'this.acp.request("session/delete"' not in codex_chat
+    assert 'purpose: "version", allowDownload: true' not in bootstrap
+    assert ".innerHTML =" not in chat_ui
+    assert "设置页只提供默认值" in chat_ui
+    assert "getByTabID(tabID)" in chat_ui
+    assert 'CODEX_L10N_RESOURCE = "smart-paper-translator-codex-chat.ftl"' in chat_ui
+    assert chat_ui.index("ensureCodexLocalization(win);") < chat_ui.index("registerSection({")
+    assert "content/acp-client.js" in bootstrap
+    assert "content/codex-chat.js" in bootstrap
+    assert "content/codex-chat-ui.js" in bootstrap
+
+    for locale in ("en-US", "zh-CN"):
+        ftl = (
+            PLUGIN / "locale" / locale / "smart-paper-translator-codex-chat.ftl"
+        ).read_text(encoding="utf-8")
+        assert re.search(
+            r"^smart-paper-translator-codex-chat-pane-header[ \t]*=[ \t]*$\n[ \t]+\.label[ \t]*=[ \t]*\S",
+            ftl,
+            re.MULTILINE,
+        )
+        assert re.search(
+            r"^smart-paper-translator-codex-chat-pane-sidenav[ \t]*=[ \t]*$\n[ \t]+\.tooltiptext[ \t]*=[ \t]*\S",
+            ftl,
+            re.MULTILINE,
+        )
 
     prefs = (PLUGIN / "prefs.js").read_text(encoding="utf-8")
     assert 'pref("extensions.smart-paper-translator.autoTranslateSelection", false);' in prefs
@@ -53,9 +89,19 @@ def main() -> None:
         "content/item-tree-ui.js",
         "content/item-tree.css",
         "content/reader-ui.js",
+        "content/acp-client.js",
+        "content/chat-cache.js",
+        "content/codex-chat.js",
+        "content/codex-chat-ui.js",
+        "content/codex-chat.css",
+        "content/codex.svg",
+        "locale/en-US/smart-paper-translator-codex-chat.ftl",
+        "locale/zh-CN/smart-paper-translator-codex-chat.ftl",
     }
     present = {path.relative_to(PLUGIN).as_posix() for path in PLUGIN.rglob("*") if path.is_file()}
     assert required <= present
+    assert not any(path.startswith("node_modules/") for path in present)
+    assert not any("npm-cache" in path for path in present)
     print("static validation ok")
 
 

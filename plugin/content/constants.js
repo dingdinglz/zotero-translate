@@ -20,7 +20,7 @@
   const Constants = Object.freeze({
     PLUGIN_ID: "smart-paper-translator@zotero.local",
     PLUGIN_NAME: "Smart Paper Translator",
-    VERSION: "0.1.7",
+    VERSION: "0.1.14",
     PREF_PREFIX,
     PREFS: Object.freeze({
       provider: PREF_PREFIX + "provider",
@@ -36,7 +36,14 @@
       panelWidth: PREF_PREFIX + "panelWidth",
       panelHeight: PREF_PREFIX + "panelHeight",
       selectionPrompt: PREF_PREFIX + "selectionPrompt",
-      abstractPrompt: PREF_PREFIX + "abstractPrompt"
+      abstractPrompt: PREF_PREFIX + "abstractPrompt",
+      codexNodePath: PREF_PREFIX + "codexNodePath",
+      codexNpxCliPath: PREF_PREFIX + "codexNpxCliPath",
+      codexExecutablePath: PREF_PREFIX + "codexExecutablePath",
+      codexPreparedVersion: PREF_PREFIX + "codexPreparedVersion",
+      codexPreparedFingerprint: PREF_PREFIX + "codexPreparedFingerprint",
+      codexDefaultModel: PREF_PREFIX + "codexDefaultModel",
+      codexDefaultReasoningEffort: PREF_PREFIX + "codexDefaultReasoningEffort"
     }),
     PROVIDERS: Object.freeze({
       deepseek: Object.freeze({
@@ -80,7 +87,23 @@
     STORAGE_RECORDS_DIRECTORY: "records",
     CREDENTIAL_ORIGIN: "chrome://smart-paper-translator",
     CREDENTIAL_REALM: "Smart Paper Translator API Key",
-    REQUEST_TIMEOUT_MS: 60000
+    REQUEST_TIMEOUT_MS: 60000,
+    ACP_PACKAGE_NAME: "@agentclientprotocol/codex-acp",
+    ACP_PACKAGE_VERSION: "1.6.2",
+    ACP_PACKAGE_SPEC: "@agentclientprotocol/codex-acp@1.6.2",
+    ACP_PROTOCOL_VERSION: 1,
+    ACP_MODE: "agent",
+    ACP_SCHEMA_VERSION: 1,
+    ACP_DIRECTORY: "codex-acp",
+    ACP_RECORDS_DIRECTORY: "records",
+    ACP_WORKSPACES_DIRECTORY: "workspaces",
+    ACP_ARCHIVES_DIRECTORY: "archives",
+    ACP_CONFIGURATION_CATALOG_FILE: "configuration-catalog.json",
+    ACP_CONFIGURATION_WORKSPACE_DIRECTORY: "configuration-workspace",
+    ACP_MAX_JSON_LINE_BYTES: 8 * 1024 * 1024,
+    ACP_MAX_STDERR_CHARS: 16384,
+    ACP_REQUEST_TIMEOUT_MS: 30000,
+    ACP_PREPARE_TIMEOUT_MS: 300000
   });
 
   global.SmartPaperTranslatorModules = global.SmartPaperTranslatorModules || {};

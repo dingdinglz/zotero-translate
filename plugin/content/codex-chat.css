@@ -1,0 +1,162 @@
+.spt-codex-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 280px;
+  padding: 4px 6px 10px;
+  color: var(--fill-primary, inherit);
+  font: menu;
+}
+
+.spt-codex-toolbar,
+.spt-codex-config,
+.spt-codex-composer > div,
+.spt-codex-interaction-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.spt-codex-status {
+  flex: 1;
+  font-size: 0.9em;
+  color: var(--fill-secondary, #666);
+}
+
+.spt-codex-config label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.spt-codex-config-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--fill-secondary, #666);
+  font-size: 0.86em;
+  line-height: 1.35;
+}
+
+.spt-codex-config select {
+  max-width: 150px;
+}
+
+.spt-codex-notices:empty,
+.spt-codex-config:empty {
+  display: none;
+}
+
+.spt-codex-notice,
+.spt-codex-interaction {
+  margin-bottom: 6px;
+  padding: 8px;
+  border: 1px solid var(--material-border, #ccc);
+  border-radius: 6px;
+  background: var(--material-background, rgba(127, 127, 127, 0.08));
+}
+
+.spt-codex-error {
+  border-color: #c62828;
+  color: #b71c1c;
+}
+
+.spt-codex-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 52vh;
+  overflow: auto;
+}
+
+.spt-codex-message {
+  padding: 8px;
+  border-radius: 7px;
+  background: var(--material-sidepane, rgba(127, 127, 127, 0.1));
+  overflow-wrap: anywhere;
+}
+
+.spt-codex-user {
+  margin-left: 20px;
+  background: color-mix(in srgb, AccentColor 12%, transparent);
+}
+
+.spt-codex-agent {
+  margin-right: 12px;
+}
+
+.spt-codex-markdown p {
+  margin: 5px 0;
+  white-space: pre-wrap;
+}
+
+.spt-codex-markdown ul {
+  margin: 5px 0;
+  padding-inline-start: 22px;
+}
+
+.spt-codex-markdown a {
+  color: LinkText;
+}
+
+.spt-codex-code,
+.spt-codex-event,
+.spt-codex-interaction pre {
+  overflow: auto;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.spt-codex-code-header {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 6px;
+  font-size: 0.85em;
+}
+
+.spt-codex-code pre,
+.spt-codex-event pre,
+.spt-codex-interaction pre {
+  margin: 0;
+  padding: 7px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.spt-codex-composer textarea {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+}
+
+.spt-codex-composer > div {
+  justify-content: flex-end;
+  margin-top: 5px;
+}
+
+.spt-codex-primary-button {
+  font-weight: 600;
+}
+
+.spt-codex-danger-button {
+  color: #b71c1c;
+}
+
+.spt-codex-empty {
+  color: var(--fill-secondary, #666);
+  line-height: 1.45;
+}
+
+.spt-codex-interaction form,
+.spt-codex-interaction form label {
+  display: grid;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spt-codex-chat * {
+    scroll-behavior: auto !important;
+  }
+}

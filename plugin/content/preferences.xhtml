@@ -76,6 +76,67 @@
     </description>
   </groupbox>
 
+  <groupbox data-search-strings-raw="Codex,ACP,Node,npx,本地模型,侧栏,对话">
+    <label><html:h2>本地 Codex（ACP）</html:h2></label>
+    <description>
+      Reader 右侧“Codex 对话”使用本机 Codex 登录和配置，与上方翻译 API 完全独立。打开 PDF 或展开侧栏不会启动 ACP、下载依赖或产生模型用量。
+    </description>
+    <html:div class="spt-prefs-grid spt-codex-prefs-grid">
+      <html:label for="spt-codex-node-path">Node</html:label>
+      <html:div class="spt-prefs-path-row">
+        <html:input id="spt-codex-node-path" type="text" preference="extensions.smart-paper-translator.codexNodePath" placeholder="/absolute/path/to/node" />
+        <html:button type="button" data-codex-browse="node">选择…</html:button>
+      </html:div>
+
+      <html:label for="spt-codex-npx-path">npx-cli.js</html:label>
+      <html:div class="spt-prefs-path-row">
+        <html:input id="spt-codex-npx-path" type="text" preference="extensions.smart-paper-translator.codexNpxCliPath" placeholder="/absolute/path/to/npx-cli.js" />
+        <html:button type="button" data-codex-browse="npx">选择…</html:button>
+      </html:div>
+
+      <html:label for="spt-codex-executable-path">Codex</html:label>
+      <html:div class="spt-prefs-path-row">
+        <html:input id="spt-codex-executable-path" type="text" preference="extensions.smart-paper-translator.codexExecutablePath" placeholder="/absolute/path/to/codex" />
+        <html:button type="button" data-codex-browse="codex">选择…</html:button>
+      </html:div>
+
+      <html:label for="spt-codex-default-model">新会话默认模型</html:label>
+      <html:select id="spt-codex-default-model" preference="extensions.smart-paper-translator.codexDefaultModel">
+        <html:option value="">跟随 Codex 当前值</html:option>
+      </html:select>
+
+      <html:label for="spt-codex-default-reasoning">新会话默认推理强度</html:label>
+      <html:select id="spt-codex-default-reasoning" preference="extensions.smart-paper-translator.codexDefaultReasoningEffort">
+        <html:option value="">跟随 Codex 当前值</html:option>
+      </html:select>
+    </html:div>
+    <html:div class="spt-prefs-inline spt-codex-actions">
+      <html:button id="spt-codex-auto-detect" type="button">自动探测本地路径</html:button>
+      <html:button id="spt-codex-inspect" type="button">重新检测</html:button>
+      <html:button id="spt-codex-prepare" type="button">准备并检测 ACP 1.6.2</html:button>
+    </html:div>
+    <html:div id="spt-codex-status" class="spt-codex-runtime-status" role="status">
+      <html:dl>
+        <html:dt>Node</html:dt><html:dd data-codex-status="node">未检测</html:dd>
+        <html:dt>npx</html:dt><html:dd data-codex-status="npx">未检测</html:dd>
+        <html:dt>Codex</html:dt><html:dd data-codex-status="codex">未检测</html:dd>
+        <html:dt>codex-acp</html:dt><html:dd data-codex-status="acp">未准备</html:dd>
+        <html:dt>登录状态</html:dt><html:dd data-codex-status="login">未检测</html:dd>
+        <html:dt>健康状态</html:dt><html:dd data-codex-status="health">未检测</html:dd>
+        <html:dt>ACP 能力</html:dt><html:dd data-codex-status="capabilities">未握手</html:dd>
+        <html:dt>模型选项目录</html:dt><html:dd data-codex-status="catalog">未读取</html:dd>
+        <html:dt>固定模式</html:dt><html:dd data-codex-status="mode">agent（受审批）</html:dd>
+        <html:dt>最近错误</html:dt><html:dd data-codex-status="error">无</html:dd>
+      </html:dl>
+    </html:div>
+    <description class="spt-prefs-warning">
+      上面的模型和推理强度仅是新 PDF 会话的默认值；每篇 PDF 都可在 Reader 侧栏中单独选择。“准备并检测”是唯一允许 npx 下载固定包 @agentclientprotocol/codex-acp@1.6.2 的入口；“准备并检测”和“重新检测”会创建一个不发送提示词的临时空 session 来读取动态选项，随后关闭释放，不删除 Codex thread，也不产生模型生成用量。聊天启动使用离线 npm 模式，不会静默下载或升级。插件固定使用受审批的 agent 模式，专用论文工作区默认可写、网络默认关闭，绝不启用 agent-full-access。
+    </description>
+    <description class="spt-prefs-warning">
+      Codex 会继承本机账号、配置、全局指令、Skills 与 MCP；这些能力可能访问论文之外的本地或外部数据。插件不读取、保存或显示 token。侧栏仅支持 Zotero 主窗口内的 Reader tab，独立 Reader 窗口不提供聊天。
+    </description>
+  </groupbox>
+
   <groupbox data-search-strings-raw="提示词,Prompt,模板,摘要">
     <label><html:h2>提示词模板</html:h2></label>
     <description>
@@ -126,7 +187,7 @@
   <groupbox data-search-strings-raw="隐私,数据,缓存,网络">
     <label><html:h2>隐私与存储</html:h2></label>
     <description>
-      打开论文时，未缓存的摘要翻译会把标题和 Zotero 摘要发送给所选 API；缺少智能标签时会用相同数据额外发起一次短请求。主页智能标签列只读取本地缓存，不会联网，也不会写入 Zotero 原生标签。划线缓存命中时直接显示且不联网，只有点击“重新翻译”才会绕过缓存再次发送；未命中文本在自动模式关闭时只有点击“翻译”后才发送，打开时会在划线后立即发送。译文、原文与智能标签按论文保存在本机 Zotero 数据目录，不参与 Zotero 同步。API Key 单独保存在 Zotero 的登录信息存储中。
+      打开论文时，未缓存的摘要翻译会把标题和 Zotero 摘要发送给所选 API；缺少智能标签时会用相同数据额外发起一次短请求。主页智能标签列只读取本地缓存，不会联网，也不会写入 Zotero 原生标签。划线缓存命中时直接显示且不联网，只有点击“重新翻译”才会绕过缓存再次发送；未命中文本在自动模式关闭时只有点击“翻译”后才发送，打开时会在划线后立即发送。译文、原文与智能标签按论文保存在本机 Zotero 数据目录，不参与 Zotero 同步。API Key 单独保存在 Zotero 的登录信息存储中。Codex 对话首次发送时把真实 PDF 复制到该论文的专用工作区并交给本机 Codex；后续只发送文本。对话镜像、Codex 生成文件与旧会话工作区留在本机，不自动覆盖 PDF、修改条目或导入附件。
     </description>
   </groupbox>
 </vbox>

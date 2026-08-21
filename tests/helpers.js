@@ -17,6 +17,11 @@ class MemoryIO {
     this.directories.add(path);
   }
 
+  async getChildren(path) {
+    const prefix = path.endsWith("/") ? path : `${path}/`;
+    return [...this.directories].filter((candidate) => candidate.startsWith(prefix));
+  }
+
   async readJSON(path) {
     if (!this.files.has(path)) throw new Error("ENOENT");
     return JSON.parse(new TextDecoder().decode(this.files.get(path)));
@@ -34,6 +39,33 @@ class MemoryIO {
   async writeJSON(path, value, options = {}) {
     this.writeJSONCalls.push({ path, options: { ...options } });
     this.files.set(path, new TextEncoder().encode(JSON.stringify(value)));
+  }
+
+  async copy(source, target) {
+    if (!this.files.has(source)) throw new Error("ENOENT");
+    this.files.set(target, this.files.get(source).slice());
+  }
+
+  async move(source, target) {
+    if (this.files.has(source)) {
+      this.files.set(target, this.files.get(source));
+      this.files.delete(source);
+      return;
+    }
+    if (!this.directories.has(source)) throw new Error("ENOENT");
+    const sourcePrefix = `${source}/`;
+    const directoryMoves = [...this.directories]
+      .filter((path) => path === source || path.startsWith(sourcePrefix));
+    const fileMoves = [...this.files.entries()]
+      .filter(([path]) => path.startsWith(sourcePrefix));
+    for (const path of directoryMoves) this.directories.delete(path);
+    for (const path of directoryMoves) {
+      this.directories.add(target + path.slice(source.length));
+    }
+    for (const [path, bytes] of fileMoves) {
+      this.files.delete(path);
+      this.files.set(target + path.slice(source.length), bytes);
+    }
   }
 
   setText(path, text) {
@@ -69,7 +101,14 @@ function makePreferenceStore(overrides = {}) {
     [Constants.PREFS.panelWidth, 390],
     [Constants.PREFS.panelHeight, 540],
     [Constants.PREFS.selectionPrompt, Constants.DEFAULT_SELECTION_PROMPT],
-    [Constants.PREFS.abstractPrompt, Constants.DEFAULT_ABSTRACT_PROMPT]
+    [Constants.PREFS.abstractPrompt, Constants.DEFAULT_ABSTRACT_PROMPT],
+    [Constants.PREFS.codexNodePath, ""],
+    [Constants.PREFS.codexNpxCliPath, ""],
+    [Constants.PREFS.codexExecutablePath, ""],
+    [Constants.PREFS.codexPreparedVersion, ""],
+    [Constants.PREFS.codexPreparedFingerprint, ""],
+    [Constants.PREFS.codexDefaultModel, ""],
+    [Constants.PREFS.codexDefaultReasoningEffort, ""]
   ]);
   for (const [key, value] of Object.entries(overrides)) values.set(key, value);
   return {

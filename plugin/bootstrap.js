@@ -17,10 +17,14 @@ async function startup({ id, version, rootURI }) {
     "content/logic.js",
     "content/credentials.js",
     "content/cache.js",
+    "content/chat-cache.js",
     "content/api.js",
     "content/service.js",
+    "content/acp-client.js",
+    "content/codex-chat.js",
     "content/item-tree-ui.js",
     "content/reader-ui.js",
+    "content/codex-chat-ui.js",
     "content/main.js"
   ];
   for (const script of scripts) {
@@ -39,9 +43,9 @@ function onMainWindowUnload({ window }) {
   SmartPaperTranslatorPlugin?.removeFromWindow(window);
 }
 
-function shutdown() {
+async function shutdown() {
   try {
-    SmartPaperTranslatorPlugin?.shutdown();
+    await SmartPaperTranslatorPlugin?.shutdown();
   }
   catch (error) {
     log("Shutdown failed", error);

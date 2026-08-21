@@ -22,7 +22,8 @@
 }
 
 .spt-prefs-inline,
-.spt-prefs-key-row {
+.spt-prefs-key-row,
+.spt-prefs-path-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -31,6 +32,56 @@
 .spt-prefs-key-row input {
   min-width: 220px;
   flex: 1;
+}
+
+.spt-prefs-path-row input {
+  min-width: 320px;
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.spt-codex-actions {
+  margin: 10px 0;
+}
+
+.spt-codex-runtime-status {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 4%, transparent);
+}
+
+.spt-codex-runtime-status dl {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 5px 10px;
+  margin: 0;
+}
+
+.spt-codex-runtime-status dt {
+  font-weight: 600;
+}
+
+.spt-codex-runtime-status dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.spt-codex-runtime-status [data-codex-status="error"] {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  user-select: text;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.spt-codex-runtime-status [data-kind="success"] {
+  color: #238636;
+}
+
+.spt-codex-runtime-status [data-kind="error"],
+.spt-prefs-warning {
+  color: #b71c1c;
 }
 
 .spt-prefs-block-label {
