@@ -17,7 +17,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.18"
+    assert manifest["version"] == "0.1.19"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -73,6 +73,7 @@ def main() -> None:
 
     prefs = (PLUGIN / "prefs.js").read_text(encoding="utf-8")
     assert 'pref("extensions.smart-paper-translator.autoTranslateSelection", false);' in prefs
+    assert 'pref("extensions.smart-paper-translator.selectionTranslationDisabledItems", "[]");' in prefs
     assert 'preference="extensions.smart-paper-translator.autoTranslateSelection"' in xhtml
     assert 'pref("extensions.smart-paper-translator.codexDeveloperMode", false);' in prefs
     assert 'preference="extensions.smart-paper-translator.codexDeveloperMode"' in xhtml

@@ -1,6 +1,6 @@
 # Smart Paper Translator
 
-Smart Paper Translator 0.1.18 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并新增一个连接本机 Codex 的原生右侧栏。Codex 对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
+Smart Paper Translator 0.1.19 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个连接本机 Codex 的原生右侧栏。Codex 对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
 
 ## 功能
 
@@ -9,6 +9,7 @@ Smart Paper Translator 0.1.18 是面向 macOS Zotero 9 内置 PDF Reader 的学�
 - DeepSeek 内置配置，以及标准 Bearer 鉴权的 OpenAI Chat Completions 兼容服务。
 - 两套可编辑安全模板；划线翻译模板默认携带论文标题与 Zotero 父条目摘要。
 - 打开 PDF 时自动翻译尚未缓存的摘要；划线缓存命中时直接显示并提供“重新翻译”，未命中时默认等待点击“翻译”，也可在设置中开启自动翻译。
+- Reader 工具栏可单独禁用当前 PDF 的划线翻译；禁用开关默认关闭并按 PDF 持久化，禁用后不显示插件的划线翻译入口、不查询划线缓存，也不调用翻译 API。
 - 根据标题与 Zotero 摘要生成 3–5 个英文智能标签，在主页独立列中显示，但不写入 Zotero 原生 Tags。
 - Reader 工具栏保留论文智译悬浮窗；摘要译文和术语分 Tab 展示，窗口支持拖动、缩放与持久化。
 - 每篇论文独立缓存；模型、目标语言、摘要或提示词变化后生成新的缓存版本。
@@ -75,6 +76,7 @@ smart-paper-translator/
 - 原始 HTML 不会渲染，远程图片不会自动加载；Markdown、公式、Codex 指令、工具输出和权限详情均通过受限 DOM/MathML 节点显示，不使用 `innerHTML`。
 - 开发者模式默认关闭。开启时只收集当前实时 turn 的工具与思考事件，不收集用户消息或最终回答；内存日志采用有界环形缓冲并做密钥和用户目录脱敏，关闭模式、重建会话或退出插件时清空。
 - 翻译请求继续使用匿名 Cookie 容器、60 秒超时和 `logBodyLength: 0`，不把论文正文写入 Zotero HTTP 调试日志。
+- 已禁用划线翻译的 PDF 附件 ID 列表只保存在本机 Zotero 偏好中，不写入条目或 Zotero 原生 Tags。
 
 ## 开发与验证
 
@@ -84,7 +86,7 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.18.xpi
+unzip -t dist/smart-paper-translator-0.1.19.xpi
 ```
 
 真实 npx 下载、Codex 用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。

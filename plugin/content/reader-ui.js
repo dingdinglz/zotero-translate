@@ -54,6 +54,39 @@
     return icon;
   }
 
+  function createSelectionToggleIcon(doc) {
+    const icon = createSVGElement(doc, "svg", {
+      class: "spt-toolbar-icon spt-selection-toggle-icon",
+      viewBox: "0 0 20 20",
+      fill: "none",
+      "aria-hidden": "true"
+    });
+    icon.append(
+      createSVGElement(doc, "path", {
+        d: "M3.25 4.25h9.25v7.5H3.25zM5.25 6.5h5.1M5.25 9.35h3.8",
+        stroke: "currentColor",
+        "stroke-width": "1.35",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round"
+      }),
+      createSVGElement(doc, "path", {
+        d: "M11.75 13.25h4.8m-1.7-1.7 1.7 1.7-1.7 1.7",
+        stroke: "currentColor",
+        "stroke-width": "1.35",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round"
+      }),
+      createSVGElement(doc, "path", {
+        class: "spt-selection-disabled-slash",
+        d: "M3 3l14 14",
+        stroke: "currentColor",
+        "stroke-width": "1.8",
+        "stroke-linecap": "round"
+      })
+    );
+    return icon;
+  }
+
   function createCloseIcon(doc) {
     const icon = createSVGElement(doc, "svg", {
       class: "spt-close-icon",
@@ -221,6 +254,70 @@
       if (focus) state.tabButtons?.[selected]?.focus?.();
     }
 
+    _readSelectionTranslationDisabledItems() {
+      const raw = this.getPreference?.(Constants.PREFS.selectionTranslationDisabledItems);
+      if (raw == null || raw === "") return new Set();
+      if (!Array.isArray(raw) && typeof raw !== "string") return new Set();
+      try {
+        const values = Array.isArray(raw) ? raw : JSON.parse(String(raw));
+        if (!Array.isArray(values)) throw new Error("持久化值不是数组");
+        const itemIDs = new Set();
+        for (const value of values) {
+          const itemID = Number(value);
+          if (Number.isSafeInteger(itemID) && itemID > 0) itemIDs.add(String(itemID));
+        }
+        return itemIDs;
+      }
+      catch (error) {
+        this.log("读取按论文划线翻译设置失败", error);
+        return new Set();
+      }
+    }
+
+    _isSelectionTranslationDisabled(itemID) {
+      const normalized = Number(itemID);
+      if (!Number.isSafeInteger(normalized) || normalized <= 0) return false;
+      return this._readSelectionTranslationDisabledItems().has(String(normalized));
+    }
+
+    _setSelectionTranslationDisabled(itemID, disabled) {
+      const normalized = Number(itemID);
+      if (!Number.isSafeInteger(normalized) || normalized <= 0) return false;
+      const itemIDs = this._readSelectionTranslationDisabledItems();
+      if (disabled) itemIDs.add(String(normalized));
+      else itemIDs.delete(String(normalized));
+      try {
+        const serialized = JSON.stringify(
+          [...itemIDs].sort((left, right) => Number(left) - Number(right))
+        );
+        this.setPreference(Constants.PREFS.selectionTranslationDisabledItems, serialized);
+      }
+      catch (error) {
+        this.log("保存按论文划线翻译设置失败", error);
+        return false;
+      }
+      for (const state of this.states.values()) {
+        if (Number(state.reader?.itemID) === normalized) {
+          this._updateSelectionToggleButton(state);
+        }
+      }
+      return true;
+    }
+
+    _updateSelectionToggleButton(state) {
+      const button = state?.selectionToggleButton;
+      if (!button) return;
+      const disabled = this._isSelectionTranslationDisabled(state.reader?.itemID);
+      const label = disabled
+        ? "启用当前论文的划线翻译"
+        : "禁用当前论文的划线翻译";
+      state.selectionTranslationDisabled = disabled;
+      button.classList.toggle("active", disabled);
+      button.setAttribute("aria-pressed", String(disabled));
+      button.title = label;
+      button.setAttribute("aria-label", label);
+    }
+
     _createToolbarButton(doc, state) {
       const button = createElement(doc, "button", "toolbar-button spt-toolbar-button");
       button.type = "button";
@@ -230,6 +327,20 @@
       button.setAttribute("aria-controls", "smart-paper-translator-panel");
       button.append(createTranslationIcon(doc));
       state.toolbarButton = button;
+      return button;
+    }
+
+    _createSelectionToggleButton(doc, state) {
+      const button = createElement(
+        doc,
+        "button",
+        "toolbar-button spt-toolbar-button spt-selection-toggle-button"
+      );
+      button.type = "button";
+      button.tabIndex = -1;
+      button.append(createSelectionToggleIcon(doc));
+      state.selectionToggleButton = button;
+      this._updateSelectionToggleButton(state);
       return button;
     }
 
@@ -273,9 +384,12 @@
       state.doc = doc;
       state.stylesheet = this._ensureStylesheet(doc);
       const toolbarButton = this._createToolbarButton(doc, state);
+      const selectionToggleButton = this._createSelectionToggleButton(doc, state);
       append(toolbarButton);
+      append(selectionToggleButton);
       this._mountPanel(doc, state);
       this._bindPanelEvents(state);
+      this._bindSelectionToggleEvents(state);
       this._applyStoredGeometry(state);
       this._updateVisibility(state);
       this.refreshState(state);
@@ -485,6 +599,19 @@
       state.domCleanups.push(() => doc.defaultView?.removeEventListener("unload", onUnload));
     }
 
+    _bindSelectionToggleEvents(state) {
+      const { selectionToggleButton } = state;
+      const toggle = () => {
+        const itemID = state.reader?.itemID;
+        const disabled = this._isSelectionTranslationDisabled(itemID);
+        this._setSelectionTranslationDisabled(itemID, !disabled);
+      };
+      selectionToggleButton.addEventListener("click", toggle);
+      state.domCleanups.push(
+        () => selectionToggleButton.removeEventListener("click", toggle)
+      );
+    }
+
     _applyStoredGeometry(state) {
       const x = Number(this.getPreference(Constants.PREFS.panelX));
       const y = Number(this.getPreference(Constants.PREFS.panelY));
@@ -672,6 +799,8 @@
     }
 
     handleSelectionPopup({ reader, doc, params, append }) {
+      const itemID = reader.itemID;
+      if (this._isSelectionTranslationDisabled(itemID)) return;
       this._ensureStylesheet(doc);
       const container = createElement(doc, "div", "spt-selection-translation");
       const button = createElement(doc, "button", "spt-translate-button", "翻译");
@@ -682,7 +811,6 @@
       status.setAttribute("role", "status");
       const resultNode = createElement(doc, "div", "spt-selection-result");
       const text = String(params?.annotation?.text || "").trim();
-      const itemID = reader.itemID;
       const pageIndex = params?.annotation?.position?.pageIndex;
       const pageNumber = Number.isInteger(pageIndex) ? pageIndex + 1 : null;
       button.disabled = true;
@@ -729,6 +857,10 @@
       let translating = false;
       const runTranslation = async ({ automatic = false, forceRefresh = false } = {}) => {
         if (translating || !text || !isCurrent()) return;
+        if (this._isSelectionTranslationDisabled(itemID)) {
+          container.remove();
+          return;
+        }
         translating = true;
         const retainCachedResult = forceRefresh && !cacheTag.hidden && Boolean(resultNode.textContent);
         configureButton({
@@ -749,10 +881,18 @@
             forceRefresh
           });
           if (!isCurrent()) return;
+          if (this._isSelectionTranslationDisabled(itemID)) {
+            container.remove();
+            return;
+          }
           renderTranslation(result, { hideButton: automatic || forceRefresh });
         }
         catch (error) {
           if (!isCurrent()) return;
+          if (this._isSelectionTranslationDisabled(itemID)) {
+            container.remove();
+            return;
+          }
           if (retainCachedResult) {
             cacheTag.hidden = false;
             status.textContent = `重新翻译失败：${error.message || "无法翻译所选内容"}`;
@@ -773,6 +913,10 @@
       };
 
       const continueAfterCacheMiss = () => {
+        if (this._isSelectionTranslationDisabled(itemID)) {
+          container.remove();
+          return;
+        }
         const automatic = Boolean(
           this.getPreference?.(Constants.PREFS.autoTranslateSelection)
         );
@@ -793,6 +937,10 @@
       if (text) {
         Promise.resolve(this.service.getCachedSelection(itemID, text, pageNumber)).then((cached) => {
           if (!isCurrent()) return;
+          if (this._isSelectionTranslationDisabled(itemID)) {
+            container.remove();
+            return;
+          }
           if (cached) {
             renderTranslation(cached);
             return;
@@ -809,6 +957,7 @@
     onPreferencesChanged() {
       for (const state of this.states.values()) {
         if (state.destroyed) continue;
+        this._updateSelectionToggleButton(state);
         if (!this.getPreference(Constants.PREFS.autoOpen) && !state.manualOpen) {
           state.panel.hidden = true;
         }
@@ -834,6 +983,7 @@
       }
       state.domCleanups = [];
       state.toolbarButton?.remove();
+      state.selectionToggleButton?.remove();
       state.panel?.remove();
       state.activeDrag = null;
       state.activeResize = null;
@@ -845,6 +995,7 @@
       state.tabPanels = null;
       state.panel = null;
       state.toolbarButton = null;
+      state.selectionToggleButton = null;
     }
 
     shutdown() {

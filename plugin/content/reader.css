@@ -14,6 +14,18 @@
   color: var(--accent-blue, #4072e5);
 }
 
+.spt-selection-disabled-slash {
+  opacity: 0;
+}
+
+.spt-selection-toggle-button[aria-pressed="true"] .spt-toolbar-icon {
+  color: var(--accent-red, #d94c4c);
+}
+
+.spt-selection-toggle-button[aria-pressed="true"] .spt-selection-disabled-slash {
+  opacity: 1;
+}
+
 .spt-panel[hidden] {
   display: none !important;
 }

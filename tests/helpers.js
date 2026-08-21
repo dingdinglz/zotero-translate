@@ -95,6 +95,7 @@ function makePreferenceStore(overrides = {}) {
     [Constants.PREFS.customModel, ""],
     [Constants.PREFS.targetLanguage, "简体中文"],
     [Constants.PREFS.autoTranslateSelection, false],
+    [Constants.PREFS.selectionTranslationDisabledItems, "[]"],
     [Constants.PREFS.autoOpen, true],
     [Constants.PREFS.panelX, -1],
     [Constants.PREFS.panelY, 56],

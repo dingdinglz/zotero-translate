@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { ReaderUI } = require("../plugin/content/reader-ui.js");
+const Constants = require("../plugin/content/constants.js");
 
 class FakeElement {
   constructor(tag, namespaceURI = "http://www.w3.org/1999/xhtml") {
@@ -294,7 +295,7 @@ test("failed cached retranslation keeps the cached result visible and retryable"
   assert.equal(button.textContent, "重新翻译");
 });
 
-test("toolbar injects only an icon button and toggles the separately mounted panel", async () => {
+test("toolbar injects separate panel and selection-translation buttons", async () => {
   const ui = new ReaderUI({
     service: { subscribe() { return () => {}; } },
     getPreference(name) {
@@ -311,10 +312,14 @@ test("toolbar injects only an icon button and toggles the separately mounted pan
 
   ui.handleToolbar({ reader, doc, append: (...nodes) => appended.push(...nodes) });
 
-  assert.equal(appended.length, 1);
+  assert.equal(appended.length, 2);
   assert.equal(appended[0].tagName, "button");
   assert.equal(appended[0].children[0].tagName, "svg");
   assert.equal(appended[0].getAttribute("aria-pressed"), "false");
+  assert.equal(appended[1].tagName, "button");
+  assert.equal(appended[1].children[0].tagName, "svg");
+  assert.equal(appended[1].getAttribute("aria-pressed"), "false");
+  assert.equal(appended[1].getAttribute("aria-label"), "禁用当前论文的划线翻译");
   assert.equal(doc.body.children.length, 1);
   assert.equal(doc.body.children[0].tagName, "aside");
   assert.notEqual(doc.body.children[0].parentNode, appended[0]);
@@ -348,6 +353,87 @@ test("toolbar injects only an icon button and toggles the separately mounted pan
   assert.equal(doc.body.children[0].hidden, true);
   assert.equal(appended[0].getAttribute("aria-pressed"), "false");
   assert.equal(appended[0].classList.contains("active"), false);
+});
+
+test("selection-translation toggle persists per PDF and blocks popup work", async () => {
+  const values = new Map([
+    [Constants.PREFS.selectionTranslationDisabledItems, "[]"],
+    [Constants.PREFS.autoOpen, false]
+  ]);
+  const saved = [];
+  let cacheLookups = 0;
+  let translationCalls = 0;
+  const ui = new ReaderUI({
+    service: {
+      subscribe() { return () => {}; },
+      async getCachedSelection() {
+        cacheLookups++;
+        return null;
+      },
+      async translateSelection() {
+        translationCalls++;
+        return { translation: "不应出现", fromCache: false };
+      }
+    },
+    getPreference(name) {
+      return values.has(name) ? values.get(name) : -1;
+    },
+    setPreference(name, value) {
+      saved.push([name, value]);
+      values.set(name, value);
+    },
+    stylesheetText: readerStylesheet
+  });
+  ui.refreshState = () => {};
+
+  const firstReader = { itemID: 10 };
+  const firstButtons = [];
+  ui.handleToolbar({
+    reader: firstReader,
+    doc: new FakeDocument(),
+    append: (...nodes) => firstButtons.push(...nodes)
+  });
+  const firstToggle = firstButtons[1];
+  await firstToggle.dispatch("click");
+
+  assert.deepEqual(saved, [[Constants.PREFS.selectionTranslationDisabledItems, '["10"]']]);
+  assert.equal(firstToggle.getAttribute("aria-pressed"), "true");
+  assert.equal(firstToggle.getAttribute("aria-label"), "启用当前论文的划线翻译");
+  assert.equal(firstToggle.classList.contains("active"), true);
+
+  let popupAppends = 0;
+  ui.handleSelectionPopup({
+    reader: firstReader,
+    doc: new FakeDocument(),
+    params: { annotation: { text: "model", position: { pageIndex: 0 } } },
+    append() { popupAppends++; }
+  });
+  assert.equal(popupAppends, 0);
+  assert.equal(cacheLookups, 0);
+  assert.equal(translationCalls, 0);
+
+  const secondReader = { itemID: 10 };
+  const secondButtons = [];
+  ui.handleToolbar({
+    reader: secondReader,
+    doc: new FakeDocument(),
+    append: (...nodes) => secondButtons.push(...nodes)
+  });
+  assert.equal(secondButtons[1].getAttribute("aria-pressed"), "true");
+
+  const otherPaperButtons = [];
+  ui.handleToolbar({
+    reader: { itemID: 11 },
+    doc: new FakeDocument(),
+    append: (...nodes) => otherPaperButtons.push(...nodes)
+  });
+  assert.equal(otherPaperButtons[1].getAttribute("aria-pressed"), "false");
+
+  await secondButtons[1].dispatch("click");
+  assert.equal(values.get(Constants.PREFS.selectionTranslationDisabledItems), "[]");
+  assert.equal(firstToggle.getAttribute("aria-pressed"), "false");
+  assert.equal(secondButtons[1].getAttribute("aria-pressed"), "false");
+  assert.equal(otherPaperButtons[1].getAttribute("aria-pressed"), "false");
 });
 
 test("abstract cache state is a tag and never mutates the translation text", async () => {

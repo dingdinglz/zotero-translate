@@ -5,6 +5,7 @@ pref("extensions.smart-paper-translator.customBaseURL", "");
 pref("extensions.smart-paper-translator.customModel", "");
 pref("extensions.smart-paper-translator.targetLanguage", "简体中文");
 pref("extensions.smart-paper-translator.autoTranslateSelection", false);
+pref("extensions.smart-paper-translator.selectionTranslationDisabledItems", "[]");
 pref("extensions.smart-paper-translator.autoOpen", true);
 pref("extensions.smart-paper-translator.panelX", -1);
 pref("extensions.smart-paper-translator.panelY", 56);
