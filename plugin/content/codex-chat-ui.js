@@ -50,6 +50,60 @@
     else element[name] = value;
   }
 
+  function normalizeExternalURL(value) {
+    const url = String(value || "").trim();
+    if (!/^https?:\/\//iu.test(url)) throw new Error("只允许打开 HTTP 或 HTTPS 链接");
+    let parsed;
+    try {
+      parsed = new URL(url);
+    }
+    catch (_error) {
+      throw new Error("链接地址无效");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("只允许打开 HTTP 或 HTTPS 链接");
+    }
+    return url;
+  }
+
+  function openExternalURL(value, zotero = global.Zotero) {
+    const url = normalizeExternalURL(value);
+    if (typeof zotero?.launchURL !== "function") {
+      throw new Error("当前 Zotero 无法调用系统浏览器");
+    }
+    zotero.launchURL(url);
+    return url;
+  }
+
+  function configureExternalLink(link, value, options = {}) {
+    const url = normalizeExternalURL(value);
+    link.href = url;
+    link.rel = "noopener noreferrer";
+    link.target = "_blank";
+    link.title = url;
+    setAttribute(link, "tooltiptext", url);
+    const launch = typeof options.onExternalLink === "function"
+      ? options.onExternalLink
+      : (href) => openExternalURL(href);
+    link.addEventListener("click", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      try {
+        const result = launch(url);
+        if (result && typeof result.then === "function") {
+          result.catch((error) => options.onExternalLinkError?.(error));
+        }
+      }
+      catch (error) {
+        if (typeof options.onExternalLinkError === "function") {
+          options.onExternalLinkError(error);
+        }
+        else global.Zotero?.logError?.(error);
+      }
+    });
+    return link;
+  }
+
   function parseTexMath(doc, source) {
     const value = String(source || "").trim();
     let index = 0;
@@ -225,7 +279,7 @@
   }
 
   function parseCodexDirectiveAt(source, start) {
-    const heading = source.slice(start).match(/^::([A-Za-z][\w-]*)\{/u);
+    const heading = source.slice(start).match(/^(?:::([A-Za-z][\w-]*)|:(codex-file-citation))\{/u);
     if (!heading) return null;
     let index = start + heading[0].length;
     const attributesStart = index;
@@ -242,7 +296,7 @@
         return {
           raw,
           length: raw.length,
-          name: heading[1],
+          name: heading[1] || heading[2],
           attributes: parseDirectiveAttributes(source.slice(attributesStart, index))
         };
       }
@@ -336,7 +390,7 @@
           continue;
         }
       }
-      if (text.startsWith("::", index)) {
+      if (text.startsWith("::", index) || text.startsWith(":codex-file-citation{", index)) {
         const directive = parseCodexDirectiveAt(text, index);
         if (directive && appendCodexDirective(doc, parent, directive, options)) {
           index += directive.length;
@@ -357,10 +411,7 @@
       if (text[index] === "[") {
         const linkMatch = text.slice(index).match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)(?:\s+["'][^"']*["'])?\)/iu);
         if (linkMatch) {
-          const link = doc.createElement("a");
-          link.href = linkMatch[2];
-          link.rel = "noopener noreferrer";
-          link.target = "_blank";
+          const link = configureExternalLink(doc.createElement("a"), linkMatch[2], options);
           appendSafeInline(doc, link, linkMatch[1], options, depth + 1);
           parent.append(link);
           index += linkMatch[0].length;
@@ -398,10 +449,7 @@
       if (text[index] === "<") {
         const autolink = text.slice(index).match(/^<(https?:\/\/[^>\s]+)>/iu);
         if (autolink) {
-          const link = doc.createElement("a");
-          link.href = autolink[1];
-          link.rel = "noopener noreferrer";
-          link.target = "_blank";
+          const link = configureExternalLink(doc.createElement("a"), autolink[1], options);
           link.textContent = autolink[1];
           parent.append(link);
           index += autolink[0].length;
@@ -727,12 +775,105 @@
     return "";
   }
 
+  function toolContentText(content) {
+    const values = [];
+    for (const item of Array.isArray(content) ? content : []) {
+      const block = item?.type === "content" ? item.content : item;
+      if (typeof block === "string") values.push(block);
+      else if (typeof block?.text === "string") values.push(block.text);
+    }
+    return values.filter(Boolean).join("\n\n");
+  }
+
+  function safeExternalURL(value) {
+    try {
+      return normalizeExternalURL(value);
+    }
+    catch (_error) {
+      return "";
+    }
+  }
+
+  function webSearchResults(entry) {
+    const results = [];
+    const seen = new Set();
+    const sources = [
+      entry?.rawOutput?.results,
+      entry?.rawOutput?.items,
+      entry?.rawOutput?.sources,
+      entry?.rawOutput?.data?.results,
+      entry?.content
+    ];
+    for (const source of sources) {
+      for (const rawItem of Array.isArray(source) ? source : []) {
+        const item = rawItem?.type === "content" ? rawItem.content : rawItem;
+        if (!item || typeof item !== "object") continue;
+        const url = safeExternalURL(item.url || item.uri || item.href || item.link);
+        if (!url) continue;
+        const title = String(item.title || item.name || url).trim() || url;
+        const snippet = String(
+          item.snippet || item.description || (item.type === "text" ? item.text : "") || ""
+        ).trim();
+        const key = `${url}\n${title}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        results.push({ title, url, snippet });
+      }
+    }
+    return results;
+  }
+
+  function describeWebSearch(entry) {
+    const title = String(entry?.title || "").trim();
+    const input = entry?.rawInput && typeof entry.rawInput === "object" ? entry.rawInput : {};
+    const action = input.action && typeof input.action === "object" ? input.action : null;
+    const isWebSearch = input.type === "webSearch" ||
+      /^(?:Web search|Open page|Find in page)(?::|\s|$)/iu.test(title);
+    if (!isWebSearch) return null;
+
+    let type = String(action?.type || "");
+    if (!type) {
+      if (/^Open page(?::|\s|$)/iu.test(title)) type = "openPage";
+      else if (/^Find in page(?::|\s|$)/iu.test(title)) type = "findInPage";
+      else type = "search";
+    }
+    const queries = [];
+    const addQuery = (value) => {
+      const query = String(value || "").trim();
+      if (query && !queries.includes(query)) queries.push(query);
+    };
+    if (type === "search") {
+      for (const query of Array.isArray(action?.queries) ? action.queries : []) addQuery(query);
+      addQuery(action?.query);
+      if (!queries.length) addQuery(input.query);
+      const titleQuery = title.match(/^Web search:\s*(.+)$/iu)?.[1];
+      if (!queries.length) addQuery(titleQuery);
+    }
+
+    let url = safeExternalURL(action?.url);
+    if (!url && type === "openPage") {
+      url = safeExternalURL(input.query) || safeExternalURL(title.replace(/^Open page:\s*/iu, ""));
+    }
+    let pattern = String(action?.pattern || "").trim();
+    if (!pattern && type === "findInPage") {
+      pattern = title.match(/^Find in page for\s+['"](.+?)['"](?:\s+in\s+|$)/iu)?.[1] || "";
+    }
+    return {
+      type,
+      queries,
+      url,
+      pattern,
+      results: webSearchResults(entry)
+    };
+  }
+
   function describeToolEntry(entry, workspacePath = "") {
     const title = String(entry?.title || "").trim();
     const kind = String(entry?.toolKind || "").toLowerCase();
     const path = toolPath(entry);
     const visiblePath = displayToolPath(path, workspacePath);
-    const output = toolOutputText(entry?.rawOutput);
+    const output = toolOutputText(entry?.rawOutput) || toolContentText(entry?.content);
+    const web = describeWebSearch(entry);
     const exitCode = Object.prototype.hasOwnProperty.call(entry?.rawOutput || {}, "exit_code")
       ? entry.rawOutput.exit_code
       : null;
@@ -746,6 +887,7 @@
       output,
       outputLabel: "工具输出",
       exitCode,
+      web: null,
       emptyMessage: "工具已完成，未返回文本输出"
     };
 
@@ -760,6 +902,34 @@
       result.emptyMessage = "命令尚未返回输出";
       const cwd = displayToolPath(entry?.rawInput?.cwd, workspacePath);
       if (cwd) result.fields.push({ label: "工作目录", value: cwd, code: true });
+    }
+    else if (web) {
+      result.category = "web-search";
+      result.icon = "◎";
+      result.web = web;
+      result.outputLabel = "返回内容";
+      if (web.type === "openPage") {
+        result.label = "打开网页";
+        result.subject = truncateLabel(web.url || "网页");
+        result.emptyMessage = "页面读取已完成；当前 ACP 事件未携带页面正文";
+      }
+      else if (web.type === "findInPage") {
+        result.label = "页内查找";
+        result.subject = truncateLabel(web.pattern ? `“${web.pattern}”` : "网页");
+        result.emptyMessage = "页内查找已完成；当前 ACP 事件未携带匹配片段";
+      }
+      else if (web.type === "search") {
+        result.label = "网页搜索";
+        result.subject = web.queries.length > 1
+          ? `${web.queries.length} 个查询`
+          : truncateLabel(web.queries[0] || "网页");
+        result.emptyMessage = "搜索动作已完成；当前 ACP 事件未携带结果摘要，引用链接会随 Codex 回答显示";
+      }
+      else {
+        result.label = "网页操作";
+        result.subject = "浏览与检索";
+        result.emptyMessage = "网页操作已完成；当前 ACP 事件未携带可展示详情";
+      }
     }
     else if (kind === "search" || /^Search for\s+/iu.test(title)) {
       const match = title.match(/^Search for\s+['"](.+)['"]\s+in\s+(.+)$/iu);
@@ -808,8 +978,73 @@
     return result;
   }
 
-  function appendToolDetails(doc, container, entry, workspacePath = "") {
+  function appendWebSearchDetails(doc, container, presentation, options = {}) {
+    const web = presentation.web;
+    if (!web) return;
+    if (web.queries.length) {
+      const section = doc.createElement("section");
+      section.className = "spt-codex-tool-section spt-codex-web-search-section";
+      const heading = doc.createElement("strong");
+      heading.textContent = web.queries.length > 1 ? `搜索请求（${web.queries.length}）` : "搜索请求";
+      const list = doc.createElement("ol");
+      list.className = "spt-codex-web-queries";
+      for (const query of web.queries) {
+        const item = doc.createElement("li");
+        item.textContent = query;
+        list.append(item);
+      }
+      section.append(heading, list);
+      container.append(section);
+    }
+    if (web.url || web.pattern) {
+      const section = doc.createElement("section");
+      section.className = "spt-codex-tool-section spt-codex-web-search-section";
+      const heading = doc.createElement("strong");
+      heading.textContent = web.type === "findInPage" ? "页内操作" : "页面";
+      section.append(heading);
+      if (web.pattern) {
+        const pattern = doc.createElement("code");
+        pattern.className = "spt-codex-web-pattern";
+        pattern.textContent = web.pattern;
+        section.append(pattern);
+      }
+      if (web.url) {
+        const link = configureExternalLink(doc.createElement("a"), web.url, options);
+        link.className = "spt-codex-web-link";
+        link.textContent = web.url;
+        section.append(link);
+      }
+      container.append(section);
+    }
+    if (web.results.length) {
+      const section = doc.createElement("section");
+      section.className = "spt-codex-tool-section spt-codex-web-search-section";
+      const heading = doc.createElement("strong");
+      heading.textContent = `返回内容（${web.results.length}）`;
+      const results = doc.createElement("div");
+      results.className = "spt-codex-web-results";
+      for (const result of web.results) {
+        const item = doc.createElement("article");
+        item.className = "spt-codex-web-result";
+        const link = configureExternalLink(doc.createElement("a"), result.url, options);
+        link.className = "spt-codex-web-result-title";
+        link.textContent = result.title;
+        item.append(link);
+        if (result.snippet) {
+          const snippet = doc.createElement("p");
+          snippet.textContent = result.snippet;
+          item.append(snippet);
+        }
+        results.append(item);
+      }
+      section.append(heading, results);
+      container.append(section);
+    }
+  }
+
+  function appendToolDetails(doc, container, entry, workspacePath = "", options = {}) {
     const presentation = describeToolEntry(entry, workspacePath);
+    appendWebSearchDetails(doc, container, presentation, options);
     if (presentation.command) {
       const section = doc.createElement("section");
       section.className = "spt-codex-tool-section";
@@ -852,13 +1087,16 @@
         exit.textContent = `退出码 ${presentation.exitCode}`;
         header.append(exit);
       }
-      const output = doc.createElement("pre");
-      output.className = "spt-codex-tool-output";
-      output.textContent = presentation.output;
+      const output = doc.createElement(presentation.web ? "div" : "pre");
+      output.className = presentation.web
+        ? "spt-codex-tool-output spt-codex-tool-web-output spt-codex-markdown"
+        : "spt-codex-tool-output";
+      if (presentation.web) renderSafeMarkdown(doc, output, presentation.output, options);
+      else output.textContent = presentation.output;
       section.append(header, output);
       container.append(section);
     }
-    else {
+    else if (!presentation.web?.results.length) {
       const empty = doc.createElement("p");
       empty.className = "spt-codex-tool-empty";
       empty.textContent = presentation.emptyMessage;
@@ -896,6 +1134,17 @@
       this.paneID = null;
       this.views = new Map();
       this.windowCleanups = new Map();
+    }
+
+    _externalLinkOptions(view) {
+      return {
+        onExternalLink: (url) => openExternalURL(url),
+        onExternalLinkError: (error) => {
+          const message = error?.message || "无法在系统浏览器中打开链接";
+          if (view?.elements?.notices) view.elements.notices.textContent = message;
+          this.log("External link failed", error);
+        }
+      };
     }
 
     init(pluginID) {
@@ -1230,7 +1479,7 @@
           content: interaction.toolCall.content,
           locations: interaction.toolCall.locations,
           status: "pending"
-        }, view.state?.record?.session?.workspacePath || "");
+        }, view.state?.record?.session?.workspacePath || "", this._externalLinkOptions(view));
         card.append(details);
         const actions = doc.createElement("div");
         actions.className = "spt-codex-interaction-actions";
@@ -1327,6 +1576,7 @@
           const content = doc.createElement("div");
           content.className = "spt-codex-markdown";
           renderSafeMarkdown(doc, content, entry.text, {
+            ...this._externalLinkOptions(view),
             onFileCitation: ({ path }) => {
               this.service.revealCitation(view.attachmentID, path).catch((error) => {
                 view.elements.notices.textContent = error.message || "无法打开引用文件";
@@ -1366,7 +1616,13 @@
           const eventContent = doc.createElement("div");
           eventContent.className = "spt-codex-event-content";
           if (entry.kind === "tool") {
-            appendToolDetails(doc, eventContent, entry, state.record.session.workspacePath);
+            appendToolDetails(
+              doc,
+              eventContent,
+              entry,
+              state.record.session.workspacePath,
+              this._externalLinkOptions(view)
+            );
           }
           else if (entry.kind === "plan" && Array.isArray(entry.entries)) {
             const list = doc.createElement("ol");
@@ -1455,6 +1711,7 @@
     CODEX_SIDENAV_L10N_ID,
     ensureCodexLocalization,
     resolveReaderAttachmentID,
+    openExternalURL,
     renderSafeMarkdown,
     captureTranscriptViewport,
     restoreTranscriptViewport,

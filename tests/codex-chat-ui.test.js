@@ -12,6 +12,7 @@ const {
   CODEX_SIDENAV_L10N_ID,
   ensureCodexLocalization,
   resolveReaderAttachmentID,
+  openExternalURL,
   renderSafeMarkdown,
   captureTranscriptViewport,
   restoreTranscriptViewport,
@@ -88,18 +89,37 @@ test("resolution fails closed for library panes, stale tabs, and standalone Read
 test("restricted Markdown creates text and safe links but never HTML or remote images", () => {
   const doc = new Document();
   const container = new Node("div");
+  let opened = null;
   renderSafeMarkdown(
     doc,
     container,
-    '<img src="https://tracker.invalid/pixel">\n\n[docs](https://example.com)\n\n```html\n<script>alert(1)</script>\n```'
+    '<img src="https://tracker.invalid/pixel">\n\n[docs](https://example.com)\n\n```html\n<script>alert(1)</script>\n```',
+    { onExternalLink(url) { opened = url; } }
   );
   const nodes = descendants(container);
   assert.equal(nodes.some((node) => node.localName === "img" || node.localName === "script"), false);
   const link = nodes.find((node) => node.localName === "a");
   assert.equal(link.href, "https://example.com");
   assert.equal(link.rel, "noopener noreferrer");
+  let prevented = false;
+  link.listeners.get("click")({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(opened, "https://example.com");
   assert.ok(nodes.some((node) => node.textContent.includes("<img src=")));
   assert.ok(nodes.some((node) => node.textContent.includes("<script>")));
+});
+
+test("external URLs use Zotero's system-browser launcher and reject unsafe schemes", () => {
+  const launched = [];
+  assert.equal(
+    openExternalURL("https://example.com/paper", { launchURL: (url) => launched.push(url) }),
+    "https://example.com/paper"
+  );
+  assert.deepEqual(launched, ["https://example.com/paper"]);
+  assert.throws(
+    () => openExternalURL("javascript:alert(1)", { launchURL() {} }),
+    /HTTP 或 HTTPS/u
+  );
 });
 
 test("academic Markdown renders emphasis, lists, tables, MathML, and Codex file citations", () => {
@@ -120,7 +140,9 @@ test("academic Markdown renders emphasis, lists, tables, MathML, and Codex file 
     "M = M_{\\text{inherited}} \\lor M_{\\text{artificial}}",
     "\\]",
     "",
-    "证据：::codex-file-citation{path=\"/workspace/source.pdf\" line=12}"
+    "原文：:codex-file-citation{path=\"/workspace/source.pdf\" purpose=\"source\"}",
+    "",
+    "行号：::codex-file-citation{path=\"/workspace/notes.md\" line=12}"
   ].join("\n"), {
     onFileCitation(citation) { opened = citation; }
   });
@@ -130,12 +152,14 @@ test("academic Markdown renders emphasis, lists, tables, MathML, and Codex file 
     assert.ok(nodes.some((node) => node.localName === tag), `missing ${tag}`);
   }
   assert.ok(nodes.some((node) => node.localName === "mo" && node.textContent === "∨"));
-  const citation = nodes.find((node) => node.className === "spt-codex-file-citation");
-  assert.equal(citation.localName, "button");
-  assert.equal(citation.textContent, "▧ source.pdf:12");
-  citation.listeners.get("click")();
-  assert.deepEqual(opened, { path: "/workspace/source.pdf", start: "12", end: undefined });
-  assert.equal(nodes.some((node) => node.textContent.includes("::codex-file-citation")), false);
+  const citations = nodes.filter((node) => node.className === "spt-codex-file-citation");
+  assert.equal(citations.length, 2);
+  assert.equal(citations[0].localName, "button");
+  assert.equal(citations[0].textContent, "▧ source.pdf");
+  citations[0].listeners.get("click")();
+  assert.deepEqual(opened, { path: "/workspace/source.pdf", start: undefined, end: undefined });
+  assert.equal(citations[1].textContent, "▧ notes.md:12");
+  assert.equal(nodes.some((node) => /:?codex-file-citation/u.test(node.textContent)), false);
 });
 
 test("tool and thought rows retain a fixed flex basis in long transcripts", () => {
@@ -245,6 +269,83 @@ test("common ACP tools become semantic cards without raw transcript metadata", (
   const renderedText = descendants(container).map((node) => node.textContent).join("\n");
   assert.doesNotMatch(renderedText, /remoteID|createdAt|must-not-render/u);
   assert.match(renderedText, /命令|echo ok|命令输出|退出码 0/u);
+});
+
+test("Codex web-search actions render full queries, page operations, and returned links", () => {
+  const searchEntry = {
+    kind: "tool",
+    toolKind: "search",
+    title: "Web search: first query, second query",
+    status: "completed",
+    rawInput: {
+      type: "webSearch",
+      query: "first query ...",
+      action: { type: "search", queries: ["first query", "second query"] }
+    }
+  };
+  const search = describeToolEntry(searchEntry);
+  assert.equal(search.category, "web-search");
+  assert.equal(search.label, "网页搜索");
+  assert.equal(search.subject, "2 个查询");
+  assert.deepEqual(search.web.queries, ["first query", "second query"]);
+  assert.match(search.emptyMessage, /ACP 事件未携带结果摘要/u);
+
+  const doc = new Document();
+  const searchCard = new Node("div");
+  appendToolDetails(doc, searchCard, searchEntry);
+  const searchText = descendants(searchCard).map((node) => node.textContent).join("\n");
+  assert.match(searchText, /搜索请求（2）/u);
+  assert.match(searchText, /first query/u);
+  assert.match(searchText, /second query/u);
+
+  let opened = null;
+  const openPageEntry = {
+    kind: "tool",
+    toolKind: "search",
+    title: "Open page: https://arxiv.org/html/2608.13316",
+    status: "completed",
+    rawInput: {
+      type: "webSearch",
+      query: "https://arxiv.org/html/2608.13316",
+      action: { type: "openPage", url: "https://arxiv.org/html/2608.13316" }
+    },
+    rawOutput: {
+      results: [{
+        title: "A paper",
+        url: "https://arxiv.org/abs/2608.13316",
+        snippet: "A returned result summary."
+      }]
+    }
+  };
+  const openPage = describeToolEntry(openPageEntry);
+  assert.equal(openPage.label, "打开网页");
+  assert.equal(openPage.web.queries.length, 0);
+  assert.equal(openPage.web.results.length, 1);
+  const pageCard = new Node("div");
+  appendToolDetails(doc, pageCard, openPageEntry, "", {
+    onExternalLink(url) { opened = url; }
+  });
+  const links = descendants(pageCard).filter((node) => node.localName === "a");
+  assert.equal(links.length, 2);
+  links[0].listeners.get("click")({ preventDefault() {} });
+  assert.equal(opened, "https://arxiv.org/html/2608.13316");
+  links[1].listeners.get("click")({ preventDefault() {} });
+  assert.equal(opened, "https://arxiv.org/abs/2608.13316");
+  const pageText = descendants(pageCard).map((node) => node.textContent).join("\n");
+  assert.match(pageText, /返回内容（1）|A returned result summary/u);
+
+  const find = describeToolEntry({
+    kind: "tool",
+    toolKind: "search",
+    title: "Find in page for 'LSM-2'",
+    status: "completed",
+    rawInput: {
+      type: "webSearch",
+      action: { type: "findInPage", url: null, pattern: "LSM-2" }
+    }
+  });
+  assert.equal(find.label, "页内查找");
+  assert.equal(find.web.pattern, "LSM-2");
 });
 
 test("transcript viewport follows only when the reader was already at the bottom", () => {

@@ -666,6 +666,76 @@ button.spt-codex-file-citation:hover {
   font-size: 0.82em;
 }
 
+.spt-codex-web-search-section {
+  min-width: 0;
+}
+
+.spt-codex-web-queries {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-inline-start: 24px;
+}
+
+.spt-codex-web-queries li {
+  padding-inline-start: 2px;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82em;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.spt-codex-web-pattern {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 6px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, CanvasText 6%, Canvas);
+  overflow-wrap: anywhere;
+}
+
+.spt-codex-web-link,
+.spt-codex-web-result-title,
+.spt-codex-tool-web-output a {
+  color: LinkText;
+  overflow-wrap: anywhere;
+  text-decoration-thickness: from-font;
+  text-underline-offset: 2px;
+}
+
+.spt-codex-web-results {
+  display: grid;
+  gap: 7px;
+}
+
+.spt-codex-web-result {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--spt-codex-border);
+  border-radius: 7px;
+  background: color-mix(in srgb, CanvasText 2.5%, Canvas);
+}
+
+.spt-codex-web-result-title {
+  font-weight: 620;
+}
+
+.spt-codex-web-result p {
+  margin: 4px 0 0;
+  color: var(--spt-codex-muted);
+  font-size: 0.85em;
+  line-height: 1.45;
+}
+
+.spt-codex-tool-web-output {
+  padding: 8px;
+  font-family: inherit;
+  font-size: 0.88em;
+  white-space: normal;
+}
+
 .spt-codex-tool-output-header {
   display: flex;
   align-items: center;

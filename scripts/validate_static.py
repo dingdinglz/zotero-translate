@@ -17,7 +17,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.19"
+    assert manifest["version"] == "0.1.20"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -48,6 +48,9 @@ def main() -> None:
     assert 'this.acp.request("session/delete"' not in codex_chat
     assert 'purpose: "version", allowDownload: true' not in bootstrap
     assert ".innerHTML =" not in chat_ui
+    assert "zotero.launchURL(url)" in chat_ui
+    assert "只允许打开 HTTP 或 HTTPS 链接" in chat_ui
+    assert ':codex-file-citation{' in chat_ui
     assert "设置页只提供默认值" in chat_ui
     assert "getByTabID(tabID)" in chat_ui
     assert 'CODEX_L10N_RESOURCE = "smart-paper-translator-codex-chat.ftl"' in chat_ui
