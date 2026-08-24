@@ -1,6 +1,6 @@
 # Smart Paper Translator
 
-Smart Paper Translator 0.1.22 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个连接本机 Codex 的原生右侧栏。Codex 对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
+Smart Paper Translator 0.1.23 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个连接本机 Codex 的原生右侧栏。Codex 对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
 
 ## 功能
 
@@ -23,7 +23,7 @@ Smart Paper Translator 0.1.22 是面向 macOS Zotero 9 内置 PDF Reader 的学�
 - Zotero 重启后，在用户重新加载或首次发送前通过 `session/load` 恢复同一 Codex thread，并用 thread 回放对账本地镜像。交付状态不确定时必须先对账，避免重复发送。
 - 支持流式文本、安全 Markdown（标题、强调、列表、引用、表格、代码）和完整的 KaTeX 0.18.4 → Firefox MathML 公式渲染，包括分式、求和上下标、集合运算、重音、根式、矩阵、对齐环境及上下花括号；解析失败时保留原始 TeX，不再输出命令粘连的伪公式。Codex 的 `:codex-file-citation{...}` 与兼容的 `::codex-file-citation{...}` 文件引用会显示为引用胶囊，并且只允许在当前论文工作区内定位。工具和计划卡片在长对话中保持固定高度；流式更新会保留已展开卡片与阅读位置，只有用户原本就在底部时才继续跟随新内容。
 - 超宽工具输出、路径和表格被限制在 Item Pane 内，不再把用户消息推到侧栏可视区域之外。
-- `execute`、文件读取、图片查看和搜索等常见工具会显示为语义卡片，只呈现命令、工作目录、目标文件、关键词、输出与退出码，不再把内部 ID、时间戳及原始事件 JSON 暴露在界面中；权限审批使用同一套可读展示。Web Search 会区分多查询搜索、打开网页和页内查找，完整展示 ACP 返回的查询、页面、查找词，以及事件中实际携带的结果标题、摘要或文本；若固定适配器没有传回网页正文或结果摘要，卡片会明确标注协议事件未携带内容。
+- `execute`、文件读取、图片查看和搜索等常见工具会显示为语义卡片，只呈现安全元数据，不再把内部 ID、时间戳及原始事件 JSON 暴露在界面中；权限审批使用同一套可读展示。完成态 `View Image` 会联合核对工具类型、标题、输入路径、位置和资源链接，再把通过常规文件、25 MiB、扩展名与文件签名校验的 PNG/JPEG/GIF/WebP/AVIF 复制到工作区外的会话媒体目录；SVG、未知格式、路径不一致和伪装文件只显示错误，不回退直读源路径。图片卡片默认折叠，用户展开后才解码本地副本；点击预览可在当前 Zotero 窗口放大，并在适应窗口与 1:1 原始像素间切换。Web Search 会区分多查询搜索、打开网页和页内查找，完整展示 ACP 返回的查询、页面、查找词，以及事件中实际携带的结果标题、摘要或文本；若固定适配器没有传回网页正文或结果摘要，卡片会明确标注协议事件未携带内容。
 - Codex 回答和 Web Search 卡片中的 HTTP/HTTPS 链接只在用户点击后通过 Zotero 9.0.6 的 `Zotero.launchURL()` 交给系统默认浏览器；插件不在 Item Pane 内导航，也不允许其他 URL scheme。
 - Codex 思考增量中的最新非空状态行会显示在输入框上方的加载栏中；空白分隔块被忽略，历史思考不再堆成可展开卡片，任务结束后加载栏自动隐藏。
 - 设置页提供默认关闭的“开发者模式”。只有开启后，Codex 侧栏才显示“复制日志”按钮，并在内存中记录当前实时 turn 的工具调用与思考事件；关闭后立即清空且停止采集。日志会脱敏用户主目录和常见密钥字段，并限制事件、字符串及集合大小，但复制前仍应检查其中的命令、路径和工具输出。
@@ -58,6 +58,7 @@ smart-paper-translator/
 └── codex-acp/
     ├── records/                     # 每个 PDF 的 session 映射与离线对话镜像
     ├── workspaces/                  # 当前 session 的 source.pdf 与生成文件
+    ├── tool-images/                 # 按论文/本地会话隔离、不会交给 ACP 的 View Image 副本
     ├── archives/                    # 重建后保留的旧映射和旧工作区
     ├── configuration-catalog.json   # 最近一次显式检测得到的模型/推理选项目录
     └── configuration-workspace/     # 不含论文的临时配置检测工作区
@@ -66,6 +67,7 @@ smart-paper-translator/
 - JSON 使用临时文件原子替换；损坏镜像会先生成 `.corrupt-*` 备份再重建。
 - Codex thread 是上下文权威来源，本地镜像用于离线展示。thread 缺失时保留本地历史为只读，需用户确认后才能新建会话。
 - PDF 大小或修改时间变化时暂停发送。用户可以继续使用旧快照，或归档旧映射与工作区后建立新 session。
+- 同一 session 重启或 `session/load` 回放时，工具调用 ID 会重新关联已复制的图片副本；新建会话会删除旧 session 的 `tool-images` 目录，因此旧归档中的图片预览不再保留。
 - 若系统找不到 `pdftotext`，插件使用 Zotero 9.0.6 的 `Zotero.PDFWorker.getFullText()` 生成本地 `source.txt` 兜底，但仍保留并引用真实 PDF。
 
 这些文件不参与 Zotero 同步，也不加密。
@@ -76,6 +78,7 @@ smart-paper-translator/
 - 打开 PDF、展开 Codex 侧栏和读取离线镜像不会启动 ACP、下载依赖或产生 Codex 用量。用户发送消息会启动已经准备好的本地适配器；用户明确点击“准备并检测”或“重新检测”也会启动 ACP，并使用临时空 session 更新选项目录，但不发送提示词。
 - 未发送的 Codex 问题和 PDF 选区草稿只保存在插件进程内存中，按附件隔离；切换 Reader tab、折叠侧栏或重建视图时保留，发送成功或插件退出时清除。自动展开能力缺失时草稿仍保留，可手动打开 Codex 侧栏。
 - 第一条 Codex 消息会把 PDF 的本地快照交给本机 Codex；后续消息只发送文本。同一 thread 中 Codex 仍可读取自己的工作区和上下文。
+- `tool-images/<论文标识>/<本地会话标识>/` 位于 ACP 工作区之外，不会作为 cwd、资源、附加目录或软链接交给 Codex；普通界面不显示源文件绝对路径，只渲染完成校验的受控副本。
 - 本机 Codex 的 Skills/MCP 可能访问论文之外的数据或服务；实际访问仍受 Codex 配置、沙箱和逐次权限审批约束。
 - 原始 HTML 不会渲染，远程图片不会自动加载；Markdown、公式、Codex 指令、工具输出和权限详情均通过受限 DOM/MathML 节点显示，不使用 `innerHTML`。公式由 XPI 内置 KaTeX 离线转换，使用 `trust: false`、有限宏展开与尺寸上限，只导入不含外部元素、链接或资源属性的 MathML。HTTP/HTTPS 链接只在明确点击后交给系统浏览器，网页访问不发生在插件渲染过程中。
 - 开发者模式默认关闭。开启时只收集当前实时 turn 的工具与思考事件，不收集用户消息或最终回答；内存日志采用有界环形缓冲并做密钥和用户目录脱敏，关闭模式、重建会话或退出插件时清空。
@@ -90,7 +93,7 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.22.xpi
+unzip -t dist/smart-paper-translator-0.1.23.xpi
 ```
 
 真实 npx 下载、Codex 用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。

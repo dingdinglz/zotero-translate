@@ -8,7 +8,10 @@ const {
   CodexChatService,
   latestThoughtStatus,
   formatSelectionPrompt,
-  parseVisibleUserMessage
+  parseVisibleUserMessage,
+  resolveToolImageSource,
+  detectToolImageFormat,
+  normalizeToolImageSnapshot
 } = require("../plugin/content/codex-chat.js");
 const { MemoryIO, makePaper, makePreferenceStore } = require("./helpers.js");
 
@@ -159,16 +162,39 @@ function makeHarness({
     copies: [],
     textWrites: [],
     revealed: [],
+    fileTypes: new Map(),
+    statOverrides: new Map(),
     join: (...parts) => parts.join("/"),
     async getAttachmentPath(id) {
       assert.equal(id, 10);
       return current.originalPath;
     },
     async stat(path) {
-      assert.equal(path, current.originalPath);
-      return { size: current.size, lastModified: current.lastModified };
+      if (this.statOverrides.has(path)) return this.statOverrides.get(path);
+      if (path === current.originalPath) {
+        return { size: current.size, lastModified: current.lastModified, type: "regular" };
+      }
+      const bytes = io.files.get(path);
+      if (!bytes) throw new Error("ENOENT");
+      return {
+        size: bytes.length,
+        lastModified: current.lastModified,
+        type: this.fileTypes.get(path) || "regular"
+      };
     },
-    async copyAtomic(source, target) { this.copies.push({ source, target }); },
+    async read(path, { maxBytes } = {}) {
+      const bytes = io.files.get(path);
+      if (!bytes) throw new Error("ENOENT");
+      return bytes.slice(0, maxBytes || bytes.length);
+    },
+    async remove(path) {
+      await io.remove(path, { ignoreAbsent: true });
+    },
+    async copyAtomic(source, target, { noOverwrite = false } = {}) {
+      this.copies.push({ source, target, noOverwrite });
+      if (noOverwrite && io.files.has(target)) throw new Error("EEXIST");
+      if (io.files.has(source)) await io.copy(source, target);
+    },
     async hasPDFToText() { return hasPDFToText; },
     async extractPDFText() { return "extracted local text"; },
     async writeUTF8Atomic(path, value) { this.textWrites.push({ path, value }); },
@@ -191,6 +217,209 @@ function makeHarness({
   });
   return { service, cache, acp, fileSystem, current, paper, io, prefs };
 }
+
+function pngBytes() {
+  return Uint8Array.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52
+  ]);
+}
+
+function viewImageUpdate(path, overrides = {}) {
+  return {
+    sessionUpdate: "tool_call",
+    toolCallId: "view-image-1",
+    title: `View Image ${path}`,
+    kind: "read",
+    status: "completed",
+    rawInput: { path },
+    locations: [{ path }],
+    content: [{
+      type: "content",
+      content: {
+        type: "resource_link",
+        uri: path,
+        name: path
+      }
+    }],
+    ...overrides
+  };
+}
+
+test("View Image recognition requires matching completed read, title, location, input, and resource link", () => {
+  const entry = {
+    id: "tool-local-1",
+    remoteID: "view-image-1",
+    kind: "tool",
+    title: "View Image figures/chart.png",
+    toolKind: "read",
+    status: "completed",
+    rawInput: { path: "figures/chart.png" },
+    locations: [{ path: "/chat/workspaces/paper/session/figures/chart.png" }],
+    content: [{
+      type: "resource_link",
+      uri: "file:///chat/workspaces/paper/session/figures/chart.png"
+    }]
+  };
+  assert.deepEqual(resolveToolImageSource(
+    entry,
+    "/chat/workspaces/paper/session",
+    (...parts) => parts.join("/")
+  ), {
+    path: "/chat/workspaces/paper/session/figures/chart.png",
+    originalName: "chart.png",
+    extension: "png"
+  });
+  assert.throws(() => resolveToolImageSource({
+    ...entry,
+    content: [{ type: "resource_link", uri: "file:///tmp/other.png" }]
+  }, "/chat/workspaces/paper/session", (...parts) => parts.join("/")), {
+    code: "TOOL_IMAGE_PATH"
+  });
+});
+
+test("tool image signatures allow only supported raster formats and interrupted copies fail closed", () => {
+  const cases = [
+    [pngBytes(), "image/png"],
+    [Uint8Array.from([0xff, 0xd8, 0xff, 0xe0]), "image/jpeg"],
+    [new TextEncoder().encode("GIF89a"), "image/gif"],
+    [new TextEncoder().encode("RIFF0000WEBP"), "image/webp"],
+    [Uint8Array.from([
+      0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70,
+      0x61, 0x76, 0x69, 0x66, 0x00, 0x00, 0x00, 0x00,
+      0x61, 0x76, 0x69, 0x66, 0x6d, 0x69, 0x66, 0x31
+    ]), "image/avif"]
+  ];
+  for (const [bytes, mimeType] of cases) {
+    assert.equal(detectToolImageFormat(bytes).mimeType, mimeType);
+  }
+  assert.equal(detectToolImageFormat(new TextEncoder().encode("<svg></svg>")), null);
+  assert.deepEqual(normalizeToolImageSnapshot({
+    schemaVersion: Constants.ACP_TOOL_IMAGE_SCHEMA_VERSION,
+    status: "copying",
+    originalName: "/Users/alice/private/chart.png"
+  }), {
+    schemaVersion: Constants.ACP_TOOL_IMAGE_SCHEMA_VERSION,
+    status: "error",
+    originalName: "chart.png",
+    errorCode: "TOOL_IMAGE_INTERRUPTED",
+    message: "上次图片复制未完成，请重新调用 View Image。"
+  });
+});
+
+test("completed View Image creates a validated session copy outside the ACP workspace", async () => {
+  const sourcePath = "/private/tmp/viewed-chart.png";
+  const acp = new FakeACP();
+  const harness = makeHarness({ acp });
+  harness.io.setBytes(sourcePath, pngBytes());
+  acp.promptHook = async (params, client) => {
+    client.emit("session/update", {
+      sessionId: params.sessionId,
+      update: viewImageUpdate(sourcePath)
+    });
+    return { stopReason: "end_turn" };
+  };
+
+  await harness.service.send(10, "查看图表");
+  const state = await harness.service.load(10);
+  const tool = state.record.transcript.find((entry) => entry.remoteID === "view-image-1");
+  assert.equal(tool.imageSnapshot.status, "ready");
+  assert.equal(tool.imageSnapshot.mimeType, "image/png");
+  assert.equal(tool.imageSnapshot.originalName, "viewed-chart.png");
+  assert.match(tool.imageSnapshot.localURI, /^file:\/\/\/chat\/tool-images\//u);
+  const target = harness.cache.toolImagePath(harness.paper, state.record, tool.imageSnapshot.fileName);
+  assert.equal(await harness.io.exists(target), true);
+  assert.match(target, /^\/chat\/tool-images\/1--ABCDEFGH\/workspace-1\//u);
+  assert.equal(target.startsWith(state.record.session.workspacePath + "/"), false);
+  assert.equal(harness.fileSystem.copies.at(-1).noOverwrite, true);
+
+  const persisted = await harness.cache.load(harness.paper);
+  const persistedImage = persisted.transcript.find(
+    (entry) => entry.remoteID === "view-image-1"
+  ).imageSnapshot;
+  assert.equal(Object.prototype.hasOwnProperty.call(persistedImage, "localURI"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(persistedImage, "sourcePath"), false);
+
+  await harness.service.rebuild(10);
+  assert.equal(await harness.io.exists(target), false);
+});
+
+test("View Image rejects mismatched signatures and oversized files without rendering the source", async () => {
+  for (const mode of ["signature", "oversized", "path-mismatch"]) {
+    const sourcePath = `/private/tmp/${mode}.png`;
+    const acp = new FakeACP();
+    const harness = makeHarness({ acp });
+    harness.io.setBytes(
+      sourcePath,
+      mode === "signature"
+        ? Uint8Array.from([0xff, 0xd8, 0xff, 0xe0])
+        : pngBytes()
+    );
+    if (mode === "oversized") {
+      harness.fileSystem.statOverrides.set(sourcePath, {
+        type: "regular",
+        size: Constants.ACP_TOOL_IMAGE_MAX_BYTES + 1,
+        lastModified: 1
+      });
+    }
+    acp.promptHook = async (params, client) => {
+      client.emit("session/update", {
+        sessionId: params.sessionId,
+        update: viewImageUpdate(sourcePath, mode === "path-mismatch" ? {
+          content: [{ type: "resource_link", uri: "file:///private/tmp/another.png" }]
+        } : {})
+      });
+      return { stopReason: "end_turn" };
+    };
+
+    await harness.service.send(10, "查看失败图片");
+    const state = await harness.service.load(10);
+    const image = state.record.transcript.find(
+      (entry) => entry.remoteID === "view-image-1"
+    ).imageSnapshot;
+    assert.equal(image.status, "error");
+    assert.equal(image.localURI, undefined);
+    assert.equal(harness.fileSystem.copies.length, 1, "only source.pdf may be copied");
+    assert.equal(JSON.stringify(image).includes(sourcePath), false);
+  }
+});
+
+test("session/load reconnects persisted image metadata by tool call ID without recopying", async () => {
+  const io = new MemoryIO();
+  const sourcePath = "/private/tmp/replayed-chart.png";
+  io.setBytes(sourcePath, pngBytes());
+  const firstACP = new FakeACP();
+  firstACP.promptHook = async (params, client) => {
+    client.emit("session/update", {
+      sessionId: params.sessionId,
+      update: viewImageUpdate(sourcePath)
+    });
+    return { stopReason: "end_turn" };
+  };
+  const first = makeHarness({ io, acp: firstACP });
+  await first.service.send(10, "第一次查看");
+  const firstState = await first.service.load(10);
+  const firstImage = firstState.record.transcript.find(
+    (entry) => entry.remoteID === "view-image-1"
+  ).imageSnapshot;
+
+  const secondACP = new FakeACP();
+  secondACP.loadHook = async (params, client) => {
+    client.emit("session/update", {
+      sessionId: params.sessionId,
+      update: viewImageUpdate(sourcePath)
+    });
+  };
+  const second = makeHarness({ io, acp: secondACP });
+  const replayed = await second.service.reload(10);
+  const replayedImage = replayed.record.transcript.find(
+    (entry) => entry.remoteID === "view-image-1"
+  ).imageSnapshot;
+  assert.equal(replayedImage.status, "ready");
+  assert.equal(replayedImage.fileName, firstImage.fileName);
+  assert.match(replayedImage.localURI, /^file:\/\/\/chat\/tool-images\//u);
+  assert.equal(second.fileSystem.copies.length, 0);
+});
 
 test("first prompt attaches copied PDF once and later prompts are text-only in the same session", async () => {
   const { service, acp, fileSystem } = makeHarness();
@@ -404,7 +633,7 @@ test("developer mode alone captures bounded redacted tool and thought diagnostic
   assert.equal(state.diagnosticEventCount, 3);
 
   const report = await service.getDiagnosticReport(10);
-  assert.equal(report.pluginVersion, "0.1.22");
+  assert.equal(report.pluginVersion, "0.1.23");
   assert.equal(report.eventCount, 3);
   assert.deepEqual(report.events.map((entry) => entry.sessionUpdate), [
     "agent_thought_chunk",

@@ -323,6 +323,229 @@
     return "/" + normalized.join("/");
   }
 
+  const TOOL_IMAGE_FORMATS = Object.freeze({
+    png: Object.freeze({ extension: "png", mimeType: "image/png" }),
+    jpg: Object.freeze({ extension: "jpg", mimeType: "image/jpeg" }),
+    jpeg: Object.freeze({ extension: "jpg", mimeType: "image/jpeg" }),
+    gif: Object.freeze({ extension: "gif", mimeType: "image/gif" }),
+    webp: Object.freeze({ extension: "webp", mimeType: "image/webp" }),
+    avif: Object.freeze({ extension: "avif", mimeType: "image/avif" })
+  });
+
+  const TOOL_IMAGE_FAILURE_MESSAGES = Object.freeze({
+    TOOL_IMAGE_PATH: "图片路径信息缺失或不一致，未创建本地副本。",
+    TOOL_IMAGE_FILE: "源图片不存在、不可读或不是常规文件。",
+    TOOL_IMAGE_EMPTY: "源图片为空，未创建本地副本。",
+    TOOL_IMAGE_TOO_LARGE: "源图片超过 25 MiB 上限，未创建本地副本。",
+    TOOL_IMAGE_FORMAT: "只支持 PNG、JPEG、GIF、WebP 和 AVIF 栅格图片。",
+    TOOL_IMAGE_SIGNATURE: "图片扩展名与文件内容不一致，未创建本地副本。",
+    TOOL_IMAGE_COPY: "图片副本创建失败，请重新调用 View Image。",
+    TOOL_IMAGE_INTERRUPTED: "上次图片复制未完成，请重新调用 View Image。",
+    TOOL_IMAGE_REFERENCE: "本地图片副本引用无效，请重新调用 View Image。"
+  });
+
+  function toolImageFailureMessage(code) {
+    return TOOL_IMAGE_FAILURE_MESSAGES[code] || TOOL_IMAGE_FAILURE_MESSAGES.TOOL_IMAGE_COPY;
+  }
+
+  function safeToolImageDisplayName(path) {
+    const name = String(path || "").replace(/\\/gu, "/").split("/").pop() || "图片";
+    const sanitized = name.replace(/[\u0000-\u001f\u007f]/gu, "").trim();
+    return (sanitized || "图片").slice(0, 120);
+  }
+
+  function toolImageExtension(path) {
+    const match = String(path || "").match(/\.([A-Za-z0-9]+)$/u);
+    return match ? String(match[1]).toLowerCase() : "";
+  }
+
+  function fileURIToLocalPath(value) {
+    const text = String(value || "").trim();
+    if (!/^file:\/\//iu.test(text)) return text;
+    try {
+      const parsed = new URL(text);
+      if (parsed.protocol !== "file:" || (parsed.hostname && parsed.hostname !== "localhost")) {
+        return "";
+      }
+      return decodeURIComponent(parsed.pathname);
+    }
+    catch (_error) {
+      return "";
+    }
+  }
+
+  function normalizeToolImageSourcePath(value, workspacePath, joinPath) {
+    const raw = fileURIToLocalPath(value);
+    if (!raw || raw.includes("\0")) return "";
+    const candidate = raw.startsWith("/") ? raw : joinPath(workspacePath, raw);
+    return normalizeLocalPath(candidate);
+  }
+
+  function collectToolImageContentPaths(content, target = []) {
+    if (Array.isArray(content)) {
+      for (const entry of content) collectToolImageContentPaths(entry, target);
+      return target;
+    }
+    if (!content || typeof content !== "object") return target;
+    if (content.type === "resource_link" && content.uri) target.push(content.uri);
+    if (content.type === "resource" && content.resource?.uri) target.push(content.resource.uri);
+    if (content.content) collectToolImageContentPaths(content.content, target);
+    return target;
+  }
+
+  function isCompletedViewImageTool(entry) {
+    return Boolean(
+      entry?.kind === "tool" &&
+      String(entry.status || "").toLowerCase() === "completed" &&
+      String(entry.toolKind || "").toLowerCase() === "read" &&
+      /^View Image(?:\s|$)/u.test(String(entry.title || ""))
+    );
+  }
+
+  function resolveToolImageSource(entry, workspacePath, joinPath) {
+    if (!isCompletedViewImageTool(entry)) return null;
+    const titlePath = String(entry.title || "").replace(/^View Image\s*/u, "").trim();
+    const inputPaths = [entry.rawInput?.path].filter(Boolean);
+    const locationPaths = (entry.locations || []).map((location) => location?.path).filter(Boolean);
+    const contentPaths = collectToolImageContentPaths(entry.content || []);
+    if (!titlePath || !inputPaths.length || !locationPaths.length || !contentPaths.length) {
+      throw new CodexChatError("TOOL_IMAGE_PATH", toolImageFailureMessage("TOOL_IMAGE_PATH"));
+    }
+    const paths = [titlePath, ...inputPaths, ...locationPaths, ...contentPaths].map((value) =>
+      normalizeToolImageSourcePath(value, workspacePath, joinPath)
+    );
+    if (paths.some((path) => !path) || new Set(paths).size !== 1) {
+      throw new CodexChatError("TOOL_IMAGE_PATH", toolImageFailureMessage("TOOL_IMAGE_PATH"));
+    }
+    const extension = toolImageExtension(paths[0]);
+    if (!TOOL_IMAGE_FORMATS[extension]) {
+      throw new CodexChatError("TOOL_IMAGE_FORMAT", toolImageFailureMessage("TOOL_IMAGE_FORMAT"));
+    }
+    return {
+      path: paths[0],
+      originalName: safeToolImageDisplayName(paths[0]),
+      extension
+    };
+  }
+
+  function byteString(bytes, start, length) {
+    return Array.from(bytes.slice(start, start + length))
+      .map((value) => String.fromCharCode(value)).join("");
+  }
+
+  function detectToolImageFormat(bytes) {
+    if (!(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes || []);
+    if (
+      bytes.length >= 8 &&
+      bytes[0] === 0x89 && byteString(bytes, 1, 3) === "PNG" &&
+      bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
+    ) return TOOL_IMAGE_FORMATS.png;
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+      return TOOL_IMAGE_FORMATS.jpg;
+    }
+    if (bytes.length >= 6 && ["GIF87a", "GIF89a"].includes(byteString(bytes, 0, 6))) {
+      return TOOL_IMAGE_FORMATS.gif;
+    }
+    if (
+      bytes.length >= 12 && byteString(bytes, 0, 4) === "RIFF" &&
+      byteString(bytes, 8, 4) === "WEBP"
+    ) return TOOL_IMAGE_FORMATS.webp;
+    if (bytes.length >= 16 && byteString(bytes, 4, 4) === "ftyp") {
+      const brands = [];
+      for (let offset = 8; offset + 4 <= bytes.length; offset += 4) {
+        if (offset === 12) continue;
+        brands.push(byteString(bytes, offset, 4));
+      }
+      if (brands.includes("avif") || brands.includes("avis")) return TOOL_IMAGE_FORMATS.avif;
+    }
+    return null;
+  }
+
+  function validateToolImageBytes(bytes, extension) {
+    const expected = TOOL_IMAGE_FORMATS[extension];
+    const detected = detectToolImageFormat(bytes);
+    if (!expected || !detected || detected.mimeType !== expected.mimeType) {
+      throw new CodexChatError(
+        detected ? "TOOL_IMAGE_SIGNATURE" : "TOOL_IMAGE_FORMAT",
+        toolImageFailureMessage(detected ? "TOOL_IMAGE_SIGNATURE" : "TOOL_IMAGE_FORMAT")
+      );
+    }
+    return detected;
+  }
+
+  function toolImageCopyFileName(entryID, extension) {
+    const safeID = String(entryID || "tool")
+      .replace(/[^0-9A-Za-z._-]+/gu, "-")
+      .replace(/^[^0-9A-Za-z]+/u, "")
+      .slice(0, 72) || "tool";
+    return `${safeID}.${TOOL_IMAGE_FORMATS[extension].extension}`;
+  }
+
+  function normalizeToolImageSnapshot(snapshot) {
+    if (!snapshot || snapshot.schemaVersion !== Constants.ACP_TOOL_IMAGE_SCHEMA_VERSION) return null;
+    const originalName = safeToolImageDisplayName(snapshot.originalName);
+    if (snapshot.status === "copying") {
+      return {
+        schemaVersion: Constants.ACP_TOOL_IMAGE_SCHEMA_VERSION,
+        status: "error",
+        originalName,
+        errorCode: "TOOL_IMAGE_INTERRUPTED",
+        message: toolImageFailureMessage("TOOL_IMAGE_INTERRUPTED")
+      };
+    }
+    if (snapshot.status === "error") {
+      const errorCode = Object.prototype.hasOwnProperty.call(
+        TOOL_IMAGE_FAILURE_MESSAGES,
+        snapshot.errorCode
+      ) ? snapshot.errorCode : "TOOL_IMAGE_COPY";
+      return {
+        schemaVersion: Constants.ACP_TOOL_IMAGE_SCHEMA_VERSION,
+        status: "error",
+        originalName,
+        errorCode,
+        message: toolImageFailureMessage(errorCode)
+      };
+    }
+    const fileName = String(snapshot.fileName || "");
+    const extension = toolImageExtension(fileName);
+    const format = TOOL_IMAGE_FORMATS[extension];
+    const size = Number(snapshot.size);
+    if (
+      snapshot.status !== "ready" ||
+      !/^[0-9A-Za-z][0-9A-Za-z._-]{0,119}\.(?:avif|gif|jpe?g|png|webp)$/u.test(fileName) ||
+      !format || snapshot.mimeType !== format.mimeType ||
+      !Number.isSafeInteger(size) || size <= 0 || size > Constants.ACP_TOOL_IMAGE_MAX_BYTES ||
+      typeof snapshot.copiedAt !== "string"
+    ) return null;
+    return {
+      schemaVersion: Constants.ACP_TOOL_IMAGE_SCHEMA_VERSION,
+      status: "ready",
+      fileName,
+      originalName,
+      mimeType: format.mimeType,
+      size,
+      copiedAt: snapshot.copiedAt
+    };
+  }
+
+  function normalizeTranscriptToolImages(transcript) {
+    if (!Array.isArray(transcript)) return false;
+    let changed = false;
+    for (const entry of transcript) {
+      if (entry?.kind !== "tool" || !entry.imageSnapshot) continue;
+      const normalized = normalizeToolImageSnapshot(entry.imageSnapshot);
+      if (!normalized) {
+        delete entry.imageSnapshot;
+        changed = true;
+      }
+      else if (JSON.stringify(entry.imageSnapshot) !== JSON.stringify(normalized)) {
+        entry.imageSnapshot = normalized;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   function configValues(option) {
     const values = option?.options || option?.values || [];
     return values.map((entry) => typeof entry === "string" ? entry : entry?.value).filter(Boolean);
@@ -588,10 +811,31 @@
     }
 
     _snapshot(state) {
+      const record = clone(state.record);
+      for (const entry of record.transcript) {
+        const image = normalizeToolImageSnapshot(entry?.imageSnapshot);
+        if (image?.status !== "ready") continue;
+        try {
+          const path = this.cache.toolImagePath(state.paper, state.record, image.fileName);
+          entry.imageSnapshot = {
+            ...image,
+            localURI: this.fileSystem.toFileURI(path)
+          };
+        }
+        catch (_error) {
+          entry.imageSnapshot = {
+            schemaVersion: Constants.ACP_TOOL_IMAGE_SCHEMA_VERSION,
+            status: "error",
+            originalName: image.originalName,
+            errorCode: "TOOL_IMAGE_REFERENCE",
+            message: toolImageFailureMessage("TOOL_IMAGE_REFERENCE")
+          };
+        }
+      }
       return clone({
         attachmentID: state.paper.attachmentID,
         paper: state.paper,
-        record: state.record,
+        record,
         status: state.status,
         error: state.error,
         sourceChanged: state.sourceChanged,
@@ -613,7 +857,9 @@
       let state = this.states.get(storageKey);
       if (!state) {
         const record = await this.cache.load(context.paper);
-        if (normalizeTranscriptUserMessages(record.transcript)) {
+        const userMessagesChanged = normalizeTranscriptUserMessages(record.transcript);
+        const toolImagesChanged = normalizeTranscriptToolImages(record.transcript);
+        if (userMessagesChanged || toolImagesChanged) {
           await this.cache.save(context.paper, record);
         }
         state = {
@@ -630,6 +876,7 @@
           remoteReady: false,
           modeInfo: null,
           saveTimer: null,
+          imageCaptures: new Map(),
           activityText: null,
           diagnosticLog: emptyDiagnosticLog()
         };
@@ -688,6 +935,13 @@
     async _loadRemoteSession(state) {
       this.sessionStates.set(state.record.session.id, state);
       this._clearScheduledSave(state);
+      const persistedImages = new Map();
+      for (const entry of state.record.transcript) {
+        const image = normalizeToolImageSnapshot(entry?.imageSnapshot);
+        if (entry?.kind === "tool" && entry.remoteID && image) {
+          persistedImages.set(String(entry.remoteID), image);
+        }
+      }
       state.replay = [];
       try {
         const result = await this.acp.request("session/load", {
@@ -704,6 +958,10 @@
         normalizeTranscriptUserMessages(replay);
         for (const entry of replay) {
           if (entry.status === "streaming") entry.status = "complete";
+          const persistedImage = entry.kind === "tool"
+            ? persistedImages.get(String(entry.remoteID || ""))
+            : null;
+          if (persistedImage) entry.imageSnapshot = clone(persistedImage);
         }
         state.record.transcript = replay;
         state.record.session.pdfAttached = replay.some(
@@ -1098,6 +1356,7 @@
         state.turn = null;
         state.activityText = null;
         this._clearScheduledSave(state);
+        await this._settleToolImageCaptures(state);
         await this.cache.save(state.paper, state.record);
         this._emit(state);
       }
@@ -1182,6 +1441,7 @@
       if (state.turn) {
         throw new CodexChatError("TURN_ACTIVE", "请先停止并等待当前 turn 结束，再新建会话");
       }
+      await this._settleToolImageCaptures(state);
       const oldSessionID = state.record.session.id;
       const result = await this.cache.archiveAndReset(state.paper, reason);
       if (oldSessionID) this.sessionStates.delete(oldSessionID);
@@ -1287,6 +1547,153 @@
       }, 120);
     }
 
+    _currentToolImageEntry(state, localID, entryID) {
+      if (state.record.session.localID !== localID) return null;
+      return state.record.transcript.find((entry) =>
+        entry.kind === "tool" && entry.id === entryID
+      ) || null;
+    }
+
+    async _settleToolImageCaptures(state) {
+      while (state.imageCaptures.size) {
+        await Promise.allSettled([...state.imageCaptures.values()]);
+      }
+    }
+
+    _scheduleToolImageCapture(state, entry) {
+      if (!isCompletedViewImageTool(entry) || entry.imageSnapshot || state.replay) return;
+      const localID = state.record.session.localID;
+      const entryID = entry.id;
+      const captureKey = `${localID}:${entry.remoteID || entryID}`;
+      if (state.imageCaptures.has(captureKey)) return;
+      entry.imageSnapshot = {
+        schemaVersion: Constants.ACP_TOOL_IMAGE_SCHEMA_VERSION,
+        status: "copying",
+        originalName: safeToolImageDisplayName(entry.rawInput?.path)
+      };
+      const capture = this._captureToolImage(state, localID, entryID)
+        .catch((error) => this.log("Tool image capture failed", error))
+        .finally(() => {
+          if (state.imageCaptures.get(captureKey) === capture) {
+            state.imageCaptures.delete(captureKey);
+          }
+        });
+      state.imageCaptures.set(captureKey, capture);
+    }
+
+    async _captureToolImage(state, localID, entryID) {
+      let targetPath = null;
+      let originalName = "图片";
+      try {
+        const entry = this._currentToolImageEntry(state, localID, entryID);
+        if (!entry) return;
+        const source = resolveToolImageSource(
+          entry,
+          state.record.session.workspacePath,
+          this.fileSystem.join
+        );
+        if (!source) return;
+        originalName = source.originalName;
+        entry.imageSnapshot.originalName = originalName;
+
+        let sourceStat;
+        try {
+          sourceStat = await this.fileSystem.stat(source.path);
+        }
+        catch (_error) {
+          throw new CodexChatError("TOOL_IMAGE_FILE", toolImageFailureMessage("TOOL_IMAGE_FILE"));
+        }
+        const sourceSize = Number(sourceStat?.size);
+        if (sourceStat?.type !== "regular" || !Number.isSafeInteger(sourceSize)) {
+          throw new CodexChatError("TOOL_IMAGE_FILE", toolImageFailureMessage("TOOL_IMAGE_FILE"));
+        }
+        if (sourceSize <= 0) {
+          throw new CodexChatError("TOOL_IMAGE_EMPTY", toolImageFailureMessage("TOOL_IMAGE_EMPTY"));
+        }
+        if (sourceSize > Constants.ACP_TOOL_IMAGE_MAX_BYTES) {
+          throw new CodexChatError(
+            "TOOL_IMAGE_TOO_LARGE",
+            toolImageFailureMessage("TOOL_IMAGE_TOO_LARGE")
+          );
+        }
+        let sourceHeader;
+        try {
+          sourceHeader = await this.fileSystem.read(source.path, {
+            maxBytes: Constants.ACP_TOOL_IMAGE_HEADER_BYTES
+          });
+        }
+        catch (_error) {
+          throw new CodexChatError("TOOL_IMAGE_FILE", toolImageFailureMessage("TOOL_IMAGE_FILE"));
+        }
+        const format = validateToolImageBytes(sourceHeader, source.extension);
+
+        await this.cache.ensureToolImageDirectory(state.paper, state.record);
+        const fileName = toolImageCopyFileName(entryID, source.extension);
+        targetPath = this.cache.toolImagePath(state.paper, state.record, fileName);
+        try {
+          await this.fileSystem.copyAtomic(source.path, targetPath, { noOverwrite: true });
+        }
+        catch (_error) {
+          throw new CodexChatError("TOOL_IMAGE_COPY", toolImageFailureMessage("TOOL_IMAGE_COPY"));
+        }
+
+        let copiedStat;
+        let copiedHeader;
+        try {
+          copiedStat = await this.fileSystem.stat(targetPath);
+          copiedHeader = await this.fileSystem.read(targetPath, {
+            maxBytes: Constants.ACP_TOOL_IMAGE_HEADER_BYTES
+          });
+        }
+        catch (_error) {
+          throw new CodexChatError("TOOL_IMAGE_COPY", toolImageFailureMessage("TOOL_IMAGE_COPY"));
+        }
+        const copiedSize = Number(copiedStat?.size);
+        if (copiedStat?.type !== "regular" || !Number.isSafeInteger(copiedSize) || copiedSize <= 0) {
+          throw new CodexChatError("TOOL_IMAGE_COPY", toolImageFailureMessage("TOOL_IMAGE_COPY"));
+        }
+        if (copiedSize > Constants.ACP_TOOL_IMAGE_MAX_BYTES) {
+          throw new CodexChatError(
+            "TOOL_IMAGE_TOO_LARGE",
+            toolImageFailureMessage("TOOL_IMAGE_TOO_LARGE")
+          );
+        }
+        validateToolImageBytes(copiedHeader, source.extension);
+
+        const current = this._currentToolImageEntry(state, localID, entryID);
+        if (!current) return;
+        current.imageSnapshot = {
+          schemaVersion: Constants.ACP_TOOL_IMAGE_SCHEMA_VERSION,
+          status: "ready",
+          fileName,
+          originalName,
+          mimeType: format.mimeType,
+          size: copiedSize,
+          copiedAt: this.now()
+        };
+      }
+      catch (error) {
+        if (targetPath) {
+          await this.fileSystem.remove(targetPath).catch(() => {});
+        }
+        const current = this._currentToolImageEntry(state, localID, entryID);
+        if (!current) return;
+        const errorCode = Object.prototype.hasOwnProperty.call(
+          TOOL_IMAGE_FAILURE_MESSAGES,
+          error?.code
+        ) ? error.code : "TOOL_IMAGE_COPY";
+        current.imageSnapshot = {
+          schemaVersion: Constants.ACP_TOOL_IMAGE_SCHEMA_VERSION,
+          status: "error",
+          originalName,
+          errorCode,
+          message: toolImageFailureMessage(errorCode)
+        };
+      }
+      await this.cache.save(state.paper, state.record);
+      this._emit(state);
+    }
+
     _appendChunk(state, role, text, remoteID = null) {
       if (!text) return;
       const transcript = this._targetTranscript(state);
@@ -1364,6 +1771,7 @@
           rawInput: clone(update.rawInput || entry.rawInput || null),
           rawOutput: clone(update.rawOutput || entry.rawOutput || null)
         });
+        if (!state.replay) this._scheduleToolImageCapture(state, entry);
       }
       else if (kind === "plan") {
         transcript.push({
@@ -1487,6 +1895,9 @@
         for (const interaction of state.interactions.values()) interaction.cancel();
         state.interactions.clear();
       }
+      await Promise.all([...this.states.values()].map((state) =>
+        this._settleToolImageCaptures(state)
+      ));
       for (const cleanup of this.cleanups.splice(0)) cleanup();
       this.listeners.clear();
       await Promise.all([...this.states.values()].map((state) =>
@@ -1514,11 +1925,13 @@
         return path;
       },
       stat: (path) => global.IOUtils.stat(path),
-      async copyAtomic(source, target) {
+      read: (path, options) => global.IOUtils.read(path, options),
+      remove: (path) => global.IOUtils.remove(path, { ignoreAbsent: true }),
+      async copyAtomic(source, target, { noOverwrite = false } = {}) {
         const temporary = `${target}.tmp-${Date.now()}`;
         try {
           await global.IOUtils.copy(source, temporary, { noOverwrite: false });
-          await global.IOUtils.move(temporary, target, { noOverwrite: false });
+          await global.IOUtils.move(temporary, target, { noOverwrite });
         }
         finally {
           if (await global.IOUtils.exists(temporary)) {
@@ -1565,7 +1978,14 @@
     normalizeSelectionContexts,
     selectionContextKey,
     normalizeTranscriptUserMessages,
+    normalizeTranscriptToolImages,
     latestThoughtStatus,
+    isCompletedViewImageTool,
+    resolveToolImageSource,
+    detectToolImageFormat,
+    validateToolImageBytes,
+    normalizeToolImageSnapshot,
+    toolImageFailureMessage,
     sanitizeDiagnosticString,
     sanitizeDiagnosticValue,
     diagnosticEventFromUpdate,

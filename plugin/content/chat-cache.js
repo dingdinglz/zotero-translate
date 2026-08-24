@@ -97,6 +97,7 @@
       this.joinPath = joinPath || ((...parts) => parts.join("/"));
       this.recordsPath = this.joinPath(rootPath, Constants.ACP_RECORDS_DIRECTORY);
       this.workspacesPath = this.joinPath(rootPath, Constants.ACP_WORKSPACES_DIRECTORY);
+      this.toolImagesPath = this.joinPath(rootPath, Constants.ACP_TOOL_IMAGES_DIRECTORY);
       this.archivesPath = this.joinPath(rootPath, Constants.ACP_ARCHIVES_DIRECTORY);
       this.configurationCatalogPath = this.joinPath(
         rootPath,
@@ -124,12 +125,31 @@
       return this.joinPath(this.recordsPath, `${paper.storageKey}.json`);
     }
 
-    _workspacePath(paper, localID) {
-      this._validatePaper(paper);
+    _validateLocalID(localID) {
       if (!/^[0-9A-Za-z._-]+$/u.test(localID)) {
         throw new Logic.SmartTranslatorError("SESSION_IDENTITY", "本地会话标识无效");
       }
-      return this.joinPath(this.workspacesPath, paper.storageKey, localID);
+    }
+
+    _sessionPath(root, paper, localID) {
+      this._validatePaper(paper);
+      this._validateLocalID(localID);
+      return this.joinPath(root, paper.storageKey, localID);
+    }
+
+    _workspacePath(paper, localID) {
+      return this._sessionPath(this.workspacesPath, paper, localID);
+    }
+
+    toolImageDirectoryPath(paper, record) {
+      return this._sessionPath(this.toolImagesPath, paper, record?.session?.localID || "");
+    }
+
+    toolImagePath(paper, record, fileName) {
+      if (!/^[0-9A-Za-z][0-9A-Za-z._-]{0,119}\.(?:avif|gif|jpe?g|png|webp)$/u.test(fileName || "")) {
+        throw new Logic.SmartTranslatorError("TOOL_IMAGE_NAME", "工具图片副本名称无效");
+      }
+      return this.joinPath(this.toolImageDirectoryPath(paper, record), fileName);
     }
 
     async _ensureRoots() {
@@ -139,6 +159,7 @@
           await Promise.all([
             this.io.makeDirectory(this.recordsPath),
             this.io.makeDirectory(this.workspacesPath),
+            this.io.makeDirectory(this.toolImagesPath),
             this.io.makeDirectory(this.archivesPath),
             this.io.makeDirectory(this.configurationWorkspacePath)
           ]);
@@ -253,6 +274,21 @@
       return expected;
     }
 
+    async ensureToolImageDirectory(paper, record) {
+      const expected = this.toolImageDirectoryPath(paper, record);
+      await this._ensureRoots();
+      await this.io.makeDirectory(this.joinPath(this.toolImagesPath, paper.storageKey));
+      await this.io.makeDirectory(expected);
+      return expected;
+    }
+
+    async deleteToolImageDirectory(paper, record) {
+      const path = this.toolImageDirectoryPath(paper, record);
+      if (!(await this.io.exists(path))) return false;
+      await this.io.remove(path, { recursive: true, ignoreAbsent: true });
+      return true;
+    }
+
     async ensureConfigurationWorkspace() {
       await this._ensureRoots();
       await this.io.makeDirectory(this.configurationWorkspacePath);
@@ -309,6 +345,7 @@
     async archiveAndReset(paper, reason = "user-reset") {
       return this._enqueue(paper.storageKey, async () => {
         const oldRecord = await this._loadUnsafe(paper);
+        const toolImagesDeleted = await this.deleteToolImageDirectory(paper, oldRecord);
         const archiveStamp = Date.now();
         const paperArchivePath = this.joinPath(this.archivesPath, paper.storageKey);
         await this.io.makeDirectory(paperArchivePath);
@@ -336,6 +373,7 @@
             reason,
             archivedAt: this.now(),
             workspaceRetained,
+            toolImagesDeleted,
             originalWorkspacePath: oldWorkspacePath
           }
         }, { tmpPath: `${archivePath}.tmp` });
@@ -359,6 +397,7 @@
       read: (path) => global.IOUtils.read(path),
       write: (path, bytes) => global.IOUtils.write(path, bytes),
       move: (source, target) => global.IOUtils.move(source, target, { noOverwrite: true }),
+      remove: (path, options) => global.IOUtils.remove(path, options),
       writeJSON: (path, value, options) => global.IOUtils.writeJSON(path, value, options)
     };
     return new CodexChatCache({

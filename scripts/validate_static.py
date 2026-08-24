@@ -18,7 +18,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.22"
+    assert manifest["version"] == "0.1.23"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -38,16 +38,26 @@ def main() -> None:
 
     constants = (PLUGIN / "content" / "constants.js").read_text(encoding="utf-8")
     acp_client = (PLUGIN / "content" / "acp-client.js").read_text(encoding="utf-8")
+    chat_cache = (PLUGIN / "content" / "chat-cache.js").read_text(encoding="utf-8")
     chat_ui = (PLUGIN / "content" / "codex-chat-ui.js").read_text(encoding="utf-8")
     math_renderer = (PLUGIN / "content" / "math-renderer.js").read_text(encoding="utf-8")
     bootstrap = (PLUGIN / "bootstrap.js").read_text(encoding="utf-8")
     assert 'ACP_PACKAGE_SPEC: "@agentclientprotocol/codex-acp@1.6.2"' in constants
     assert 'ACP_MODE: "agent"' in constants
+    assert 'ACP_TOOL_IMAGES_DIRECTORY: "tool-images"' in constants
+    assert "ACP_TOOL_IMAGE_MAX_BYTES: 25 * 1024 * 1024" in constants
     assert 'npm_config_offline: "true"' in acp_client
     assert 'INITIAL_AGENT_MODE: Constants.ACP_MODE' in acp_client
     codex_chat = (PLUGIN / "content" / "codex-chat.js").read_text(encoding="utf-8")
     assert 'this.acp.request("session/close"' in codex_chat
     assert 'this.acp.request("session/delete"' not in codex_chat
+    assert "resolveToolImageSource" in codex_chat
+    assert "detectToolImageFormat" in codex_chat
+    assert "validateToolImageBytes" in codex_chat
+    assert "ensureToolImageDirectory" in chat_cache
+    assert "deleteToolImageDirectory" in chat_cache
+    assert "deferImageLoad: true" in chat_ui
+    assert "spt-codex-image-lightbox" in chat_ui
     assert 'purpose: "version", allowDownload: true' not in bootstrap
     assert ".innerHTML =" not in chat_ui
     assert ".innerHTML =" not in math_renderer

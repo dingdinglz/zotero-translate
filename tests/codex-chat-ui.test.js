@@ -17,6 +17,7 @@ const {
   captureTranscriptViewport,
   restoreTranscriptViewport,
   describeToolEntry,
+  describeToolImage,
   appendToolDetails
 } = require("../plugin/content/codex-chat-ui.js");
 
@@ -51,11 +52,19 @@ class Node {
     this.children = [];
     this.append(...children);
   }
+  remove() {
+    if (!this.parentNode) return;
+    this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
+    this.parentNode = null;
+  }
   addEventListener(name, listener) { this.listeners.set(name, listener); }
   removeEventListener(name) { this.listeners.delete(name); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
-  focus() { this.focused = true; }
+  focus() {
+    this.focused = true;
+    if (this.ownerDocument) this.ownerDocument.activeElement = this;
+  }
   closest(selector) { return this.closestValues?.[selector] || null; }
   dispatchEvent(event) {
     event.target ||= this;
@@ -67,12 +76,26 @@ class Node {
 
 class Document {
   constructor() {
+    this.listeners = new Map();
     this.defaultView = {
       navigator: { clipboard: { writeText: async () => {} } },
       MouseEvent: class {
         constructor(type, init = {}) { Object.assign(this, init, { type }); }
-      }
+      },
+      confirm: () => true
     };
+    this.documentElement = new Node("html");
+    this.documentElement.ownerDocument = this;
+    this.body = new Node("body");
+    this.body.ownerDocument = this;
+    this.documentElement.append(this.body);
+  }
+  addEventListener(name, listener) { this.listeners.set(name, listener); }
+  removeEventListener(name) { this.listeners.delete(name); }
+  dispatchEvent(event) {
+    event.target ||= this;
+    event.currentTarget ||= this;
+    return this.listeners.get(event.type)?.(event);
   }
   createElement(name) {
     const node = new Node(name);
@@ -523,6 +546,110 @@ test("common ACP tools become semantic cards without raw transcript metadata", (
   const renderedText = descendants(container).map((node) => node.textContent).join("\n");
   assert.doesNotMatch(renderedText, /remoteID|createdAt|must-not-render/u);
   assert.match(renderedText, /命令|echo ok|命令输出|退出码 0/u);
+});
+
+test("View Image stays collapsed and undecoded until opened, then previews and enlarges locally", () => {
+  const doc = new Document();
+  const body = doc.createElement("section");
+  doc.body.append(body);
+  const messages = doc.createElement("div");
+  const notices = doc.createElement("div");
+  const view = {
+    body,
+    elements: { messages, notices },
+    transcriptRendered: false,
+    attachmentID: 10,
+    closeImageLightbox: null
+  };
+  const state = {
+    record: {
+      session: { workspacePath: "/workspace" },
+      transcript: [{
+        id: "tool-image-local-1",
+        remoteID: "view-image-1",
+        kind: "tool",
+        toolKind: "read",
+        title: "View Image /Users/alice/private/page-06.png",
+        status: "completed",
+        rawInput: { path: "/Users/alice/private/page-06.png" },
+        locations: [{ path: "/Users/alice/private/page-06.png" }],
+        imageSnapshot: {
+          schemaVersion: 1,
+          status: "ready",
+          originalName: "page-06.png",
+          mimeType: "image/png",
+          size: 2048,
+          localURI: "file:///safe/session-media/tool-image-local-1.png"
+        }
+      }]
+    }
+  };
+  const ui = new CodexChatUI({ service: { revealCitation: async () => {} } });
+
+  ui._renderTranscript(view, state);
+  const details = messages.children[0];
+  const image = descendants(details).find((node) => node.localName === "img");
+  const preview = descendants(details).find(
+    (node) => node.className === "spt-codex-tool-image-preview"
+  );
+  const renderedText = descendants(details).map((node) => node.textContent).join("\n");
+  assert.equal(details.open, false);
+  assert.equal(image.src, undefined);
+  assert.equal(preview.disabled, true);
+  assert.doesNotMatch(renderedText, /Users\/alice|private\//u);
+  assert.match(renderedText, /page-06\.png|PNG|2\.0 KiB|Codex 不可见/u);
+
+  details.open = true;
+  details.dispatchEvent({ type: "toggle" });
+  assert.equal(image.src, "file:///safe/session-media/tool-image-local-1.png");
+  image.dispatchEvent({ type: "load" });
+  assert.equal(preview.disabled, false);
+  preview.dispatchEvent({ type: "click" });
+
+  const overlay = descendants(doc.documentElement).find(
+    (node) => node.className === "spt-codex-image-lightbox"
+  );
+  assert.ok(overlay);
+  assert.equal(overlay.dataset.zoom, "fit");
+  const zoom = descendants(overlay).find(
+    (node) => node.localName === "button" && node.textContent === "1:1"
+  );
+  zoom.dispatchEvent({ type: "click" });
+  assert.equal(overlay.dataset.zoom, "actual");
+  doc.dispatchEvent({ type: "keydown", key: "Escape", preventDefault() {} });
+  assert.equal(descendants(doc.documentElement).includes(overlay), false);
+});
+
+test("tool image presentation refuses remote preview URLs and surfaces copy errors", () => {
+  assert.deepEqual(describeToolImage({
+    status: "ready",
+    originalName: "chart.png",
+    mimeType: "image/png",
+    size: 100,
+    localURI: "https://tracker.example/chart.png"
+  }), {
+    status: "error",
+    originalName: "chart.png",
+    message: "本地图片副本引用无效，请重新调用 View Image。"
+  });
+  const doc = new Document();
+  const container = doc.createElement("div");
+  appendToolDetails(doc, container, {
+    kind: "tool",
+    toolKind: "read",
+    title: "View Image /tmp/chart.png",
+    status: "completed",
+    imageSnapshot: {
+      status: "error",
+      originalName: "chart.png",
+      message: "图片扩展名与文件内容不一致，未创建本地副本。"
+    }
+  });
+  assert.equal(descendants(container).some((node) => node.localName === "img"), false);
+  assert.match(
+    descendants(container).map((node) => node.textContent).join("\n"),
+    /扩展名与文件内容不一致/u
+  );
 });
 
 test("Codex web-search actions render full queries, page operations, and returned links", () => {

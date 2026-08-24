@@ -14,7 +14,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.22`
+- 当前版本：`0.1.23`
 - 目标平台：macOS Zotero 9.0.6
 - 清单兼容范围：Zotero `9.0`–`9.0.*`
 - 插件源码根目录：`plugin/`
@@ -27,6 +27,7 @@
 - PDF 选区加入 Codex 必须再次用 `tabID → Zotero.Reader.getByTabID() → itemID` 精确复核附件，只复制白名单文本与有限数值 PDF 坐标；未发送草稿仅驻留内存并按附件隔离，精确坐标只在用户发送时交给本机 Codex。侧栏自动展开只能操作同一 tab 的 `item-details`，能力缺失时保留草稿并失败关闭。
 - Codex 消息中的文件引用只能在当前 PDF 的专用工作区内定位；不得让模型输出的路径越过工作区边界。首轮安全前缀和资源链接不得作为用户问题显示。
 - Codex 文本与 Web Search 卡片中的外部链接只能接受 HTTP/HTTPS，必须在用户点击后通过 `Zotero.launchURL()` 交给系统默认浏览器；不得在 Item Pane 内导航、自动打开链接或加载远程图片。Codex 文件引用需兼容单冒号 `:codex-file-citation{...}` 与双冒号格式，并继续执行工作区边界检查。
+- 完成态 View Image 只能在状态、read 语义、标题、输入路径、位置和资源链接相互印证后处理；源文件必须是 25 MiB 以内且扩展名与签名一致的 PNG/JPEG/GIF/WebP/AVIF 常规文件，拒绝 SVG。副本只能写入 ACP 工作区外的 `tool-images/论文标识/本地会话标识`，不得作为 cwd、资源、附加目录或软链接交给 Codex；界面不得回退渲染源路径。卡片默认折叠并在展开后才解码，放大层必须支持关闭按钮、背景点击、Escape 以及适应窗口/1:1 切换。重建会话必须删除旧会话图片目录。
 - Codex 公式固定使用 XPI 内置 KaTeX `0.18.4` 生成 MathML；必须保持 `trust: false`、宏展开/尺寸上限、每公式独立宏环境和 MathML 外部元素/资源属性过滤。不得使用 `innerHTML`、远程公式服务、运行时 CDN、KaTeX HTML 输出或可加载资源的可信命令。
 - Codex 开发者模式必须默认关闭；关闭时不得采集或保留额外的可复制诊断日志，也不得显示复制入口。开启后仅允许在内存中有界记录当前实时 turn 的工具与思考诊断事件，脱敏常见密钥和用户主目录，不得自动落盘或上传；关闭模式、重建会话和插件退出必须清空。
 - 当前 PDF 的划线翻译禁用开关默认关闭，禁用附件 ID 列表仅持久化在本机 Zotero 偏好中；命中禁用状态时不得追加插件划线翻译 UI、查询划线缓存或发起翻译请求，且不得影响其他 PDF 或独立的“添加到 Codex”入口。
@@ -50,18 +51,18 @@ zotero-translate/
 │   │   ├── en-US/smart-paper-translator-codex-chat.ftl   # Codex Item Pane 英文本地化
 │   │   └── zh-CN/smart-paper-translator-codex-chat.ftl   # Codex Item Pane 中文本地化
 │   └── content/
-│       ├── constants.js              # 常量、默认服务和默认 Prompt
+│       ├── constants.js              # 常量、默认服务、默认 Prompt 与工具图片安全上限
 │       ├── logic.js                  # 模板、术语与智能标签解析、URL 和签名逻辑
 │       ├── credentials.js            # Mozilla Login Manager 密钥存储
 │       ├── cache.js                  # 译文与智能标签持久化、原子新增/替换和损坏恢复
-│       ├── chat-cache.js             # Codex session 映射、动态配置目录、对话镜像、工作区与归档持久化
+│       ├── chat-cache.js             # Codex session/镜像、工作区/归档及工作区外会话图片目录生命周期
 │       ├── api.js                    # OpenAI Chat Completions 客户端与安全错误映射
 │       ├── service.js                # 翻译、摘要、智能标签、缓存探测/强制刷新及并发协调
 │       ├── acp-client.js             # 固定版本准备、脱敏诊断、stdio JSON-RPC、握手、通知、取消与进程清理
-│       ├── codex-chat.js             # 每 PDF session、选区 prompt/回放归一化、动态配置、引用边界、权限状态机、实时思考和内存开发日志
+│       ├── codex-chat.js             # 每 PDF session、回放、权限、引用边界、View Image 校验复制与内存开发日志
 │       ├── math-renderer.js          # KaTeX→MathML、有界不可信输入与安全导入/原始 TeX 回退
-│       ├── codex-chat-ui.js          # 原生 Item Pane、按 PDF 选区草稿/精确 tab 展开、安全 Markdown、Web Search/工具卡片、外链和开发日志复制
-│       ├── codex-chat.css            # Codex 侧栏、选区卡片、横向边界、消息、Web Search/工具卡片、加载状态与权限表单样式
+│       ├── codex-chat-ui.js          # 原生 Item Pane、安全 Markdown/工具卡片、懒加载图片预览、模态放大及外链
+│       ├── codex-chat.css            # Codex 侧栏、工具图片/模态层、消息、Web Search、加载状态与权限表单样式
 │       ├── codex.svg                 # Codex Item Pane/Sidenav 单色图标
 │       ├── vendor/
 │       │   └── katex/
@@ -81,11 +82,11 @@ zotero-translate/
 │   ├── logic.test.js                 # 模板、术语、URL、签名和论文标识
 │   ├── credentials.test.js           # API Key 隔离测试
 │   ├── cache.test.js                 # 缓存新增/替换、并发、原子写入和损坏恢复
-│   ├── chat-cache.test.js            # Codex 镜像/配置目录隔离、损坏备份、并发和工作区归档
+│   ├── chat-cache.test.js            # Codex 镜像/配置/工具图片目录隔离、损坏备份、并发和归档清理
 │   ├── api.test.js                   # 请求结构、隐私和错误映射
 │   ├── acp-client.test.js            # JSONL、并发请求、超时、取消、崩溃、stderr 与准备边界
-│   ├── codex-chat.test.js            # 首轮 PDF、选区 prompt/回放、session/load、动态配置、权限、变更、重建与开发日志边界
-│   ├── codex-chat-ui.test.js         # 选区草稿/精确 tab 展开、安全渲染、Web Search/外链/文件引用、日志入口与模式边界
+│   ├── codex-chat.test.js            # 首轮 PDF/回放、View Image 校验复制、动态配置、权限、重建与日志边界
+│   ├── codex-chat-ui.test.js         # 选区/安全渲染、工具图片懒加载与放大、Web Search/外链/引用边界
 │   ├── math-renderer.test.js         # 公式回归样本、KaTeX 安全选项、MathML 导入过滤与回退
 │   ├── main.test.js                  # 设置桥接、默认配置、Codex 路径探测偏好读写作用域
 │   ├── service.test.js               # 摘要、缓存探测/强制刷新、缓存失效、并发与取消
@@ -96,8 +97,9 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.22.xpi
-    ├── smart-paper-translator-0.1.21.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.23.xpi
+    ├── smart-paper-translator-0.1.22.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.21.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.20.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.19.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.18.xpi         # 历史版本归档

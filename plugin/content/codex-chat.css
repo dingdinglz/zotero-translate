@@ -620,7 +620,8 @@ button.spt-codex-file-citation:hover {
 }
 
 .spt-codex-tool-section + .spt-codex-tool-section,
-.spt-codex-tool-fields + .spt-codex-tool-section {
+.spt-codex-tool-fields + .spt-codex-tool-section,
+.spt-codex-tool-fields + .spt-codex-tool-image {
   margin-top: 10px;
 }
 
@@ -774,6 +775,131 @@ button.spt-codex-file-citation:hover {
   margin: 0;
   color: var(--spt-codex-muted);
   font-size: 0.86em;
+}
+
+.spt-codex-tool-image {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.spt-codex-tool-image-preview {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 72px;
+  max-height: 240px;
+  padding: 5px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--spt-codex-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, CanvasText 4%, Canvas);
+  color: CanvasText;
+  cursor: zoom-in;
+}
+
+.spt-codex-tool-image-preview:disabled {
+  cursor: progress;
+  opacity: 0.72;
+}
+
+.spt-codex-tool-image-element {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  max-height: 228px;
+  object-fit: contain;
+}
+
+.spt-codex-tool-image-status {
+  margin: 0;
+  color: var(--spt-codex-muted);
+  font-size: 0.8em;
+  line-height: 1.4;
+}
+
+.spt-codex-tool-image-error .spt-codex-tool-image-status {
+  color: color-mix(in srgb, #b42318 84%, CanvasText);
+}
+
+.spt-codex-image-lightbox {
+  position: fixed;
+  z-index: 2147483000;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  padding: 14px;
+  background: color-mix(in srgb, #000 82%, transparent);
+  color: #fff;
+}
+
+.spt-codex-image-lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 0 0 10px;
+}
+
+.spt-codex-image-lightbox-toolbar > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spt-codex-image-lightbox-toolbar > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+.spt-codex-image-lightbox-button {
+  min-height: 31px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, #fff 38%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, #fff 13%, transparent);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.spt-codex-image-lightbox-button:hover,
+.spt-codex-image-lightbox-button:focus-visible {
+  background: color-mix(in srgb, #fff 23%, transparent);
+}
+
+.spt-codex-image-lightbox-viewport {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  place-items: center;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.spt-codex-image-lightbox-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  cursor: zoom-in;
+}
+
+.spt-codex-image-lightbox[data-zoom="actual"] .spt-codex-image-lightbox-image {
+  max-width: none;
+  max-height: none;
+  object-fit: none;
+  cursor: zoom-out;
+}
+
+.spt-codex-image-lightbox-error {
+  margin: 0;
+  color: #fff;
 }
 
 .spt-codex-permission-tool {

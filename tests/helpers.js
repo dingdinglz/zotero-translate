@@ -68,8 +68,30 @@ class MemoryIO {
     }
   }
 
+  async remove(path, { recursive = false, ignoreAbsent = false } = {}) {
+    if (this.files.delete(path)) return;
+    if (!this.directories.has(path)) {
+      if (ignoreAbsent) return;
+      throw new Error("ENOENT");
+    }
+    const prefix = `${path}/`;
+    const hasChildren = [...this.directories].some((candidate) => candidate.startsWith(prefix)) ||
+      [...this.files.keys()].some((candidate) => candidate.startsWith(prefix));
+    if (hasChildren && !recursive) throw new Error("ENOTEMPTY");
+    for (const candidate of [...this.directories]) {
+      if (candidate === path || candidate.startsWith(prefix)) this.directories.delete(candidate);
+    }
+    for (const candidate of [...this.files.keys()]) {
+      if (candidate.startsWith(prefix)) this.files.delete(candidate);
+    }
+  }
+
   setText(path, text) {
     this.files.set(path, new TextEncoder().encode(text));
+  }
+
+  setBytes(path, bytes) {
+    this.files.set(path, new Uint8Array(bytes));
   }
 }
 

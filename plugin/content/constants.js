@@ -20,7 +20,7 @@
   const Constants = Object.freeze({
     PLUGIN_ID: "smart-paper-translator@zotero.local",
     PLUGIN_NAME: "Smart Paper Translator",
-    VERSION: "0.1.22",
+    VERSION: "0.1.23",
     PREF_PREFIX,
     PREFS: Object.freeze({
       provider: PREF_PREFIX + "provider",
@@ -99,11 +99,15 @@
     ACP_DIRECTORY: "codex-acp",
     ACP_RECORDS_DIRECTORY: "records",
     ACP_WORKSPACES_DIRECTORY: "workspaces",
+    ACP_TOOL_IMAGES_DIRECTORY: "tool-images",
     ACP_ARCHIVES_DIRECTORY: "archives",
     ACP_CONFIGURATION_CATALOG_FILE: "configuration-catalog.json",
     ACP_CONFIGURATION_WORKSPACE_DIRECTORY: "configuration-workspace",
     ACP_MAX_JSON_LINE_BYTES: 8 * 1024 * 1024,
     ACP_MAX_STDERR_CHARS: 16384,
+    ACP_TOOL_IMAGE_SCHEMA_VERSION: 1,
+    ACP_TOOL_IMAGE_MAX_BYTES: 25 * 1024 * 1024,
+    ACP_TOOL_IMAGE_HEADER_BYTES: 64,
     ACP_REQUEST_TIMEOUT_MS: 30000,
     ACP_PREPARE_TIMEOUT_MS: 300000
   });

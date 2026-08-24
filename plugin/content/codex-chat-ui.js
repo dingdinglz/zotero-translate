@@ -578,6 +578,43 @@
     return parts[parts.length - 1] || String(path || "");
   }
 
+  function formatToolImageSize(value) {
+    const size = Number(value);
+    if (!Number.isFinite(size) || size <= 0) return "";
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KiB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MiB`;
+  }
+
+  function describeToolImage(snapshot) {
+    if (!snapshot || !["copying", "ready", "error"].includes(snapshot.status)) return null;
+    const originalName = fileNameFromPath(snapshot.originalName || "图片").slice(0, 120) || "图片";
+    if (snapshot.status === "ready") {
+      const localURI = String(snapshot.localURI || "");
+      if (!/^file:\/\/\//iu.test(localURI)) {
+        return {
+          status: "error",
+          originalName,
+          message: "本地图片副本引用无效，请重新调用 View Image。"
+        };
+      }
+      return {
+        status: "ready",
+        originalName,
+        mimeType: String(snapshot.mimeType || ""),
+        size: Number(snapshot.size) || 0,
+        localURI
+      };
+    }
+    return {
+      status: snapshot.status,
+      originalName,
+      message: snapshot.status === "error"
+        ? String(snapshot.message || "图片副本创建失败，请重新调用 View Image。").slice(0, 240)
+        : "正在校验并复制图片…"
+    };
+  }
+
   function displayToolPath(path, workspacePath = "") {
     const value = String(path || "").trim();
     if (!value) return "";
@@ -728,6 +765,7 @@
       outputLabel: "工具输出",
       exitCode,
       web: null,
+      image: null,
       emptyMessage: "工具已完成，未返回文本输出"
     };
 
@@ -799,7 +837,27 @@
       result.subject = truncateLabel(fileNameFromPath(path) || title);
       result.outputLabel = isImage ? "图片信息" : "读取内容";
       result.emptyMessage = isImage ? "图片已读取" : "文件已读取，未返回文本内容";
-      if (visiblePath) result.fields.push({ label: "位置", value: visiblePath, code: true });
+      if (isImage) {
+        result.image = describeToolImage(entry?.imageSnapshot);
+        if (result.image) {
+          result.subject = truncateLabel(result.image.originalName || result.subject);
+          result.fields.push({ label: "文件", value: result.image.originalName, code: false });
+          if (result.image.status === "ready") {
+            result.fields.push({
+              label: "格式",
+              value: result.image.mimeType.replace(/^image\//u, "").toUpperCase(),
+              code: false
+            });
+            result.fields.push({
+              label: "大小",
+              value: formatToolImageSize(result.image.size),
+              code: false
+            });
+            result.fields.push({ label: "副本", value: "会话媒体目录（Codex 不可见）", code: false });
+          }
+        }
+      }
+      else if (visiblePath) result.fields.push({ label: "位置", value: visiblePath, code: true });
     }
     else {
       for (const [name, value] of Object.entries(entry?.rawInput || {})) {
@@ -882,6 +940,67 @@
     }
   }
 
+  function appendToolImageDetails(doc, container, presentation, options = {}) {
+    const image = presentation.image;
+    if (!image) return null;
+    const section = doc.createElement("section");
+    section.className = `spt-codex-tool-image spt-codex-tool-image-${image.status}`;
+    const status = doc.createElement("p");
+    status.className = "spt-codex-tool-image-status";
+    status.setAttribute("role", image.status === "error" ? "alert" : "status");
+    if (image.status !== "ready") {
+      status.textContent = image.message;
+      section.append(status);
+      container.append(section);
+      return null;
+    }
+
+    const preview = doc.createElement("button");
+    preview.type = "button";
+    preview.className = "spt-codex-tool-image-preview";
+    preview.disabled = true;
+    preview.setAttribute("aria-label", `放大查看 ${image.originalName}`);
+    const element = doc.createElement("img");
+    element.className = "spt-codex-tool-image-element";
+    element.alt = image.originalName;
+    element.decoding = "async";
+    status.textContent = "展开卡片后加载本地图片副本";
+    preview.append(element);
+    section.append(preview, status);
+    container.append(section);
+
+    let requested = false;
+    let loaded = false;
+    const load = () => {
+      if (requested) return;
+      requested = true;
+      status.textContent = "正在加载本地图片副本…";
+      element.src = image.localURI;
+    };
+    element.addEventListener("load", () => {
+      loaded = true;
+      preview.disabled = false;
+      status.textContent = "点击图片放大";
+    });
+    element.addEventListener("error", () => {
+      loaded = false;
+      preview.disabled = true;
+      section.className = "spt-codex-tool-image spt-codex-tool-image-error";
+      status.setAttribute("role", "alert");
+      status.textContent = "本地图片副本无法解码或已不存在，请重新调用 View Image。";
+    });
+    preview.addEventListener("click", () => {
+      if (loaded && typeof options.onImagePreview === "function") {
+        options.onImagePreview(image);
+      }
+    });
+    if (typeof options.registerDeferredImageLoader === "function") {
+      options.registerDeferredImageLoader(load);
+    }
+    else if (!options.deferImageLoad) load();
+    return load;
+  }
+
   function appendToolDetails(doc, container, entry, workspacePath = "", options = {}) {
     const presentation = describeToolEntry(entry, workspacePath);
     appendWebSearchDetails(doc, container, presentation, options);
@@ -911,6 +1030,7 @@
       }
       container.append(fields);
     }
+    appendToolImageDetails(doc, container, presentation, options);
     if (presentation.output) {
       const section = doc.createElement("section");
       section.className = "spt-codex-tool-section";
@@ -936,7 +1056,7 @@
       section.append(header, output);
       container.append(section);
     }
-    else if (!presentation.web?.results.length) {
+    else if (!presentation.web?.results.length && !presentation.image) {
       const empty = doc.createElement("p");
       empty.className = "spt-codex-tool-empty";
       empty.textContent = presentation.emptyMessage;
@@ -1175,9 +1295,100 @@
     _destroyView(body) {
       const view = this.views.get(body);
       if (!view) return;
+      view.closeImageLightbox?.();
       view.unsubscribe?.();
       for (const cleanup of view.cleanups) cleanup();
       this.views.delete(body);
+    }
+
+    _openImageLightbox(view, image) {
+      if (!view || image?.status !== "ready" || !/^file:\/\/\//iu.test(image.localURI || "")) {
+        return false;
+      }
+      view.closeImageLightbox?.();
+      const doc = view.body.ownerDocument;
+      const host = doc.documentElement || doc.body;
+      if (!host) return false;
+      const previousFocus = doc.activeElement;
+      const overlay = doc.createElement("div");
+      overlay.className = "spt-codex-image-lightbox";
+      overlay.setAttribute("role", "dialog");
+      overlay.setAttribute("aria-modal", "true");
+      overlay.setAttribute("aria-label", `图片预览：${image.originalName}`);
+      const toolbar = doc.createElement("div");
+      toolbar.className = "spt-codex-image-lightbox-toolbar";
+      const title = doc.createElement("strong");
+      title.textContent = image.originalName;
+      const actions = doc.createElement("div");
+      let zoom;
+      const toggleZoom = () => {
+        const actual = overlay.dataset.zoom === "actual";
+        overlay.dataset.zoom = actual ? "fit" : "actual";
+        zoom.textContent = actual ? "1:1" : "适应窗口";
+        zoom.setAttribute("aria-pressed", String(!actual));
+      };
+      zoom = makeButton(doc, "1:1", toggleZoom, "spt-codex-image-lightbox-button");
+      zoom.title = "在适应窗口和原始像素之间切换";
+      zoom.setAttribute("aria-pressed", "false");
+      const close = makeButton(doc, "关闭", () => cleanup(), "spt-codex-image-lightbox-button");
+      actions.append(zoom, close);
+      toolbar.append(title, actions);
+      const viewport = doc.createElement("div");
+      viewport.className = "spt-codex-image-lightbox-viewport";
+      const element = doc.createElement("img");
+      element.className = "spt-codex-image-lightbox-image";
+      element.alt = image.originalName;
+      element.decoding = "async";
+      element.src = image.localURI;
+      const error = doc.createElement("p");
+      error.className = "spt-codex-image-lightbox-error";
+      error.hidden = true;
+      error.setAttribute("role", "alert");
+      error.textContent = "本地图片副本无法解码或已不存在。";
+      element.addEventListener("error", () => {
+        element.hidden = true;
+        error.hidden = false;
+        zoom.disabled = true;
+      });
+      element.addEventListener("click", toggleZoom);
+      viewport.append(element, error);
+      overlay.append(toolbar, viewport);
+      overlay.dataset.zoom = "fit";
+
+      let closed = false;
+      const keydown = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          cleanup();
+        }
+        else if (event.key === "Tab") {
+          const controls = [zoom, close].filter((control) => !control.disabled);
+          const index = controls.indexOf(doc.activeElement);
+          const nextIndex = event.shiftKey
+            ? (index <= 0 ? controls.length - 1 : index - 1)
+            : (index < 0 || index === controls.length - 1 ? 0 : index + 1);
+          event.preventDefault();
+          controls[nextIndex]?.focus?.();
+        }
+      };
+      const backdrop = (event) => {
+        if (event.target === overlay || event.target === viewport) cleanup();
+      };
+      const cleanup = () => {
+        if (closed) return;
+        closed = true;
+        doc.removeEventListener("keydown", keydown, true);
+        overlay.remove();
+        if (view.closeImageLightbox === cleanup) view.closeImageLightbox = null;
+        previousFocus?.focus?.();
+      };
+      overlay.addEventListener("click", backdrop);
+      viewport.addEventListener("click", backdrop);
+      doc.addEventListener("keydown", keydown, true);
+      view.closeImageLightbox = cleanup;
+      host.append(overlay);
+      close.focus?.();
+      return true;
     }
 
     _renderShell({ doc, body, setSectionSummary }) {
@@ -1404,7 +1615,7 @@
         }
         else if (action === "reset") {
           const confirmed = body.ownerDocument.defaultView.confirm(
-            "新建会话会归档当前映射并保留旧工作区，不会删除 Codex thread。继续吗？"
+            "新建会话会归档当前映射和旧工作区，并删除旧会话的工具图片副本；不会删除 Codex thread。继续吗？"
           );
           if (confirmed) await this.service.rebuild(view.attachmentID);
         }
@@ -1506,7 +1717,7 @@
             });
           }),
           makeButton(doc, "为新 PDF 新建会话", async () => {
-            if (doc.defaultView.confirm("归档旧映射并为新 PDF 建立会话？")) {
+            if (doc.defaultView.confirm("归档旧映射、删除旧会话工具图片副本，并为新 PDF 建立会话？")) {
               await this.service.rebuild(view.attachmentID, "source-changed");
             }
           }, "spt-codex-danger-button")
@@ -1681,23 +1892,42 @@
             : entry.kind === "plan" ? "计划" : "思考过程";
           summary.append(eventIcon, eventTitle);
           if (entry.kind === "tool" && entry.status) {
+            const imageStatus = entry.imageSnapshot?.status;
+            const visibleStatus = imageStatus === "error"
+              ? "failed"
+              : imageStatus === "copying" ? "in_progress" : entry.status;
             const eventStatus = doc.createElement("span");
-            eventStatus.className = `spt-codex-event-status spt-codex-event-status-${entry.status}`;
-            eventStatus.textContent = {
+            eventStatus.className = `spt-codex-event-status spt-codex-event-status-${visibleStatus}`;
+            eventStatus.textContent = imageStatus === "error"
+              ? "图片失败"
+              : imageStatus === "copying" ? "复制中" : ({
               completed: "完成", failed: "失败", pending: "等待", in_progress: "进行中"
-            }[entry.status] || entry.status;
+            }[entry.status] || entry.status);
             summary.append(eventStatus);
           }
           const eventContent = doc.createElement("div");
           eventContent.className = "spt-codex-event-content";
           if (entry.kind === "tool") {
+            let loadDeferredImage = null;
             appendToolDetails(
               doc,
               eventContent,
               entry,
               state.record.session.workspacePath,
-              this._externalLinkOptions(view)
+              {
+                ...this._externalLinkOptions(view),
+                deferImageLoad: true,
+                registerDeferredImageLoader: (loader) => { loadDeferredImage = loader; },
+                onImagePreview: (image) => this._openImageLightbox(view, image)
+              }
             );
+            if (loadDeferredImage) {
+              const loadWhenExpanded = () => {
+                if (details.open) loadDeferredImage();
+              };
+              details.addEventListener("toggle", loadWhenExpanded);
+              if (details.open) loadWhenExpanded();
+            }
           }
           else if (entry.kind === "plan" && Array.isArray(entry.entries)) {
             const list = doc.createElement("ol");
@@ -1794,6 +2024,8 @@
     captureTranscriptViewport,
     restoreTranscriptViewport,
     describeToolEntry,
+    describeToolImage,
+    appendToolImageDetails,
     appendToolDetails,
     copyTextToClipboard
   };

@@ -56,14 +56,16 @@ test("corrupt chat mirrors are backed up before a clean record is rebuilt", asyn
   assert.equal((await io.readJSON("/chat/records/1--ABCDEFGH.json")).transcript.length, 0);
 });
 
-test("reset archives the mapping and retains the old workspace path", async () => {
+test("reset archives the mapping, retains the workspace, and deletes session tool images", async () => {
   const { cache, io } = makeHarness();
   const paper = makePaper();
   const record = await cache.load(paper);
   record.session.id = "thread-old";
   record.transcript.push({ id: "m1", kind: "message", role: "user", text: "old" });
   await cache.ensureWorkspace(paper, record);
+  const toolImages = await cache.ensureToolImageDirectory(paper, record);
   io.setText(`${record.session.workspacePath}/generated.md`, "retained output");
+  io.setText(`${toolImages}/tool-1.png`, "image bytes");
   await cache.save(paper, record);
   const result = await cache.archiveAndReset(paper, "source-changed");
   assert.equal(result.record.session.id, null);
@@ -72,9 +74,26 @@ test("reset archives the mapping and retains the old workspace path", async () =
   assert.equal(archived.session.id, "thread-old");
   assert.notEqual(archived.session.workspacePath, record.session.workspacePath);
   assert.equal(archived.archive.workspaceRetained, true);
+  assert.equal(archived.archive.toolImagesDeleted, true);
   assert.equal(archived.archive.reason, "source-changed");
   assert.equal(await io.exists(record.session.workspacePath), false);
   assert.equal(await io.exists(`${archived.session.workspacePath}/generated.md`), true);
+  assert.equal(await io.exists(toolImages), false);
+  assert.equal(await io.exists(`${toolImages}/tool-1.png`), false);
+});
+
+test("tool image paths are paper and session isolated outside the ACP workspace", async () => {
+  const { cache } = makeHarness();
+  const paper = makePaper();
+  const record = await cache.load(paper);
+  const directory = await cache.ensureToolImageDirectory(paper, record);
+  assert.equal(directory, "/chat/tool-images/1--ABCDEFGH/local-1");
+  assert.equal(cache.toolImagePath(paper, record, "message-1.png"), `${directory}/message-1.png`);
+  assert.notEqual(directory, record.session.workspacePath);
+  assert.throws(
+    () => cache.toolImagePath(paper, record, "../source.pdf"),
+    { code: "TOOL_IMAGE_NAME" }
+  );
 });
 
 test("per-paper update queue does not lose concurrent transcript changes", async () => {
