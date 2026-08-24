@@ -34,6 +34,9 @@
           reasoningEffort: null
         }
       },
+      draft: {
+        screenshots: []
+      },
       transcript: [],
       sync: {
         state: "local-only",
@@ -55,6 +58,10 @@
       typeof record.session.localID === "string" &&
       typeof record.session.workspacePath === "string" &&
       record.session.config?.mode === Constants.ACP_MODE &&
+      (
+        record.draft == null ||
+        (record.draft && Array.isArray(record.draft.screenshots))
+      ) &&
       Array.isArray(record.transcript) &&
       record.sync
     );
@@ -98,6 +105,7 @@
       this.recordsPath = this.joinPath(rootPath, Constants.ACP_RECORDS_DIRECTORY);
       this.workspacesPath = this.joinPath(rootPath, Constants.ACP_WORKSPACES_DIRECTORY);
       this.toolImagesPath = this.joinPath(rootPath, Constants.ACP_TOOL_IMAGES_DIRECTORY);
+      this.screenshotsPath = this.joinPath(rootPath, Constants.ACP_SCREENSHOTS_DIRECTORY);
       this.archivesPath = this.joinPath(rootPath, Constants.ACP_ARCHIVES_DIRECTORY);
       this.configurationCatalogPath = this.joinPath(
         rootPath,
@@ -152,6 +160,17 @@
       return this.joinPath(this.toolImageDirectoryPath(paper, record), fileName);
     }
 
+    screenshotDirectoryPath(paper, record) {
+      return this._sessionPath(this.screenshotsPath, paper, record?.session?.localID || "");
+    }
+
+    screenshotPath(paper, record, fileName) {
+      if (!/^capture-[0-9A-Za-z][0-9A-Za-z._-]{0,119}\.png$/u.test(fileName || "")) {
+        throw new Logic.SmartTranslatorError("SCREENSHOT_NAME", "PDF 截图副本名称无效");
+      }
+      return this.joinPath(this.screenshotDirectoryPath(paper, record), fileName);
+    }
+
     async _ensureRoots() {
       if (!this.rootReady) {
         this.rootReady = (async () => {
@@ -160,6 +179,7 @@
             this.io.makeDirectory(this.recordsPath),
             this.io.makeDirectory(this.workspacesPath),
             this.io.makeDirectory(this.toolImagesPath),
+            this.io.makeDirectory(this.screenshotsPath),
             this.io.makeDirectory(this.archivesPath),
             this.io.makeDirectory(this.configurationWorkspacePath)
           ]);
@@ -234,6 +254,11 @@
         title: paper.title || ""
       };
       record.session.config.mode = Constants.ACP_MODE;
+      record.draft = {
+        screenshots: Array.isArray(record.draft?.screenshots)
+          ? record.draft.screenshots
+          : []
+      };
       record.updatedAt = this.now();
       const path = this._recordPath(paper);
       await this.io.writeJSON(path, record, { tmpPath: `${path}.tmp` });
@@ -284,6 +309,21 @@
 
     async deleteToolImageDirectory(paper, record) {
       const path = this.toolImageDirectoryPath(paper, record);
+      if (!(await this.io.exists(path))) return false;
+      await this.io.remove(path, { recursive: true, ignoreAbsent: true });
+      return true;
+    }
+
+    async ensureScreenshotDirectory(paper, record) {
+      const expected = this.screenshotDirectoryPath(paper, record);
+      await this._ensureRoots();
+      await this.io.makeDirectory(this.joinPath(this.screenshotsPath, paper.storageKey));
+      await this.io.makeDirectory(expected);
+      return expected;
+    }
+
+    async deleteScreenshotDirectory(paper, record) {
+      const path = this.screenshotDirectoryPath(paper, record);
       if (!(await this.io.exists(path))) return false;
       await this.io.remove(path, { recursive: true, ignoreAbsent: true });
       return true;
@@ -346,6 +386,7 @@
       return this._enqueue(paper.storageKey, async () => {
         const oldRecord = await this._loadUnsafe(paper);
         const toolImagesDeleted = await this.deleteToolImageDirectory(paper, oldRecord);
+        const screenshotsDeleted = await this.deleteScreenshotDirectory(paper, oldRecord);
         const archiveStamp = Date.now();
         const paperArchivePath = this.joinPath(this.archivesPath, paper.storageKey);
         await this.io.makeDirectory(paperArchivePath);
@@ -374,6 +415,7 @@
             archivedAt: this.now(),
             workspaceRetained,
             toolImagesDeleted,
+            screenshotsDeleted,
             originalWorkspacePath: oldWorkspacePath
           }
         }, { tmpPath: `${archivePath}.tmp` });

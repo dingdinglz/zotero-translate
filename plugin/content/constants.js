@@ -20,7 +20,7 @@
   const Constants = Object.freeze({
     PLUGIN_ID: "smart-paper-translator@zotero.local",
     PLUGIN_NAME: "Smart Paper Translator",
-    VERSION: "0.1.23",
+    VERSION: "0.1.25",
     PREF_PREFIX,
     PREFS: Object.freeze({
       provider: PREF_PREFIX + "provider",
@@ -100,14 +100,26 @@
     ACP_RECORDS_DIRECTORY: "records",
     ACP_WORKSPACES_DIRECTORY: "workspaces",
     ACP_TOOL_IMAGES_DIRECTORY: "tool-images",
+    ACP_SCREENSHOTS_DIRECTORY: "screenshots",
     ACP_ARCHIVES_DIRECTORY: "archives",
     ACP_CONFIGURATION_CATALOG_FILE: "configuration-catalog.json",
     ACP_CONFIGURATION_WORKSPACE_DIRECTORY: "configuration-workspace",
-    ACP_MAX_JSON_LINE_BYTES: 8 * 1024 * 1024,
+    // A 12 MiB PNG becomes roughly 16 MiB when codex-acp replays it as a
+    // base64 data URL inside one user_message_chunk JSONL frame.
+    ACP_MAX_JSON_LINE_BYTES: 20 * 1024 * 1024,
     ACP_MAX_STDERR_CHARS: 16384,
     ACP_TOOL_IMAGE_SCHEMA_VERSION: 1,
     ACP_TOOL_IMAGE_MAX_BYTES: 25 * 1024 * 1024,
     ACP_TOOL_IMAGE_HEADER_BYTES: 64,
+    PDF_SCREENSHOT_SCHEMA_VERSION: 1,
+    PDF_SCREENSHOT_TARGET_ZOTERO_VERSION: "9.0.6",
+    PDF_SCREENSHOT_MIN_SCALE: 2,
+    PDF_SCREENSHOT_MAX_SCALE: 4,
+    PDF_SCREENSHOT_MAX_EDGE: 4096,
+    PDF_SCREENSHOT_MAX_PIXELS: 16 * 1000 * 1000,
+    PDF_SCREENSHOT_MAX_BYTES: 12 * 1024 * 1024,
+    PDF_SCREENSHOT_TURN_MAX_PIXELS: 128 * 1000 * 1000,
+    PDF_SCREENSHOT_TURN_MAX_BYTES: 64 * 1024 * 1024,
     ACP_REQUEST_TIMEOUT_MS: 30000,
     ACP_PREPARE_TIMEOUT_MS: 300000
   });

@@ -18,7 +18,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.23"
+    assert manifest["version"] == "0.1.25"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -28,23 +28,36 @@ def main() -> None:
     xhtml = (PLUGIN / "content" / "preferences.xhtml").read_text(encoding="utf-8")
     assert "<!DOCTYPE" not in xhtml
 
-    executable = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted(PLUGIN.rglob("*.js"))
-        if path.name != "prefs.js"
-    )
+    executable_paths = [
+        path for path in sorted(PLUGIN.rglob("*.js")) if path.name != "prefs.js"
+    ]
+    executable = "\n".join(path.read_text(encoding="utf-8") for path in executable_paths)
     for forbidden in ("reader._window", "reader._iframeWindow"):
         assert forbidden not in executable, f"private reader API used: {forbidden}"
+    for path in executable_paths:
+        source = path.read_text(encoding="utf-8")
+        if "._lastView" in source or "._iframeWindow" in source:
+            assert path.name == "pdf-screenshot.js", f"unisolated Reader bridge: {path}"
 
     constants = (PLUGIN / "content" / "constants.js").read_text(encoding="utf-8")
     acp_client = (PLUGIN / "content" / "acp-client.js").read_text(encoding="utf-8")
     chat_cache = (PLUGIN / "content" / "chat-cache.js").read_text(encoding="utf-8")
+    pdf_screenshot = (PLUGIN / "content" / "pdf-screenshot.js").read_text(encoding="utf-8")
     chat_ui = (PLUGIN / "content" / "codex-chat-ui.js").read_text(encoding="utf-8")
     math_renderer = (PLUGIN / "content" / "math-renderer.js").read_text(encoding="utf-8")
     bootstrap = (PLUGIN / "bootstrap.js").read_text(encoding="utf-8")
     assert 'ACP_PACKAGE_SPEC: "@agentclientprotocol/codex-acp@1.6.2"' in constants
     assert 'ACP_MODE: "agent"' in constants
     assert 'ACP_TOOL_IMAGES_DIRECTORY: "tool-images"' in constants
+    assert 'ACP_SCREENSHOTS_DIRECTORY: "screenshots"' in constants
+    assert 'PDF_SCREENSHOT_TARGET_ZOTERO_VERSION: "9.0.6"' in constants
+    assert "PDF_SCREENSHOT_MAX_EDGE: 4096" in constants
+    assert "PDF_SCREENSHOT_MAX_PIXELS: 16 * 1000 * 1000" in constants
+    assert "PDF_SCREENSHOT_MAX_BYTES: 12 * 1024 * 1024" in constants
+    assert "context.pdfViewer._pages.flatMap" not in pdf_screenshot
+    assert "function unwrapPDFObject" in pdf_screenshot
+    assert "function createRealmOptions" in pdf_screenshot
+    assert "ACP_MAX_JSON_LINE_BYTES: 20 * 1024 * 1024" in constants
     assert "ACP_TOOL_IMAGE_MAX_BYTES: 25 * 1024 * 1024" in constants
     assert 'npm_config_offline: "true"' in acp_client
     assert 'INITIAL_AGENT_MODE: Constants.ACP_MODE' in acp_client
@@ -56,6 +69,23 @@ def main() -> None:
     assert "validateToolImageBytes" in codex_chat
     assert "ensureToolImageDirectory" in chat_cache
     assert "deleteToolImageDirectory" in chat_cache
+    assert "ensureScreenshotDirectory" in chat_cache
+    assert "deleteScreenshotDirectory" in chat_cache
+    assert "PDF_SCREENSHOT_TARGET_ZOTERO_VERSION" in pdf_screenshot
+    assert "view?._iframeWindow" in pdf_screenshot
+    assert "PDFViewerApplication" in pdf_screenshot
+    assert "pdfDocument.getPage" in pdf_screenshot
+    assert "page.render(createRealmOptions" in pdf_screenshot
+    assert "convertToPdfPoint" in pdf_screenshot
+    assert "SCREENSHOT_BRIDGE_UNAVAILABLE" in pdf_screenshot
+    assert "getDisplayMedia" not in pdf_screenshot
+    assert "drawWindow" not in pdf_screenshot
+    assert ".innerHTML =" not in pdf_screenshot
+    assert 'type: "image"' in codex_chat
+    assert "saveScreenshotDrafts" in codex_chat
+    assert "MODEL_IMAGE_UNSUPPORTED" in codex_chat
+    assert "随附截图像素" in codex_chat
+    assert "spt-codex-screenshot-group" in chat_ui
     assert "deferImageLoad: true" in chat_ui
     assert "spt-codex-image-lightbox" in chat_ui
     assert 'purpose: "version", allowDownload: true' not in bootstrap
@@ -86,8 +116,12 @@ def main() -> None:
     assert 'CODEX_L10N_RESOURCE = "smart-paper-translator-codex-chat.ftl"' in chat_ui
     assert chat_ui.index("ensureCodexLocalization(win);") < chat_ui.index("registerSection({")
     assert "content/acp-client.js" in bootstrap
+    assert "content/pdf-screenshot.js" in bootstrap
     assert "content/codex-chat.js" in bootstrap
     assert "content/codex-chat-ui.js" in bootstrap
+    assert bootstrap.index('"content/pdf-screenshot.js"') < bootstrap.index(
+        '"content/chat-cache.js"'
+    ) < bootstrap.index('"content/codex-chat.js"')
 
     for locale in ("en-US", "zh-CN"):
         ftl = (
@@ -127,6 +161,7 @@ def main() -> None:
         "content/reader-ui.js",
         "content/acp-client.js",
         "content/chat-cache.js",
+        "content/pdf-screenshot.js",
         "content/codex-chat.js",
         "content/math-renderer.js",
         "content/codex-chat-ui.js",

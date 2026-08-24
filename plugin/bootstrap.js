@@ -19,6 +19,7 @@ async function startup({ id, version, rootURI }) {
     "content/logic.js",
     "content/credentials.js",
     "content/cache.js",
+    "content/pdf-screenshot.js",
     "content/chat-cache.js",
     "content/api.js",
     "content/service.js",

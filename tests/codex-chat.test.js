@@ -100,7 +100,10 @@ class FakeACP {
       preparedVersion: this.prepared ? "1.6.2" : "",
       requiredVersion: "1.6.2",
       mode: "agent",
-      capabilities: { loadSession: true },
+      capabilities: {
+        loadSession: true,
+        promptCapabilities: { image: this.imageCapable !== false }
+      },
       authentication: { status: "chat-gpt" },
       lastError: ""
     };
@@ -195,6 +198,10 @@ function makeHarness({
       if (noOverwrite && io.files.has(target)) throw new Error("EEXIST");
       if (io.files.has(source)) await io.copy(source, target);
     },
+    async writeAtomic(target, bytes, { noOverwrite = false } = {}) {
+      if (noOverwrite && io.files.has(target)) throw new Error("EEXIST");
+      await io.write(target, bytes);
+    },
     async hasPDFToText() { return hasPDFToText; },
     async extractPDFText() { return "extracted local text"; },
     async writeUTF8Atomic(path, value) { this.textWrites.push({ path, value }); },
@@ -223,6 +230,34 @@ function pngBytes() {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52
   ]);
+}
+
+function screenshotPNG(width = 2, height = 3) {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  bytes.set([0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52], 8);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
+
+function screenshotCapture({ pageIndex = 1, width = 2, height = 3 } = {}) {
+  return {
+    source: "source.pdf",
+    mimeType: "image/png",
+    data: screenshotPNG(width, height),
+    location: {
+      coordinateSystem: "pdf-points",
+      pageIndex,
+      pageNumber: pageIndex + 1,
+      pageLabel: `p-${pageIndex + 1}`,
+      rect: [10.25, 20.5, 30.75, 40.875],
+      pixelSize: { width, height },
+      pageRotation: 0,
+      renderScale: 4
+    }
+  };
 }
 
 function viewImageUpdate(path, overrides = {}) {
@@ -444,6 +479,184 @@ test("first prompt attaches copied PDF once and later prompts are text-only in t
   assert.equal(state.record.transcript.filter((entry) => entry.role === "agent").length, 2);
 });
 
+test("PDF screenshots persist as recoverable drafts and send as image blocks with precise positions", async () => {
+  const { service, acp, cache, paper } = makeHarness();
+  const captures = [
+    screenshotCapture({ pageIndex: 1, width: 2, height: 3 }),
+    screenshotCapture({ pageIndex: 2, width: 4, height: 5 })
+  ];
+  const screenshots = await service.saveScreenshotDrafts(10, captures);
+  assert.equal(screenshots.length, 2);
+  assert.match(screenshots[0].localURI, /^file:\/\/\/chat\/screenshots\//u);
+
+  const cachedDraft = (await cache.load(paper)).draft.screenshots;
+  assert.equal(cachedDraft.length, 2);
+  assert.equal("localURI" in cachedDraft[0], false, "cache metadata must not persist a path URI");
+
+  const beforeSend = await service.load(10);
+  assert.equal(beforeSend.record.draft.screenshots.length, 2);
+  assert.match(beforeSend.record.draft.screenshots[0].localURI, /^file:\/\/\/chat\/screenshots\//u);
+
+  await service.send(10, "", { screenshots });
+  const prompt = acp.requests.find((request) => request.method === "session/prompt").params.prompt;
+  assert.deepEqual(prompt.map((part) => part.type), ["text", "resource_link", "image", "image"]);
+  assert.equal(prompt[2].mimeType, "image/png");
+  assert.deepEqual(new Uint8Array(Buffer.from(prompt[2].data, "base64")), captures[0].data);
+
+  const parsed = parseVisibleUserMessage(prompt[0].text);
+  assert.equal(parsed.wrapped, true);
+  assert.equal(parsed.text, "");
+  assert.equal(parsed.screenshotRefs.length, 2);
+  assert.equal(parsed.screenshotRefs[0].location.pageIndex, 1);
+  assert.deepEqual(parsed.screenshotRefs[0].location.rect, [10.25, 20.5, 30.75, 40.875]);
+  assert.equal("fileName" in parsed.screenshotRefs[0], false);
+
+  const state = await service.load(10);
+  assert.equal(state.record.draft.screenshots.length, 0);
+  const user = state.record.transcript.find((entry) => entry.role === "user");
+  assert.equal(user.text, "");
+  assert.equal(user.screenshots.length, 2);
+  assert.match(user.screenshots[0].localURI, /^file:\/\/\/chat\/screenshots\//u);
+});
+
+test("unsent screenshot drafts recover after restart and manual removal deletes only their copies", async () => {
+  const io = new MemoryIO();
+  const first = makeHarness({ io });
+  const [screenshot] = await first.service.saveScreenshotDrafts(10, [screenshotCapture()]);
+  const path = screenshot.localURI.replace(/^file:\/\//u, "");
+  assert.equal(io.files.has(path), true);
+
+  const second = makeHarness({ io, acp: new FakeACP() });
+  const recovered = await second.service.load(10);
+  assert.equal(recovered.record.draft.screenshots[0].id, screenshot.id);
+  assert.equal(recovered.record.transcript.length, 0);
+
+  assert.deepEqual(await second.service.deleteScreenshotDrafts(
+    10,
+    recovered.record.draft.screenshots
+  ), { deleted: 1, cleanupFailed: 0 });
+  assert.equal(io.files.has(path), false);
+  assert.equal((await second.service.load(10)).record.draft.screenshots.length, 0);
+});
+
+test("a model image-modality rejection removes the local user entry and preserves the full draft", async () => {
+  const acp = new FakeACP();
+  acp.promptHook = async () => {
+    throw new Error("The current model does not support image input");
+  };
+  const { service, io } = makeHarness({ acp });
+  const [screenshot] = await service.saveScreenshotDrafts(10, [screenshotCapture()]);
+
+  await assert.rejects(
+    service.send(10, "分析这张图", { screenshots: [screenshot] }),
+    { code: "MODEL_IMAGE_UNSUPPORTED" }
+  );
+  const state = await service.load(10);
+  assert.equal(state.record.transcript.some((entry) => entry.role === "user"), false);
+  assert.equal(state.record.draft.screenshots.length, 1);
+  assert.equal(io.files.has(screenshot.localURI.replace(/^file:\/\//u, "")), true);
+  assert.equal(state.record.session.pdfAttached, false);
+});
+
+test("an adapter without image capability blocks before prompting and retains the draft", async () => {
+  const acp = new FakeACP();
+  acp.imageCapable = false;
+  const { service } = makeHarness({ acp });
+  const [screenshot] = await service.saveScreenshotDrafts(10, [screenshotCapture()]);
+
+  await assert.rejects(
+    service.send(10, "分析", { screenshots: [screenshot] }),
+    { code: "IMAGE_PROMPT_UNSUPPORTED" }
+  );
+  assert.equal(acp.requests.some((request) => request.method === "session/prompt"), false);
+  assert.equal((await service.load(10)).record.draft.screenshots.length, 1);
+});
+
+test("screenshot drafts have no count cap but retain an emergency aggregate resource guard", async () => {
+  const { service, cache, paper } = makeHarness();
+  const many = await service.saveScreenshotDrafts(
+    10,
+    Array.from({ length: 12 }, (_value, pageIndex) => screenshotCapture({ pageIndex }))
+  );
+  assert.equal(many.length, 12, "the former 4/8-image limits must not return");
+  await service.deleteScreenshotDrafts(10, many);
+
+  await cache.update(paper, (record) => {
+    record.draft = {
+      screenshots: Array.from({ length: 6 }, (_value, index) => ({
+        schemaVersion: 1,
+        id: `shot-budget-${index}`,
+        source: "source.pdf",
+        mimeType: "image/png",
+        byteSize: Constants.PDF_SCREENSHOT_MAX_BYTES,
+        width: 4000,
+        height: 4000,
+        fileName: `capture-shot-budget-${index}.png`,
+        location: {
+          coordinateSystem: "pdf-points",
+          pageIndex: index,
+          pageNumber: index + 1,
+          pageLabel: String(index + 1),
+          rect: [0, 0, 100, 100],
+          pixelSize: { width: 4000, height: 4000 },
+          pageRotation: 0,
+          renderScale: 4
+        }
+      }))
+    };
+  });
+  service.states.clear();
+  service.sessionStates.clear();
+  const restored = await service.load(10);
+  await assert.rejects(
+    service.send(10, "分析全部截图", { screenshots: restored.record.draft.screenshots }),
+    { code: "SCREENSHOT_TURN_BUDGET" }
+  );
+  assert.equal((await service.load(10)).record.draft.screenshots.length, 6);
+});
+
+test("changed screenshot bytes are rejected without dropping their draft metadata", async () => {
+  const { service, io } = makeHarness();
+  const [screenshot] = await service.saveScreenshotDrafts(10, [screenshotCapture()]);
+  const path = screenshot.localURI.replace(/^file:\/\//u, "");
+  io.setBytes(path, screenshotPNG(9, 9));
+
+  await assert.rejects(
+    service.send(10, "分析", { screenshots: [screenshot] }),
+    { code: "SCREENSHOT_SIGNATURE" }
+  );
+  assert.equal((await service.load(10)).record.draft.screenshots.length, 1);
+});
+
+test("session replay reconnects image markers to validated local screenshot metadata", async () => {
+  const { service, acp } = makeHarness();
+  const [screenshot] = await service.saveScreenshotDrafts(10, [screenshotCapture()]);
+  await service.send(10, "定位这张图", { screenshots: [screenshot] });
+  const prompt = acp.requests.find((request) => request.method === "session/prompt").params.prompt;
+  const wire = prompt[0].text +
+    "[@source.pdf](file:///chat/workspaces/1--ABCDEFGH/workspace-1/source.pdf)";
+  acp.loadHook = async (params, client) => {
+    for (const text of [wire, `[@image](data:image/png;base64,${prompt[2].data})`]) {
+      client.emit("session/update", {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "user_message_chunk",
+          messageId: "screenshot-user-1",
+          content: { type: "text", text }
+        }
+      });
+    }
+  };
+
+  const state = await service.reload(10);
+  const user = state.record.transcript.find((entry) => entry.role === "user");
+  assert.equal(user.text, "定位这张图");
+  assert.equal(user.screenshots.length, 1);
+  assert.equal(user.screenshots[0].id, screenshot.id);
+  assert.match(user.screenshots[0].localURI, /^file:\/\/\/chat\/screenshots\//u);
+  assert.equal(user.text.includes("data:image"), false);
+});
+
 test("selection prompts carry precise coordinates while visible history keeps readable metadata", async () => {
   const { service, acp } = makeHarness();
   await service.send(10, "解释这段定义", { selections: [selectionContext] });
@@ -633,7 +846,7 @@ test("developer mode alone captures bounded redacted tool and thought diagnostic
   assert.equal(state.diagnosticEventCount, 3);
 
   const report = await service.getDiagnosticReport(10);
-  assert.equal(report.pluginVersion, "0.1.23");
+  assert.equal(report.pluginVersion, "0.1.25");
   assert.equal(report.eventCount, 3);
   assert.deepEqual(report.events.map((entry) => entry.sessionUpdate), [
     "agent_thought_chunk",
@@ -849,12 +1062,17 @@ test("permission and form elicitation are surfaced and mapped without a default 
 test("rebuild archives old mapping without deleting the remote session", async () => {
   const { service, acp, io } = makeHarness();
   await service.send(10, "first");
+  const [screenshot] = await service.saveScreenshotDrafts(10, [screenshotCapture()]);
+  const screenshotPath = screenshot.localURI.replace(/^file:\/\//u, "");
+  assert.equal(io.files.has(screenshotPath), true);
   const old = await service.load(10);
   const rebuilt = await service.rebuild(10);
   assert.equal(rebuilt.record.session.id, null);
   assert.notEqual(rebuilt.record.session.localID, old.record.session.localID);
   assert.equal(acp.requests.some((request) => request.method === "session/delete"), false);
   assert.equal((await io.readJSON(rebuilt.archivePath)).session.id, acp.sessionID);
+  assert.equal(rebuilt.record.draft.screenshots.length, 0);
+  assert.equal(io.files.has(screenshotPath), false);
 });
 
 test("stored unavailable model blocks restored session instead of silently switching", async () => {

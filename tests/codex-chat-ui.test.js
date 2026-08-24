@@ -130,6 +130,30 @@ function makeSelection({ text = "Selected paper text", pageIndex = 2 } = {}) {
   };
 }
 
+function makeScreenshot({ id = "shot-ui-1", pageIndex = 2 } = {}) {
+  return {
+    schemaVersion: 1,
+    id,
+    source: "source.pdf",
+    mimeType: "image/png",
+    byteSize: 1024,
+    width: 40,
+    height: 20,
+    fileName: `capture-${id}.png`,
+    localURI: `file:///screenshots/capture-${id}.png`,
+    location: {
+      coordinateSystem: "pdf-points",
+      pageIndex,
+      pageNumber: pageIndex + 1,
+      pageLabel: String(pageIndex + 1),
+      rect: [10.25, 20.5, 30.75, 40.875],
+      pixelSize: { width: 40, height: 20 },
+      pageRotation: 0,
+      renderScale: 4
+    }
+  };
+}
+
 test("Reader attachment resolution uses only the owning item-details tab ID", () => {
   const details = { tabID: "reader-tab-7", dataset: { tabId: "wrong-fallback" } };
   const body = { closest: (selector) => selector === "item-details" ? details : null };
@@ -213,6 +237,133 @@ test("PDF selections accumulate in the matching in-memory draft without calling 
   finally {
     global.Zotero = originalZotero;
   }
+});
+
+test("PDF screenshots enter a grouped lazy draft, can be removed, and allow pure-image sending", async () => {
+  const originalZotero = global.Zotero;
+  global.Zotero = {
+    Reader: {
+      getByTabID(tabID) {
+        return tabID === "reader-tab-10" ? { itemID: 10 } : null;
+      }
+    }
+  };
+  const stored = makeScreenshot();
+  const calls = { save: 0, delete: 0, send: [] };
+  const ui = new CodexChatUI({
+    service: {
+      async saveScreenshotDrafts(_attachmentID, captures) {
+        calls.save++;
+        assert.equal(captures.length, 1);
+        return [stored];
+      },
+      async deleteScreenshotDrafts(_attachmentID, screenshots) {
+        calls.delete++;
+        assert.equal(screenshots[0].id, stored.id);
+        return { deleted: 1, cleanupFailed: 0 };
+      },
+      async send(attachmentID, question, options) {
+        calls.send.push({ attachmentID, question, options });
+      }
+    }
+  });
+  const doc = new Document();
+  const body = doc.createElement("section");
+  body.closestValues = { "item-details": { tabID: "reader-tab-10" } };
+  ui._renderShell({ doc, body, setSectionSummary() {} });
+  const view = ui.views.get(body);
+  view.attachmentID = 10;
+  view.state = { status: "ready", sourceChanged: false, historyReadOnly: false };
+  ui._revealCodexPane = async () => true;
+
+  try {
+    assert.deepEqual(await ui.addScreenshotContexts({
+      tabID: "reader-tab-10",
+      attachmentID: 10,
+      captures: [{ opaqueCapture: true }]
+    }), { added: 1, revealed: true });
+    assert.equal(calls.save, 1);
+    assert.equal(calls.send.length, 0, "adding a screenshot must not start an ACP turn");
+    assert.equal(view.elements.send.disabled, false, "a pure-image draft can be sent");
+
+    let nodes = descendants(view.elements.draftContexts);
+    const group = nodes.find((node) => node.localName === "details");
+    assert.equal(group.open, false);
+    assert.equal(nodes.some((node) => node.localName === "img"), false);
+    assert.ok(nodes.some((node) => node.textContent === "重新框选"));
+    assert.ok(nodes.some((node) => node.textContent === "第 3 页"));
+    const position = nodes.find((node) => node.className === "spt-codex-screenshot-metadata");
+    assert.match(position.textContent, /PDF 坐标/u);
+
+    group.open = true;
+    group.listeners.get("toggle")();
+    nodes = descendants(view.elements.draftContexts);
+    const image = nodes.find((node) => node.localName === "img");
+    assert.equal(image.src, stored.localURI);
+
+    const remove = nodes.find((node) => node.textContent === "移除");
+    await remove.listeners.get("click")();
+    assert.equal(calls.delete, 1);
+    assert.equal(ui.drafts.get(10).screenshots.length, 0);
+
+    await ui.addScreenshotContexts({
+      tabID: "reader-tab-10",
+      attachmentID: 10,
+      captures: [{ opaqueCapture: true }]
+    });
+    await ui._run(body, "send");
+    assert.equal(calls.send.length, 1);
+    assert.equal(calls.send[0].question, "");
+    assert.equal(calls.send[0].options.screenshots[0].id, stored.id);
+    assert.deepEqual(ui.drafts.get(10), { question: "", selections: [], screenshots: [] });
+  }
+  finally {
+    global.Zotero = originalZotero;
+  }
+});
+
+test("persisted screenshot metadata restores a draft when the Reader pane is reopened", () => {
+  const ui = new CodexChatUI();
+  const screenshot = makeScreenshot({ id: "shot-restored" });
+  assert.equal(ui._restoreScreenshotDrafts(10, {
+    record: { draft: { screenshots: [screenshot] } }
+  }), true);
+  assert.equal(ui._restoreScreenshotDrafts(10, {
+    record: { draft: { screenshots: [screenshot] } }
+  }), false);
+  assert.equal(ui.drafts.get(10).screenshots.length, 1);
+});
+
+test("sent screenshot history stays folded and does not decode until expanded", () => {
+  const doc = new Document();
+  const messages = doc.createElement("div");
+  const ui = new CodexChatUI();
+  const view = {
+    body: { ownerDocument: doc },
+    attachmentID: 10,
+    transcriptRendered: false,
+    elements: { messages, notices: doc.createElement("div") }
+  };
+  ui._renderTranscript(view, {
+    record: {
+      session: { workspacePath: "/workspace" },
+      transcript: [{
+        kind: "message",
+        role: "user",
+        text: "",
+        screenshots: [makeScreenshot()]
+      }]
+    }
+  });
+  let nodes = descendants(messages);
+  const group = nodes.find((node) => node.localName === "details");
+  assert.ok(group);
+  assert.equal(nodes.some((node) => node.localName === "img"), false);
+  group.open = true;
+  group.listeners.get("toggle")();
+  nodes = descendants(messages);
+  assert.equal(nodes.find((node) => node.localName === "img").src,
+    "file:///screenshots/capture-shot-ui-1.png");
 });
 
 test("selection drafts stay isolated by PDF when automatic pane reveal is unavailable", async () => {
@@ -310,7 +461,7 @@ test("sending clears a selection draft on success and restores it intact on fail
   assert.equal(sent.length, 1);
   assert.equal(sent[0].question, "First question");
   assert.equal(sent[0].options.selections[0].location.rects[0][3], 40);
-  assert.deepEqual(ui.drafts.get(10), { question: "", selections: [] });
+  assert.deepEqual(ui.drafts.get(10), { question: "", selections: [], screenshots: [] });
 
   fail = true;
   ui.drafts.set(10, {

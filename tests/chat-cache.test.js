@@ -56,7 +56,7 @@ test("corrupt chat mirrors are backed up before a clean record is rebuilt", asyn
   assert.equal((await io.readJSON("/chat/records/1--ABCDEFGH.json")).transcript.length, 0);
 });
 
-test("reset archives the mapping, retains the workspace, and deletes session tool images", async () => {
+test("reset archives the mapping, retains the workspace, and deletes session images", async () => {
   const { cache, io } = makeHarness();
   const paper = makePaper();
   const record = await cache.load(paper);
@@ -64,8 +64,10 @@ test("reset archives the mapping, retains the workspace, and deletes session too
   record.transcript.push({ id: "m1", kind: "message", role: "user", text: "old" });
   await cache.ensureWorkspace(paper, record);
   const toolImages = await cache.ensureToolImageDirectory(paper, record);
+  const screenshots = await cache.ensureScreenshotDirectory(paper, record);
   io.setText(`${record.session.workspacePath}/generated.md`, "retained output");
   io.setText(`${toolImages}/tool-1.png`, "image bytes");
+  io.setText(`${screenshots}/capture-shot-1.png`, "screenshot bytes");
   await cache.save(paper, record);
   const result = await cache.archiveAndReset(paper, "source-changed");
   assert.equal(result.record.session.id, null);
@@ -75,11 +77,14 @@ test("reset archives the mapping, retains the workspace, and deletes session too
   assert.notEqual(archived.session.workspacePath, record.session.workspacePath);
   assert.equal(archived.archive.workspaceRetained, true);
   assert.equal(archived.archive.toolImagesDeleted, true);
+  assert.equal(archived.archive.screenshotsDeleted, true);
   assert.equal(archived.archive.reason, "source-changed");
   assert.equal(await io.exists(record.session.workspacePath), false);
   assert.equal(await io.exists(`${archived.session.workspacePath}/generated.md`), true);
   assert.equal(await io.exists(toolImages), false);
   assert.equal(await io.exists(`${toolImages}/tool-1.png`), false);
+  assert.equal(await io.exists(screenshots), false);
+  assert.equal(await io.exists(`${screenshots}/capture-shot-1.png`), false);
 });
 
 test("tool image paths are paper and session isolated outside the ACP workspace", async () => {
@@ -93,6 +98,23 @@ test("tool image paths are paper and session isolated outside the ACP workspace"
   assert.throws(
     () => cache.toolImagePath(paper, record, "../source.pdf"),
     { code: "TOOL_IMAGE_NAME" }
+  );
+});
+
+test("PDF screenshot paths are paper and session isolated outside the ACP workspace", async () => {
+  const { cache } = makeHarness();
+  const paper = makePaper();
+  const record = await cache.load(paper);
+  const directory = await cache.ensureScreenshotDirectory(paper, record);
+  assert.equal(directory, "/chat/screenshots/1--ABCDEFGH/local-1");
+  assert.equal(
+    cache.screenshotPath(paper, record, "capture-shot-1.png"),
+    `${directory}/capture-shot-1.png`
+  );
+  assert.notEqual(directory, record.session.workspacePath);
+  assert.throws(
+    () => cache.screenshotPath(paper, record, "../capture-shot-1.png"),
+    { code: "SCREENSHOT_NAME" }
   );
 });
 

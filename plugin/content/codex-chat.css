@@ -938,6 +938,12 @@ button.spt-codex-file-citation:hover {
   min-width: 0;
 }
 
+.spt-codex-composer > .spt-codex-draft-contexts {
+  display: grid;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
 .spt-codex-draft-contexts[hidden] {
   display: none;
 }
@@ -979,6 +985,104 @@ button.spt-codex-file-citation:hover {
   line-height: 1.42;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.spt-codex-screenshot-group {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--spt-codex-accent) 28%, var(--spt-codex-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--spt-codex-accent) 4%, Canvas);
+}
+
+.spt-codex-screenshot-group > summary {
+  padding: 7px 9px;
+  color: var(--fill-primary, CanvasText);
+  font-size: .84em;
+  font-weight: 620;
+  cursor: pointer;
+  user-select: none;
+}
+
+.spt-codex-screenshot-group[open] > summary {
+  border-bottom: 1px solid var(--spt-codex-border);
+}
+
+.spt-codex-screenshot-group-cards {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+}
+
+.spt-codex-screenshot-context {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--spt-codex-border);
+  border-radius: 8px;
+  background: var(--spt-codex-surface-raised);
+}
+
+.spt-codex-screenshot-context > header,
+.spt-codex-screenshot-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.spt-codex-screenshot-context > header span {
+  margin-inline-start: auto;
+  color: var(--spt-codex-muted);
+  font-size: .78em;
+}
+
+.spt-codex-screenshot-preview {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 82px;
+  max-height: 220px;
+  padding: 5px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--spt-codex-border);
+  border-radius: 7px;
+  background: color-mix(in srgb, CanvasText 4%, Canvas);
+  color: var(--spt-codex-muted);
+  cursor: zoom-in;
+}
+
+.spt-codex-screenshot-preview:disabled {
+  cursor: default;
+}
+
+.spt-codex-screenshot-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  max-height: 208px;
+  object-fit: contain;
+}
+
+.spt-codex-screenshot-placeholder,
+.spt-codex-screenshot-metadata {
+  color: var(--spt-codex-muted);
+  font-size: .78em;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.spt-codex-screenshot-action {
+  min-height: 24px;
+  padding: 2px 7px;
+  font-size: .78em;
+}
+
+.spt-codex-composer-actions > .spt-codex-screenshot-button {
+  margin-inline-end: auto;
 }
 
 .spt-codex-activity {

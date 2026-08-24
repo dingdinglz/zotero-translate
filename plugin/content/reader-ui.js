@@ -8,6 +8,9 @@
   const Logic = modules.Logic || (
     typeof require === "function" ? require("./logic.js") : null
   );
+  const PDFScreenshot = modules.PDFScreenshot || (
+    typeof require === "function" ? require("./pdf-screenshot.js") : null
+  );
 
   function createElement(doc, tag, className, text) {
     const element = doc.createElement(tag);
@@ -132,6 +135,37 @@
     return icon;
   }
 
+  function createScreenshotIcon(doc) {
+    const icon = createSVGElement(doc, "svg", {
+      class: "spt-toolbar-icon spt-screenshot-icon",
+      viewBox: "0 0 20 20",
+      fill: "none",
+      "aria-hidden": "true"
+    });
+    icon.append(
+      createSVGElement(doc, "path", {
+        d: "M3.25 6.25h2.1l1.25-1.7h6.8l1.25 1.7h2.1v8.5H3.25z",
+        stroke: "currentColor",
+        "stroke-width": "1.35",
+        "stroke-linejoin": "round"
+      }),
+      createSVGElement(doc, "circle", {
+        cx: "10",
+        cy: "10.5",
+        r: "2.55",
+        stroke: "currentColor",
+        "stroke-width": "1.35"
+      }),
+      createSVGElement(doc, "path", {
+        d: "M2.25 3.25v3m0-3h3m12.5 0v3m0-3h-3M2.25 16.75v-3m0 3h3m12.5 0v-3m0 3h-3",
+        stroke: "currentColor",
+        "stroke-width": "1.2",
+        "stroke-linecap": "round"
+      })
+    );
+    return icon;
+  }
+
   function createCloseIcon(doc) {
     const icon = createSVGElement(doc, "svg", {
       class: "spt-close-icon",
@@ -165,16 +199,24 @@
       setPreference,
       canAddSelectionToCodex,
       addSelectionToCodex,
+      screenshotBridge,
+      canAddScreenshotToCodex,
+      addScreenshotsToCodex,
       stylesheetText,
       log
     } = {}) {
       this.service = service;
       this.getPreference = getPreference;
       this.setPreference = setPreference;
+      this.log = log || (() => {});
       this.canAddSelectionToCodex = canAddSelectionToCodex;
       this.addSelectionToCodex = addSelectionToCodex;
+      this.screenshotBridge = screenshotBridge || new PDFScreenshot.ZoteroPDFScreenshotBridge({
+        log: (message, error) => this.log(message, error)
+      });
+      this.canAddScreenshotToCodex = canAddScreenshotToCodex;
+      this.addScreenshotsToCodex = addScreenshotsToCodex;
       this.stylesheetText = stylesheetText || "";
-      this.log = log || (() => {});
       this.states = new Map();
       this.stylesheets = new Set();
       this.unsubscribeService = null;
@@ -399,6 +441,73 @@
       return button;
     }
 
+    _createScreenshotButton(doc, state) {
+      const button = createElement(
+        doc,
+        "button",
+        "toolbar-button spt-toolbar-button spt-screenshot-toolbar-button"
+      );
+      button.type = "button";
+      button.tabIndex = -1;
+      button.append(createScreenshotIcon(doc));
+      state.screenshotButton = button;
+      this._updateScreenshotButton(state);
+      return button;
+    }
+
+    _screenshotContextForState(state) {
+      return {
+        reader: state?.reader,
+        tabID: state?.reader?.tabID,
+        attachmentID: Number(state?.reader?.itemID)
+      };
+    }
+
+    _screenshotState({ tabID, attachmentID } = {}) {
+      const normalizedAttachmentID = Number(attachmentID);
+      for (const state of this.states.values()) {
+        if (
+          state.destroyed || state.reader?.tabID !== tabID ||
+          Number(state.reader?.itemID) !== normalizedAttachmentID
+        ) continue;
+        return state;
+      }
+      return null;
+    }
+
+    _screenshotAvailable(state) {
+      if (!state?.doc || typeof this.canAddScreenshotToCodex !== "function") return false;
+      try {
+        return Boolean(
+          this.canAddScreenshotToCodex(this._screenshotContextForState(state)) &&
+          this.screenshotBridge?.canCapture?.({ doc: state.doc })
+        );
+      }
+      catch (error) {
+        this.log("检查 PDF 截图入口失败", error);
+        return false;
+      }
+    }
+
+    _updateScreenshotButton(state) {
+      const button = state?.screenshotButton;
+      if (!button) return;
+      const active = Boolean(
+        state.capturePromise || this.screenshotBridge?.isCapturing?.(state.doc)
+      );
+      const available = active || this._screenshotAvailable(state);
+      button.disabled = !available;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+      const label = active ? "取消 PDF 截图" : "截取 PDF 原页区域到 Codex 草稿";
+      button.title = state.screenshotProgress || (
+        available
+          ? label
+          : `当前页面不支持 Zotero ${PDFScreenshot.TARGET_ZOTERO_VERSION} 原页截图`
+      );
+      button.setAttribute("aria-label", label);
+    }
+
     _mountPanel(doc, state) {
       const panel = this._createPanel(doc, state);
       panel.id = "smart-paper-translator-panel";
@@ -440,11 +549,14 @@
       state.stylesheet = this._ensureStylesheet(doc);
       const toolbarButton = this._createToolbarButton(doc, state);
       const selectionToggleButton = this._createSelectionToggleButton(doc, state);
+      const screenshotButton = this._createScreenshotButton(doc, state);
       append(toolbarButton);
       append(selectionToggleButton);
+      append(screenshotButton);
       this._mountPanel(doc, state);
       this._bindPanelEvents(state);
       this._bindSelectionToggleEvents(state);
+      this._bindScreenshotEvents(state);
       this._applyStoredGeometry(state);
       this._updateVisibility(state);
       this.refreshState(state);
@@ -665,6 +777,89 @@
       state.domCleanups.push(
         () => selectionToggleButton.removeEventListener("click", toggle)
       );
+    }
+
+    _bindScreenshotEvents(state) {
+      const { screenshotButton } = state;
+      const toggle = () => {
+        if (state.capturePromise || this.screenshotBridge?.isCapturing?.(state.doc)) {
+          this.screenshotBridge?.cancel?.(state.doc);
+          return;
+        }
+        void this.startScreenshotCapture(this._screenshotContextForState(state)).catch((error) => {
+          state.screenshotProgress = error?.message || "PDF 截图失败";
+          this._updateScreenshotButton(state);
+          this.log("PDF 截图失败", error);
+        });
+      };
+      screenshotButton.addEventListener("click", toggle);
+      state.domCleanups.push(
+        () => screenshotButton.removeEventListener("click", toggle)
+      );
+    }
+
+    canStartScreenshotCapture({ tabID, attachmentID } = {}) {
+      return this._screenshotAvailable(this._screenshotState({ tabID, attachmentID }));
+    }
+
+    async startScreenshotCapture({ tabID, attachmentID, replaceScreenshotID = null } = {}) {
+      const state = this._screenshotState({ tabID, attachmentID });
+      if (!state || !this._screenshotAvailable(state)) {
+        throw new PDFScreenshot.PDFScreenshotError(
+          "SCREENSHOT_READER_MISMATCH",
+          "无法精确匹配当前 Reader PDF，未启动截图"
+        );
+      }
+      if (state.capturePromise || this.screenshotBridge.isCapturing(state.doc)) {
+        throw new PDFScreenshot.PDFScreenshotError(
+          "SCREENSHOT_ACTIVE",
+          "当前 Reader 已在截图模式中"
+        );
+      }
+      const normalizedAttachmentID = Number(attachmentID);
+      state.screenshotProgress = "请在 PDF 页面中拖动框选";
+      const operation = (async () => {
+        const captures = await this.screenshotBridge.capture({
+          doc: state.doc,
+          onProgress: (message) => {
+            state.screenshotProgress = message;
+            this._updateScreenshotButton(state);
+          }
+        });
+        if (!captures.length) return { cancelled: true, added: 0, revealed: false };
+        if (
+          state.destroyed || state.reader?.tabID !== tabID ||
+          Number(state.reader?.itemID) !== normalizedAttachmentID ||
+          !this._screenshotAvailable(state)
+        ) {
+          throw new PDFScreenshot.PDFScreenshotError(
+            "SCREENSHOT_READER_CHANGED",
+            "Reader 已切换到其他 PDF，截图未加入草稿"
+          );
+        }
+        if (typeof this.addScreenshotsToCodex !== "function") {
+          throw new PDFScreenshot.PDFScreenshotError(
+            "SCREENSHOT_DRAFT_UNAVAILABLE",
+            "Codex 截图草稿尚未初始化"
+          );
+        }
+        return this.addScreenshotsToCodex({
+          tabID,
+          attachmentID: normalizedAttachmentID,
+          captures,
+          replaceScreenshotID
+        });
+      })();
+      state.capturePromise = operation;
+      this._updateScreenshotButton(state);
+      try {
+        return await operation;
+      }
+      finally {
+        if (state.capturePromise === operation) state.capturePromise = null;
+        state.screenshotProgress = "";
+        this._updateScreenshotButton(state);
+      }
     }
 
     _applyStoredGeometry(state) {
@@ -1131,6 +1326,8 @@
       state.domCleanups = [];
       state.toolbarButton?.remove();
       state.selectionToggleButton?.remove();
+      this.screenshotBridge?.cancel?.(state.doc);
+      state.screenshotButton?.remove();
       state.panel?.remove();
       state.activeDrag = null;
       state.activeResize = null;
@@ -1143,6 +1340,9 @@
       state.panel = null;
       state.toolbarButton = null;
       state.selectionToggleButton = null;
+      state.screenshotButton = null;
+      state.capturePromise = null;
+      state.screenshotProgress = "";
     }
 
     shutdown() {
@@ -1155,12 +1355,18 @@
       this.states.clear();
       for (const stylesheet of this.stylesheets) stylesheet.remove();
       this.stylesheets.clear();
+      this.screenshotBridge?.shutdown?.();
       // Reader listeners are registered with pluginID and Zotero removes them during plugin shutdown.
     }
   }
 
-  modules.ReaderUI = { ReaderUI, createElement, normalizeCodexSelection };
+  modules.ReaderUI = {
+    ReaderUI,
+    createElement,
+    normalizeCodexSelection,
+    createScreenshotIcon
+  };
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { ReaderUI, createElement, normalizeCodexSelection };
+    module.exports = { ReaderUI, createElement, normalizeCodexSelection, createScreenshotIcon };
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);

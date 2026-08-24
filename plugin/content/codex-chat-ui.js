@@ -11,6 +11,9 @@
   const MathRenderer = modules.MathRenderer || (
     typeof require === "function" ? require("./math-renderer.js") : null
   );
+  const PDFScreenshot = modules.PDFScreenshot || (
+    typeof require === "function" ? require("./pdf-screenshot.js") : null
+  );
 
   const CODEX_L10N_RESOURCE = "smart-paper-translator-codex-chat.ftl";
   const LEGACY_CODEX_L10N_RESOURCE = "smart-paper-translator.ftl";
@@ -46,6 +49,21 @@
     const firstPage = location.pageLabel || location.pageNumber || "?";
     if (!location.nextPage) return `第 ${firstPage} 页`;
     return `第 ${firstPage}–${location.nextPage.pageNumber} 页`;
+  }
+
+  function screenshotPageLabel(screenshot) {
+    const location = screenshot?.location || {};
+    return `第 ${location.pageLabel || location.pageNumber || "?"} 页`;
+  }
+
+  function screenshotPositionSummary(screenshot) {
+    const location = screenshot?.location || {};
+    const rect = Array.isArray(location.rect) ? location.rect : [];
+    const pixelSize = location.pixelSize || {};
+    const coordinates = rect.length === 4
+      ? rect.map((value) => Number(value).toFixed(1)).join(", ")
+      : "位置不可用";
+    return `${pixelSize.width || "?"} × ${pixelSize.height || "?"} px · PDF 坐标 [${coordinates}]`;
   }
 
   function setAttribute(element, name, value) {
@@ -1085,10 +1103,19 @@
   }
 
   class CodexChatUI {
-    constructor({ service, stylesheetText, rootURI, log } = {}) {
+    constructor({
+      service,
+      stylesheetText,
+      rootURI,
+      requestScreenshotCapture,
+      canStartScreenshotCapture,
+      log
+    } = {}) {
       this.service = service;
       this.stylesheetText = stylesheetText || "";
       this.rootURI = rootURI;
+      this.requestScreenshotCapture = requestScreenshotCapture;
+      this.canStartScreenshotCapture = canStartScreenshotCapture;
       this.log = log || (() => {});
       this.pluginID = null;
       this.paneID = null;
@@ -1101,8 +1128,13 @@
     _draftFor(attachmentID, create = true) {
       let draft = this.drafts.get(attachmentID);
       if (!draft && create) {
-        draft = { question: "", selections: [] };
+        draft = { question: "", selections: [], screenshots: [] };
         this.drafts.set(attachmentID, draft);
+      }
+      if (draft) {
+        if (!Array.isArray(draft.selections)) draft.selections = [];
+        if (!Array.isArray(draft.screenshots)) draft.screenshots = [];
+        if (typeof draft.question !== "string") draft.question = "";
       }
       return draft || null;
     }
@@ -1124,6 +1156,10 @@
           attachmentID: normalizedAttachmentID
         })
       );
+    }
+
+    canAddScreenshotContext(context = {}) {
+      return this.canAddSelectionContext(context);
     }
 
     _itemDetailsForTab(tabID) {
@@ -1184,7 +1220,11 @@
     }
 
     _syncDraftViews(attachmentID) {
-      const draft = this._draftFor(attachmentID, false) || { question: "", selections: [] };
+      const draft = this._draftFor(attachmentID, false) || {
+        question: "",
+        selections: [],
+        screenshots: []
+      };
       for (const view of this.views.values()) {
         if (view.attachmentID !== attachmentID) continue;
         if (view.elements.input.value !== draft.question) {
@@ -1193,6 +1233,22 @@
         this._renderDraftContexts(view);
         this._updateComposerAvailability(view);
       }
+    }
+
+    _restoreScreenshotDrafts(attachmentID, state) {
+      const persisted = CodexChat.normalizeStoredScreenshots(state?.record?.draft?.screenshots);
+      if (!persisted.length) return false;
+      const draft = this._draftFor(attachmentID);
+      const known = new Set(draft.screenshots.map((screenshot) => screenshot.id));
+      let changed = false;
+      for (const screenshot of persisted) {
+        if (known.has(screenshot.id)) continue;
+        draft.screenshots.push(screenshot);
+        known.add(screenshot.id);
+        changed = true;
+      }
+      if (changed) this._syncDraftViews(attachmentID);
+      return changed;
     }
 
     async addSelectionContext({ tabID, attachmentID, selection } = {}) {
@@ -1218,6 +1274,81 @@
       const view = this._viewForTab(tabID, normalizedAttachmentID);
       if (view) this._focusDraftInput(view);
       return { added, revealed };
+    }
+
+    async addScreenshotContexts({
+      tabID,
+      attachmentID,
+      captures,
+      replaceScreenshotID = null
+    } = {}) {
+      const normalizedAttachmentID = Number(attachmentID);
+      if (!this.canAddScreenshotContext({ tabID, attachmentID: normalizedAttachmentID })) {
+        throw new Error("无法精确匹配当前 Reader PDF，未添加截图");
+      }
+      if (!Array.isArray(captures) || !captures.length) {
+        throw new Error("没有可加入 Codex 草稿的 PDF 截图");
+      }
+      const draft = this._draftFor(normalizedAttachmentID);
+      const oldIndex = replaceScreenshotID
+        ? draft.screenshots.findIndex((screenshot) => screenshot.id === replaceScreenshotID)
+        : -1;
+      if (replaceScreenshotID && oldIndex < 0) {
+        throw new Error("待重新框选的截图已不在当前草稿中");
+      }
+      const stored = await this.service.saveScreenshotDrafts(normalizedAttachmentID, captures);
+      if (replaceScreenshotID) {
+        const previous = draft.screenshots[oldIndex];
+        try {
+          await this.service.deleteScreenshotDrafts(normalizedAttachmentID, [previous]);
+        }
+        catch (error) {
+          await this.service.deleteScreenshotDrafts(normalizedAttachmentID, stored)
+            .catch((cleanupError) => this.log("清理未采用的 PDF 截图失败", cleanupError));
+          throw error;
+        }
+        draft.screenshots.splice(oldIndex, 1, ...stored);
+      }
+      else {
+        draft.screenshots.push(...stored);
+      }
+      this._syncDraftViews(normalizedAttachmentID);
+      const focusKey = this._draftFocusKey(tabID, normalizedAttachmentID);
+      this.pendingDraftFocus.add(focusKey);
+      const revealed = await this._revealCodexPane(tabID).catch((error) => {
+        this.log("展开 Codex Item Pane 失败", error);
+        return false;
+      });
+      const view = this._viewForTab(tabID, normalizedAttachmentID);
+      if (view) this._focusDraftInput(view);
+      return { added: stored.length, revealed };
+    }
+
+    _screenshotRequestContext(view, replaceScreenshotID = null) {
+      const details = view?.body?.closest?.("item-details");
+      return {
+        tabID: details?.tabID,
+        attachmentID: view?.attachmentID,
+        replaceScreenshotID
+      };
+    }
+
+    _canRequestScreenshot(view) {
+      const context = this._screenshotRequestContext(view);
+      if (!context.tabID || !context.attachmentID) return false;
+      if (!this.canAddScreenshotContext(context)) return false;
+      if (typeof this.canStartScreenshotCapture !== "function") return false;
+      try { return Boolean(this.canStartScreenshotCapture(context)); }
+      catch (_error) { return false; }
+    }
+
+    async _requestScreenshot(view, replaceScreenshotID = null) {
+      if (typeof this.requestScreenshotCapture !== "function" || !this._canRequestScreenshot(view)) {
+        throw new Error("当前 Reader 无法启动 PDF 原页截图");
+      }
+      return this.requestScreenshotCapture(
+        this._screenshotRequestContext(view, replaceScreenshotID)
+      );
     }
 
     _externalLinkOptions(view) {
@@ -1450,11 +1581,19 @@
       input.placeholder = "围绕当前 PDF 向本机 Codex 提问…";
       input.disabled = true;
       const actions = doc.createElement("div");
+      actions.className = "spt-codex-composer-actions";
+      const screenshot = makeButton(
+        doc,
+        "截图",
+        () => this._run(body, "screenshot"),
+        "spt-codex-screenshot-button"
+      );
+      screenshot.title = "在当前 PDF 原页中框选区域，并加入本轮草稿";
       const stop = makeButton(doc, "停止", () => this._run(body, "cancel"));
       stop.hidden = true;
       const send = makeButton(doc, "发送", () => this._run(body, "send"), "spt-codex-primary-button");
       send.disabled = true;
-      actions.append(stop, send);
+      actions.append(screenshot, stop, send);
       composer.append(activity, draftContexts, input, actions);
       root.append(toolbar, configuration, notices, messages, composer);
       body.append(root);
@@ -1467,7 +1606,7 @@
         setSectionSummary,
         elements: {
           status, configuration, notices, messages, activity, activityText, draftContexts,
-          input, send, stop,
+          input, send, stop, screenshot,
           reload, workspace, copyLog, reset
         },
         cleanups: []
@@ -1514,13 +1653,184 @@
       container.append(card);
     }
 
+    _screenshotLightboxImage(screenshot) {
+      const normalized = PDFScreenshot.normalizeStoredScreenshot(screenshot);
+      if (!normalized?.localURI) return null;
+      return {
+        status: "ready",
+        originalName: `${screenshotPageLabel(normalized)} PDF 截图`,
+        mimeType: "image/png",
+        size: normalized.byteSize,
+        localURI: normalized.localURI
+      };
+    }
+
+    _appendScreenshotContextCard(container, screenshot, {
+      view,
+      onRemove = null,
+      onReselect = null,
+      registerDeferredImageLoader = null
+    } = {}) {
+      const normalized = PDFScreenshot.normalizeStoredScreenshot(screenshot);
+      const doc = container.ownerDocument || container.parentNode?.ownerDocument;
+      if (!doc || !normalized) return;
+      const card = doc.createElement("article");
+      card.className = "spt-codex-screenshot-context";
+      card.dataset.screenshotId = normalized.id;
+      const header = doc.createElement("header");
+      const page = doc.createElement("strong");
+      page.textContent = screenshotPageLabel(normalized);
+      const size = doc.createElement("span");
+      size.textContent = formatToolImageSize(normalized.byteSize);
+      header.append(page, size);
+      const actions = doc.createElement("div");
+      actions.className = "spt-codex-screenshot-actions";
+      const lightboxImage = this._screenshotLightboxImage(normalized);
+      const preview = doc.createElement("button");
+      preview.type = "button";
+      preview.className = "spt-codex-screenshot-preview";
+      preview.title = "放大查看 PDF 截图";
+      preview.setAttribute("aria-label", `放大查看${screenshotPageLabel(normalized)}截图`);
+      const placeholder = doc.createElement("span");
+      placeholder.className = "spt-codex-screenshot-placeholder";
+      placeholder.textContent = "展开后加载截图预览";
+      preview.append(placeholder);
+      let loaded = false;
+      const loadImage = () => {
+        if (loaded) return;
+        loaded = true;
+        if (!lightboxImage) {
+          placeholder.textContent = "本地截图副本不可用";
+          preview.disabled = true;
+          return;
+        }
+        const image = doc.createElement("img");
+        image.className = "spt-codex-screenshot-image";
+        image.alt = `${screenshotPageLabel(normalized)}截图`;
+        image.loading = "lazy";
+        image.decoding = "async";
+        image.addEventListener("error", () => {
+          image.remove();
+          placeholder.hidden = false;
+          placeholder.textContent = "本地截图副本无法解码";
+          preview.disabled = true;
+        });
+        placeholder.hidden = true;
+        image.src = lightboxImage.localURI;
+        preview.append(image);
+      };
+      registerDeferredImageLoader?.(loadImage);
+      preview.addEventListener("click", () => {
+        loadImage();
+        if (lightboxImage) this._openImageLightbox(view, lightboxImage);
+      });
+      const metadata = doc.createElement("div");
+      metadata.className = "spt-codex-screenshot-metadata";
+      metadata.textContent = screenshotPositionSummary(normalized);
+      if (lightboxImage) {
+        const enlarge = makeButton(doc, "放大", () => {
+          loadImage();
+          this._openImageLightbox(view, lightboxImage);
+        }, "spt-codex-screenshot-action");
+        actions.append(enlarge);
+      }
+      if (onReselect) {
+        const reselect = makeButton(
+          doc,
+          "重新框选",
+          onReselect,
+          "spt-codex-screenshot-action"
+        );
+        reselect.title = "保留当前截图，成功框选新区域后再替换";
+        actions.append(reselect);
+      }
+      if (onRemove) {
+        const remove = makeButton(doc, "移除", onRemove, "spt-codex-screenshot-action");
+        remove.title = "从草稿移除并删除未发送的本地截图副本";
+        actions.append(remove);
+      }
+      card.append(header, preview, metadata);
+      if (actions.children.length) card.append(actions);
+      container.append(card);
+    }
+
+    _appendScreenshotGroups(container, screenshots, { view, draft = false } = {}) {
+      const normalized = screenshots.map(PDFScreenshot.normalizeStoredScreenshot).filter(Boolean);
+      const groups = new Map();
+      for (const screenshot of normalized) {
+        const key = String(screenshot.location.pageIndex);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(screenshot);
+      }
+      for (const group of [...groups.values()].sort(
+        (left, right) => left[0].location.pageIndex - right[0].location.pageIndex
+      )) {
+        const doc = container.ownerDocument;
+        const details = doc.createElement("details");
+        details.className = "spt-codex-screenshot-group";
+        const summary = doc.createElement("summary");
+        summary.textContent = `${screenshotPageLabel(group[0])} · ${group.length} 张截图`;
+        const cards = doc.createElement("div");
+        cards.className = "spt-codex-screenshot-group-cards";
+        const loaders = [];
+        for (const screenshot of group) {
+          this._appendScreenshotContextCard(cards, screenshot, {
+            view,
+            registerDeferredImageLoader: (loader) => loaders.push(loader),
+            onRemove: draft ? async () => {
+              try {
+                await this.service.deleteScreenshotDrafts(view.attachmentID, [screenshot]);
+                const current = this._draftFor(view.attachmentID, false);
+                if (!current) return;
+                current.screenshots = current.screenshots.filter(
+                  (candidate) => candidate.id !== screenshot.id
+                );
+                this._syncDraftViews(view.attachmentID);
+              }
+              catch (error) {
+                view.elements.notices.textContent = error?.message || "无法移除 PDF 截图";
+              }
+            } : null,
+            onReselect: draft ? async () => {
+              if (view.screenshotPending) return;
+              view.screenshotPending = true;
+              this._updateComposerAvailability(view);
+              try {
+                const result = await this._requestScreenshot(view, screenshot.id);
+                view.elements.notices.textContent = result?.cancelled
+                  ? "已取消重新框选，原截图仍保留"
+                  : `已用 ${Number(result?.added) || 0} 张新截图替换原截图`;
+              }
+              catch (error) {
+                view.elements.notices.textContent = error?.message || "重新框选失败，原截图仍保留";
+              }
+              finally {
+                view.screenshotPending = false;
+                this._updateComposerAvailability(view);
+              }
+            } : null
+          });
+        }
+        let imagesLoaded = false;
+        const loadWhenExpanded = () => {
+          if (!details.open || imagesLoaded) return;
+          imagesLoaded = true;
+          for (const loader of loaders) loader();
+        };
+        details.addEventListener("toggle", loadWhenExpanded);
+        details.append(summary, cards);
+        container.append(details);
+      }
+    }
+
     _renderDraftContexts(view) {
       const container = view?.elements?.draftContexts;
       if (!container) return;
       container.replaceChildren();
       const draft = this._draftFor(view.attachmentID, false);
       const selections = draft?.selections || [];
-      container.hidden = !selections.length;
+      const screenshots = draft?.screenshots || [];
+      container.hidden = !selections.length && !screenshots.length;
       for (const selection of selections) {
         const key = CodexChat.selectionContextKey(selection);
         this._appendSelectionContextCard(container, selection, {
@@ -1534,6 +1844,9 @@
           }
         });
       }
+      if (screenshots.length) {
+        this._appendScreenshotGroups(container, screenshots, { view, draft: true });
+      }
     }
 
     _updateComposerAvailability(view) {
@@ -1545,8 +1858,15 @@
         state.sourceChanged || state.historyReadOnly;
       const question = this._draftFor(view.attachmentID, false)?.question ||
         view.elements.input.value || "";
+      const screenshots = this._draftFor(view.attachmentID, false)?.screenshots || [];
       view.elements.input.disabled = Boolean(blocked);
-      view.elements.send.disabled = Boolean(blocked || !question.trim());
+      view.elements.send.disabled = Boolean(blocked || (!question.trim() && !screenshots.length));
+      if (view.elements.screenshot) {
+        view.elements.screenshot.disabled = Boolean(
+          blocked || view.screenshotPending || !this._canRequestScreenshot(view)
+        );
+        view.elements.screenshot.textContent = view.screenshotPending ? "框选中…" : "截图";
+      }
     }
 
     async _loadView({ body, setSectionSummary }) {
@@ -1571,7 +1891,9 @@
       view.elements.input.value = draft?.question || "";
       this._renderDraftContexts(view);
       try {
-        this._updateView(view, await this.service.load(attachmentID));
+        const state = await this.service.load(attachmentID);
+        this._restoreScreenshotDrafts(attachmentID, state);
+        this._updateView(view, state);
         this._focusDraftInput(view);
       }
       catch (error) {
@@ -1590,16 +1912,38 @@
           const draft = this._draftFor(view.attachmentID);
           draft.question = view.elements.input.value;
           const question = draft.question.trim();
-          if (!question) return;
+          const screenshots = CodexChat.normalizeStoredScreenshots(draft.screenshots);
+          if (!question && !screenshots.length) return;
           pendingDraft = {
             question,
-            selections: CodexChat.normalizeSelectionContexts(draft.selections)
+            selections: CodexChat.normalizeSelectionContexts(draft.selections),
+            screenshots
           };
-          this.drafts.set(view.attachmentID, { question: "", selections: [] });
+          this.drafts.set(view.attachmentID, {
+            question: "",
+            selections: [],
+            screenshots: []
+          });
           this._syncDraftViews(view.attachmentID);
           await this.service.send(view.attachmentID, question, {
-            selections: pendingDraft.selections
+            selections: pendingDraft.selections,
+            screenshots: pendingDraft.screenshots
           });
+        }
+        else if (action === "screenshot") {
+          view.screenshotPending = true;
+          view.elements.notices.textContent = "请在左侧 PDF 阅读区拖动框选";
+          this._updateComposerAvailability(view);
+          try {
+            const result = await this._requestScreenshot(view);
+            view.elements.notices.textContent = result?.cancelled
+              ? "已取消截图"
+              : `已加入 ${Number(result?.added) || 0} 张 PDF 截图草稿`;
+          }
+          finally {
+            view.screenshotPending = false;
+            this._updateComposerAvailability(view);
+          }
         }
         else if (action === "reload") await this.service.reload(view.attachmentID);
         else if (action === "cancel") await this.service.cancel(view.attachmentID);
@@ -1615,9 +1959,14 @@
         }
         else if (action === "reset") {
           const confirmed = body.ownerDocument.defaultView.confirm(
-            "新建会话会归档当前映射和旧工作区，并删除旧会话的工具图片副本；不会删除 Codex thread。继续吗？"
+            "新建会话会归档当前映射和旧工作区，并删除旧会话的工具图片与 PDF 截图副本；不会删除 Codex thread。继续吗？"
           );
-          if (confirmed) await this.service.rebuild(view.attachmentID);
+          if (confirmed) {
+            await this.service.rebuild(view.attachmentID);
+            const draft = this._draftFor(view.attachmentID, false);
+            if (draft) draft.screenshots = [];
+            this._syncDraftViews(view.attachmentID);
+          }
         }
       }
       catch (error) {
@@ -1633,6 +1982,15 @@
           }
           current.question ||= pendingDraft.question;
           current.selections = restored;
+          const restoredScreenshots = [];
+          const screenshotIDs = new Set();
+          for (const screenshot of [...pendingDraft.screenshots, ...current.screenshots]) {
+            const normalized = PDFScreenshot.normalizeStoredScreenshot(screenshot);
+            if (!normalized || screenshotIDs.has(normalized.id)) continue;
+            screenshotIDs.add(normalized.id);
+            restoredScreenshots.push(normalized);
+          }
+          current.screenshots = restoredScreenshots;
           this._syncDraftViews(view.attachmentID);
         }
         view.elements.notices.textContent = error.message || "操作失败";
@@ -1825,7 +2183,7 @@
       if (!state.record.transcript.length) {
         const empty = doc.createElement("p");
         empty.className = "spt-codex-empty";
-        empty.textContent = "首条消息会复制当前 PDF 到专用工作区并附加给 Codex；后续消息只发送文本。";
+        empty.textContent = "首条消息会复制当前 PDF 到专用工作区；截图会以内嵌图片和精确 PDF 位置发送，后续不重复附加原 PDF。";
         container.append(empty);
         view.transcriptRendered = true;
         restoreTranscriptViewport(container, viewport, renderedBefore);
@@ -1861,11 +2219,17 @@
           const selections = entry.role === "user"
             ? CodexChat.normalizeSelectionContexts(entry.selections)
             : [];
-          if (selections.length) {
+          const screenshots = entry.role === "user"
+            ? (entry.screenshots || []).map(PDFScreenshot.normalizeStoredScreenshot).filter(Boolean)
+            : [];
+          if (selections.length || screenshots.length) {
             const contexts = doc.createElement("div");
             contexts.className = "spt-codex-message-contexts";
             for (const selection of selections) {
               this._appendSelectionContextCard(contexts, selection);
+            }
+            if (screenshots.length) {
+              this._appendScreenshotGroups(contexts, screenshots, { view, draft: false });
             }
             article.append(contexts);
           }
@@ -2000,7 +2364,7 @@
       this._updateComposerAvailability(view);
     }
 
-    shutdown() {
+    async shutdown() {
       for (const body of Array.from(this.views.keys())) this._destroyView(body);
       if (this.paneID) global.Zotero.ItemPaneManager.unregisterSection(this.paneID);
       this.paneID = null;
@@ -2019,6 +2383,8 @@
     ensureCodexLocalization,
     resolveReaderAttachmentID,
     selectionPageLabel,
+    screenshotPageLabel,
+    screenshotPositionSummary,
     openExternalURL,
     renderSafeMarkdown,
     captureTranscriptViewport,

@@ -14,6 +14,14 @@
   color: var(--accent-blue, #4072e5);
 }
 
+.spt-screenshot-toolbar-button:disabled {
+  opacity: .42;
+}
+
+.spt-screenshot-toolbar-button.active {
+  background: var(--accent-blue10, rgba(64, 114, 229, .1));
+}
+
 .spt-selection-disabled-slash {
   opacity: 0;
 }

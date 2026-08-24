@@ -50,6 +50,12 @@ var SmartPaperTranslatorPlugin = {
         if (!this.codexChatUI) throw new Error("Codex 对话尚未初始化");
         return this.codexChatUI.addSelectionContext(context);
       },
+      canAddScreenshotToCodex: (context) =>
+        this.codexChatUI?.canAddScreenshotContext(context) || false,
+      addScreenshotsToCodex: (context) => {
+        if (!this.codexChatUI) throw new Error("Codex 对话尚未初始化");
+        return this.codexChatUI.addScreenshotContexts(context);
+      },
       stylesheetText: readerStylesheet,
       log: (message, error) => this.log(message, error)
     });
@@ -81,6 +87,12 @@ var SmartPaperTranslatorPlugin = {
       service: this.codexChatService,
       stylesheetText: codexChatStylesheet,
       rootURI,
+      canStartScreenshotCapture: (context) =>
+        this.readerUI?.canStartScreenshotCapture(context) || false,
+      requestScreenshotCapture: (context) => {
+        if (!this.readerUI) throw new Error("Reader 截图入口尚未初始化");
+        return this.readerUI.startScreenshotCapture(context);
+      },
       log: (message, error) => this.log(message, error)
     });
 
@@ -368,7 +380,7 @@ var SmartPaperTranslatorPlugin = {
     this.preferenceRefreshTimer = null;
     this.readerUI?.shutdown();
     this.itemTreeUI?.shutdown();
-    this.codexChatUI?.shutdown();
+    await this.codexChatUI?.shutdown().catch((error) => this.log("Codex UI shutdown failed", error));
     await this.codexChatService?.shutdown().catch((error) => this.log("Codex shutdown failed", error));
     this.service?.shutdown();
     if (this.notifierID != null) Zotero.Notifier.unregisterObserver(this.notifierID);

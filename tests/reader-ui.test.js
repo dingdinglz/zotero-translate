@@ -400,7 +400,7 @@ test("failed cached retranslation keeps the cached result visible and retryable"
   assert.equal(button.textContent, "重新翻译");
 });
 
-test("toolbar injects separate panel and selection-translation buttons", async () => {
+test("toolbar injects separate panel, selection-translation, and screenshot buttons", async () => {
   const ui = new ReaderUI({
     service: { subscribe() { return () => {}; } },
     getPreference(name) {
@@ -417,7 +417,7 @@ test("toolbar injects separate panel and selection-translation buttons", async (
 
   ui.handleToolbar({ reader, doc, append: (...nodes) => appended.push(...nodes) });
 
-  assert.equal(appended.length, 2);
+  assert.equal(appended.length, 3);
   assert.equal(appended[0].tagName, "button");
   assert.equal(appended[0].children[0].tagName, "svg");
   assert.equal(appended[0].getAttribute("aria-pressed"), "false");
@@ -425,6 +425,10 @@ test("toolbar injects separate panel and selection-translation buttons", async (
   assert.equal(appended[1].children[0].tagName, "svg");
   assert.equal(appended[1].getAttribute("aria-pressed"), "false");
   assert.equal(appended[1].getAttribute("aria-label"), "禁用当前论文的划线翻译");
+  assert.equal(appended[2].tagName, "button");
+  assert.equal(appended[2].children[0].tagName, "svg");
+  assert.equal(appended[2].getAttribute("aria-pressed"), "false");
+  assert.equal(appended[2].disabled, true);
   assert.equal(doc.body.children.length, 1);
   assert.equal(doc.body.children[0].tagName, "aside");
   assert.notEqual(doc.body.children[0].parentNode, appended[0]);
@@ -458,6 +462,62 @@ test("toolbar injects separate panel and selection-translation buttons", async (
   assert.equal(doc.body.children[0].hidden, true);
   assert.equal(appended[0].getAttribute("aria-pressed"), "false");
   assert.equal(appended[0].classList.contains("active"), false);
+});
+
+test("Reader screenshot toolbar sends clean cross-page captures only to the exact Codex tab draft", async () => {
+  const captures = [
+    { page: 1, data: new Uint8Array([1]) },
+    { page: 2, data: new Uint8Array([2]) }
+  ];
+  const calls = [];
+  const bridge = {
+    active: false,
+    canCapture() { return true; },
+    isCapturing() { return this.active; },
+    async capture({ doc, onProgress }) {
+      this.active = true;
+      onProgress("正在渲染 1 / 2");
+      assert.ok(doc);
+      this.active = false;
+      return captures;
+    },
+    cancel() { this.cancelled = true; },
+    shutdown() {}
+  };
+  const ui = new ReaderUI({
+    service: { subscribe() { return () => {}; } },
+    getPreference(name) {
+      if (name.endsWith("autoOpen")) return false;
+      return -1;
+    },
+    setPreference() {},
+    screenshotBridge: bridge,
+    canAddScreenshotToCodex({ tabID, attachmentID }) {
+      return tabID === "reader-tab-10" && attachmentID === 10;
+    },
+    async addScreenshotsToCodex(context) {
+      calls.push(context);
+      return { added: context.captures.length, revealed: true };
+    },
+    stylesheetText: readerStylesheet
+  });
+  ui.refreshState = () => {};
+  const doc = new FakeDocument();
+  const reader = { itemID: 10, tabID: "reader-tab-10" };
+  const appended = [];
+  ui.handleToolbar({ reader, doc, append: (...nodes) => appended.push(...nodes) });
+
+  const screenshotButton = appended[2];
+  assert.equal(screenshotButton.disabled, false);
+  assert.equal(screenshotButton.getAttribute("aria-label"), "截取 PDF 原页区域到 Codex 草稿");
+  await screenshotButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].tabID, "reader-tab-10");
+  assert.equal(calls[0].attachmentID, 10);
+  assert.equal(calls[0].captures, captures);
+  assert.equal(screenshotButton.getAttribute("aria-pressed"), "false");
 });
 
 test("selection-translation toggle persists per PDF and blocks popup work", async () => {
