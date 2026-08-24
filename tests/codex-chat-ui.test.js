@@ -368,7 +368,7 @@ test("external URLs use Zotero's system-browser launcher and reject unsafe schem
   );
 });
 
-test("academic Markdown renders emphasis, lists, tables, MathML, and Codex file citations", () => {
+test("academic Markdown renders emphasis, lists, tables, formula containers, and Codex file citations", () => {
   const doc = new Document();
   const container = new Node("div");
   let opened = null;
@@ -394,10 +394,18 @@ test("academic Markdown renders emphasis, lists, tables, MathML, and Codex file 
   });
 
   const nodes = descendants(container);
-  for (const tag of ["strong", "code", "ol", "table", "math", "msub"]) {
+  for (const tag of ["strong", "code", "ol", "table", "math"]) {
     assert.ok(nodes.some((node) => node.localName === tag), `missing ${tag}`);
   }
-  assert.ok(nodes.some((node) => node.localName === "mo" && node.textContent === "∨"));
+  const formulas = nodes.filter((node) => node.localName === "math");
+  const formula = formulas.find((node) =>
+    node.attributes.get("aria-label") === "M = M_{\\text{inherited}} \\lor M_{\\text{artificial}}"
+  );
+  assert.equal(
+    formula.attributes.get("aria-label"),
+    "M = M_{\\text{inherited}} \\lor M_{\\text{artificial}}"
+  );
+  assert.equal(formula.attributes.get("data-math-renderer"), "fallback");
   const citations = nodes.filter((node) => node.className === "spt-codex-file-citation");
   assert.equal(citations.length, 2);
   assert.equal(citations[0].localName, "button");

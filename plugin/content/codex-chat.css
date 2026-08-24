@@ -364,6 +364,7 @@
 
 .spt-codex-math {
   margin-inline: 2px;
+  font-family: "STIX Two Math", "Cambria Math", "Latin Modern Math", serif;
   font-size: 1.02em;
 }
 
@@ -377,6 +378,12 @@
   background: color-mix(in srgb, CanvasText 3%, Canvas);
   overflow-x: auto;
   text-align: center;
+}
+
+.spt-codex-math-fallback mtext {
+  color: var(--spt-codex-muted);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em;
 }
 
 .spt-codex-table-wrap {

@@ -8,6 +8,9 @@
   const CodexChat = modules.CodexChat || (
     typeof require === "function" ? require("./codex-chat.js") : null
   );
+  const MathRenderer = modules.MathRenderer || (
+    typeof require === "function" ? require("./math-renderer.js") : null
+  );
 
   const CODEX_L10N_RESOURCE = "smart-paper-translator-codex-chat.ftl";
   const LEGACY_CODEX_L10N_RESOURCE = "smart-paper-translator.ftl";
@@ -43,16 +46,6 @@
     const firstPage = location.pageLabel || location.pageNumber || "?";
     if (!location.nextPage) return `第 ${firstPage} 页`;
     return `第 ${firstPage}–${location.nextPage.pageNumber} 页`;
-  }
-
-  const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
-
-  function createMathElement(doc, name, text = null) {
-    const element = typeof doc.createElementNS === "function"
-      ? doc.createElementNS(MATHML_NS, name)
-      : doc.createElement(name);
-    if (text !== null) element.textContent = text;
-    return element;
   }
 
   function setAttribute(element, name, value) {
@@ -112,169 +105,6 @@
       }
     });
     return link;
-  }
-
-  function parseTexMath(doc, source) {
-    const value = String(source || "").trim();
-    let index = 0;
-    const commands = {
-      alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", theta: "θ",
-      lambda: "λ", mu: "μ", pi: "π", rho: "ρ", sigma: "σ", tau: "τ", phi: "φ",
-      chi: "χ", psi: "ψ", omega: "ω", Gamma: "Γ", Delta: "Δ", Theta: "Θ",
-      Lambda: "Λ", Pi: "Π", Sigma: "Σ", Phi: "Φ", Psi: "Ψ", Omega: "Ω",
-      lor: "∨", vee: "∨", land: "∧", wedge: "∧", in: "∈", notin: "∉",
-      le: "≤", leq: "≤", ge: "≥", geq: "≥", ne: "≠", neq: "≠",
-      times: "×", cdot: "·", pm: "±", mp: "∓", approx: "≈", sim: "∼",
-      to: "→", rightarrow: "→", leftarrow: "←", Leftrightarrow: "⇔",
-      subset: "⊂", subseteq: "⊆", supset: "⊃", supseteq: "⊇",
-      cup: "∪", cap: "∩", sum: "∑", prod: "∏", int: "∫", infty: "∞",
-      partial: "∂", nabla: "∇", forall: "∀", exists: "∃", emptyset: "∅"
-    };
-    const operatorCharacters = new Set("=+-−*/×·<>≤≥≠≈∈∉∨∧→←⇔∪∩,;:()[]|".split(""));
-
-    const row = (...children) => {
-      const element = createMathElement(doc, "mrow");
-      element.append(...children.filter(Boolean));
-      return element;
-    };
-    const skipSpace = () => {
-      while (/\s/u.test(value[index] || "")) index++;
-    };
-    const readRawGroup = () => {
-      skipSpace();
-      if (value[index] !== "{") return "";
-      const start = ++index;
-      let depth = 1;
-      while (index < value.length && depth) {
-        if (value[index] === "{" && value[index - 1] !== "\\") depth++;
-        else if (value[index] === "}" && value[index - 1] !== "\\") depth--;
-        index++;
-      }
-      return value.slice(start, depth ? value.length : index - 1);
-    };
-    const parseExpression = (stopAtBrace = false) => {
-      const output = [];
-      while (index < value.length) {
-        if (stopAtBrace && value[index] === "}") break;
-        let atom = parseAtom();
-        if (!atom) continue;
-        let subscript = null;
-        let superscript = null;
-        skipSpace();
-        while (value[index] === "_" || value[index] === "^") {
-          const marker = value[index++];
-          skipSpace();
-          const script = value[index] === "{"
-            ? (index++, parseExpression(true))
-            : parseAtom();
-          if (value[index] === "}") index++;
-          if (marker === "_") subscript = script;
-          else superscript = script;
-          skipSpace();
-        }
-        if (subscript && superscript) {
-          const scripted = createMathElement(doc, "msubsup");
-          scripted.append(atom, subscript, superscript);
-          atom = scripted;
-        }
-        else if (subscript || superscript) {
-          const scripted = createMathElement(doc, subscript ? "msub" : "msup");
-          scripted.append(atom, subscript || superscript);
-          atom = scripted;
-        }
-        output.push(atom);
-      }
-      return row(...output);
-    };
-    const parseRequiredGroup = () => {
-      skipSpace();
-      if (value[index] !== "{") return parseAtom() || createMathElement(doc, "mrow");
-      index++;
-      const group = parseExpression(true);
-      if (value[index] === "}") index++;
-      return group;
-    };
-    const parseAtom = () => {
-      if (index >= value.length) return null;
-      if (/\s/u.test(value[index])) {
-        skipSpace();
-        const space = createMathElement(doc, "mspace");
-        setAttribute(space, "width", "0.25em");
-        return space;
-      }
-      if (value[index] === "{") {
-        index++;
-        const group = parseExpression(true);
-        if (value[index] === "}") index++;
-        return group;
-      }
-      if (value[index] === "\\") {
-        index++;
-        const match = value.slice(index).match(/^[A-Za-z]+/u);
-        const command = match ? match[0] : value[index] || "";
-        index += command.length;
-        if ([",", ";", ":", "!", "quad", "qquad"].includes(command)) {
-          const space = createMathElement(doc, "mspace");
-          setAttribute(space, "width", command === "qquad" ? "2em" : command === "quad" ? "1em" : "0.25em");
-          return space;
-        }
-        if (command === "frac") {
-          const fraction = createMathElement(doc, "mfrac");
-          fraction.append(parseRequiredGroup(), parseRequiredGroup());
-          return fraction;
-        }
-        if (command === "sqrt") {
-          const root = createMathElement(doc, "msqrt");
-          root.append(parseRequiredGroup());
-          return root;
-        }
-        if (["text", "textrm", "operatorname"].includes(command)) {
-          return createMathElement(doc, "mtext", readRawGroup().replace(/\\([{}])/gu, "$1"));
-        }
-        if (["mathrm", "mathbf", "mathit", "mathsf", "mathtt", "mathcal"].includes(command)) {
-          const styled = parseRequiredGroup();
-          setAttribute(styled, "mathvariant", {
-            mathrm: "normal", mathbf: "bold", mathit: "italic", mathsf: "sans-serif",
-            mathtt: "monospace", mathcal: "script"
-          }[command]);
-          return styled;
-        }
-        if (command === "left" || command === "right") {
-          skipSpace();
-          return parseAtom();
-        }
-        if (commands[command]) return createMathElement(doc, "mo", commands[command]);
-        return createMathElement(doc, "mtext", `\\${command}`);
-      }
-      if (/\d/u.test(value[index])) {
-        const match = value.slice(index).match(/^\d+(?:\.\d+)?/u)[0];
-        index += match.length;
-        return createMathElement(doc, "mn", match);
-      }
-      if (/[A-Za-z]/u.test(value[index])) {
-        const match = value.slice(index).match(/^[A-Za-z]+/u)[0];
-        index += match.length;
-        return createMathElement(doc, "mi", match);
-      }
-      const character = value[index++];
-      return createMathElement(doc, operatorCharacters.has(character) ? "mo" : "mtext", character);
-    };
-
-    try {
-      return parseExpression();
-    }
-    catch (_error) {
-      return createMathElement(doc, "mtext", value);
-    }
-  }
-
-  function appendMath(doc, parent, source, display = false) {
-    const math = createMathElement(doc, "math");
-    setAttribute(math, "class", display ? "spt-codex-math spt-codex-math-block" : "spt-codex-math");
-    setAttribute(math, "display", display ? "block" : "inline");
-    setAttribute(math, "aria-label", String(source || ""));
-    math.append(parseTexMath(doc, source));
-    parent.append(math);
   }
 
   function parseDirectiveAttributes(source) {
@@ -379,7 +209,7 @@
       if (text[index] === "\\" && text[index + 1] === "(") {
         const end = text.indexOf("\\)", index + 2);
         if (end !== -1) {
-          appendMath(doc, parent, text.slice(index + 2, end));
+          MathRenderer.appendMath(doc, parent, text.slice(index + 2, end));
           index = end + 2;
           continue;
         }
@@ -469,7 +299,7 @@
       if (text[index] === "$" && text[index + 1] !== "$") {
         const end = text.indexOf("$", index + 1);
         if (end > index + 1 && !/\s/u.test(text[index + 1]) && !/\s/u.test(text[end - 1])) {
-          appendMath(doc, parent, text.slice(index + 1, end));
+          MathRenderer.appendMath(doc, parent, text.slice(index + 1, end));
           index = end + 1;
           continue;
         }
@@ -589,7 +419,7 @@
           }
           math = parts.join("\n");
         }
-        appendMath(doc, container, math.trim(), true);
+        MathRenderer.appendMath(doc, container, math.trim(), true);
         continue;
       }
 

@@ -1,6 +1,6 @@
 {
   "name": "smart-paper-translator",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "private": true,
   "description": "A privacy-conscious academic translation plugin for Zotero 9",
   "scripts": {

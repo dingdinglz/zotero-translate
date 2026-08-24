@@ -14,6 +14,8 @@ async function startup({ id, version, rootURI }) {
 
   const scripts = [
     "content/constants.js",
+    "content/vendor/katex/katex.min.js",
+    "content/math-renderer.js",
     "content/logic.js",
     "content/credentials.js",
     "content/cache.js",

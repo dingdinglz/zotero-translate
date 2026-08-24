@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -17,7 +18,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.21"
+    assert manifest["version"] == "0.1.22"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -38,6 +39,7 @@ def main() -> None:
     constants = (PLUGIN / "content" / "constants.js").read_text(encoding="utf-8")
     acp_client = (PLUGIN / "content" / "acp-client.js").read_text(encoding="utf-8")
     chat_ui = (PLUGIN / "content" / "codex-chat-ui.js").read_text(encoding="utf-8")
+    math_renderer = (PLUGIN / "content" / "math-renderer.js").read_text(encoding="utf-8")
     bootstrap = (PLUGIN / "bootstrap.js").read_text(encoding="utf-8")
     assert 'ACP_PACKAGE_SPEC: "@agentclientprotocol/codex-acp@1.6.2"' in constants
     assert 'ACP_MODE: "agent"' in constants
@@ -48,6 +50,24 @@ def main() -> None:
     assert 'this.acp.request("session/delete"' not in codex_chat
     assert 'purpose: "version", allowDownload: true' not in bootstrap
     assert ".innerHTML =" not in chat_ui
+    assert ".innerHTML =" not in math_renderer
+    assert 'output: "mathml"' in math_renderer
+    assert 'trust: false' in math_renderer
+    assert 'maxExpand: 1000' in math_renderer
+    assert 'maxSize: 20' in math_renderer
+    assert '"content/vendor/katex/katex.min.js"' in bootstrap
+    assert '"content/math-renderer.js"' in bootstrap
+    assert bootstrap.index('"content/vendor/katex/katex.min.js"') < bootstrap.index(
+        '"content/math-renderer.js"'
+    ) < bootstrap.index('"content/codex-chat-ui.js"')
+    katex_runtime = PLUGIN / "content" / "vendor" / "katex" / "katex.min.js"
+    assert hashlib.sha256(katex_runtime.read_bytes()).hexdigest() == (
+        "2ec5916941ef4383e0314eaabcc712301b06001d9fb68e08d751d2bae5a27a1a"
+    )
+    katex_license = (
+        PLUGIN / "content" / "vendor" / "katex" / "LICENSE.txt"
+    ).read_text(encoding="utf-8")
+    assert "The MIT License" in katex_license
     assert "zotero.launchURL(url)" in chat_ui
     assert "只允许打开 HTTP 或 HTTPS 链接" in chat_ui
     assert ':codex-file-citation{' in chat_ui
@@ -98,9 +118,13 @@ def main() -> None:
         "content/acp-client.js",
         "content/chat-cache.js",
         "content/codex-chat.js",
+        "content/math-renderer.js",
         "content/codex-chat-ui.js",
         "content/codex-chat.css",
         "content/codex.svg",
+        "content/vendor/katex/katex.min.js",
+        "content/vendor/katex/LICENSE.txt",
+        "content/vendor/katex/README.md",
         "locale/en-US/smart-paper-translator-codex-chat.ftl",
         "locale/zh-CN/smart-paper-translator-codex-chat.ftl",
     }
