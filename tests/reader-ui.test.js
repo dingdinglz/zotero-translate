@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { ReaderUI } = require("../plugin/content/reader-ui.js");
+const { ReaderUI, normalizeCodexSelection } = require("../plugin/content/reader-ui.js");
 const Constants = require("../plugin/content/constants.js");
 
 class FakeElement {
@@ -113,6 +113,111 @@ const readerStylesheet = fs.readFileSync(
   path.join(__dirname, "../plugin/content/reader.css"),
   "utf8"
 );
+
+test("Codex selection normalization copies only text and precise PDF coordinates", () => {
+  assert.deepEqual(normalizeCodexSelection({
+    text: "  selected model  ",
+    pageLabel: "iv",
+    sortIndex: "00003|000001|00000",
+    hidden: "must-not-cross",
+    position: {
+      pageIndex: 3,
+      rects: [[10.25, 20, 30.5, 40]],
+      nextPageRects: [[5, 6, 7, 8]],
+      privateField: "must-not-cross"
+    }
+  }), {
+    schemaVersion: 1,
+    source: "source.pdf",
+    text: "selected model",
+    location: {
+      coordinateSystem: "pdf-points",
+      pageIndex: 3,
+      pageNumber: 4,
+      pageLabel: "iv",
+      rects: [[10.25, 20, 30.5, 40]],
+      nextPage: {
+        pageIndex: 4,
+        pageNumber: 5,
+        rects: [[5, 6, 7, 8]]
+      }
+    }
+  });
+  assert.equal(normalizeCodexSelection({
+    text: "bad",
+    position: { pageIndex: 0, rects: [[0, 1, Number.NaN, 2]] }
+  }), null);
+  assert.equal(normalizeCodexSelection({
+    text: "numeric strings are not coordinates",
+    position: { pageIndex: 0, rects: [[0, 1, "2", 3]] }
+  }), null);
+  assert.equal(normalizeCodexSelection({ text: "", position: { pageIndex: 0, rects: [[0, 1, 2, 3]] } }), null);
+});
+
+test("disabled selection translation still offers a local-only Codex draft action", async () => {
+  let cacheLookups = 0;
+  let translationCalls = 0;
+  let addedContext = null;
+  const ui = new ReaderUI({
+    service: {
+      subscribe() { return () => {}; },
+      async getCachedSelection() { cacheLookups++; return null; },
+      async translateSelection() { translationCalls++; return null; }
+    },
+    getPreference(name) {
+      if (name === Constants.PREFS.selectionTranslationDisabledItems) return '["10"]';
+      return false;
+    },
+    canAddSelectionToCodex({ tabID, attachmentID }) {
+      return tabID === "reader-tab-10" && attachmentID === 10;
+    },
+    async addSelectionToCodex(context) {
+      addedContext = context;
+      return { added: true, revealed: true };
+    },
+    stylesheetText: readerStylesheet
+  });
+  const reader = { itemID: 10, tabID: "reader-tab-10" };
+  let container = null;
+  ui.handleSelectionPopup({
+    reader,
+    doc: new FakeDocument(),
+    params: {
+      annotation: {
+        text: "model",
+        pageLabel: "2",
+        position: { pageIndex: 1, rects: [[1, 2, 3, 4]] }
+      }
+    },
+    append(node) { container = node; }
+  });
+
+  assert.ok(container);
+  assert.equal(container.className, "spt-selection-codex-only");
+  assert.equal(cacheLookups, 0);
+  assert.equal(translationCalls, 0);
+  const codexButton = container.children[0].children[0];
+  assert.equal(codexButton.textContent, "添加到 Codex");
+  await codexButton.dispatch("click");
+  assert.equal(codexButton.textContent, "已添加");
+  assert.deepEqual(addedContext, {
+    tabID: "reader-tab-10",
+    attachmentID: 10,
+    selection: {
+      schemaVersion: 1,
+      source: "source.pdf",
+      text: "model",
+      location: {
+        coordinateSystem: "pdf-points",
+        pageIndex: 1,
+        pageNumber: 2,
+        pageLabel: "2",
+        rects: [[1, 2, 3, 4]],
+        nextPage: null
+      }
+    }
+  });
+});
 
 test("selection popup waits for a click after a cache miss when automatic mode is off", async () => {
   let calls = 0;

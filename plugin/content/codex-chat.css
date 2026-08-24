@@ -798,6 +798,56 @@ button.spt-codex-file-citation:hover {
   box-shadow: 0 -1px 4px rgba(15, 23, 42, 0.035);
 }
 
+.spt-codex-draft-contexts,
+.spt-codex-message-contexts {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.spt-codex-draft-contexts[hidden] {
+  display: none;
+}
+
+.spt-codex-message-contexts {
+  margin-bottom: 8px;
+}
+
+.spt-codex-selection-context {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--spt-codex-accent) 28%, var(--spt-codex-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--spt-codex-accent) 6%, Canvas);
+}
+
+.spt-codex-selection-context > header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-bottom: 4px;
+  color: var(--spt-codex-muted);
+  font-size: .82em;
+}
+
+.spt-codex-selection-remove {
+  min-height: 22px;
+  margin-inline-start: auto;
+  padding: 2px 6px;
+  font-size: .9em;
+}
+
+.spt-codex-selection-text {
+  max-height: 6.3em;
+  overflow: auto;
+  color: var(--fill-primary, CanvasText);
+  font-size: .88em;
+  line-height: 1.42;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .spt-codex-activity {
   display: flex;
   align-items: center;

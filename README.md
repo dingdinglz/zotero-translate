@@ -1,6 +1,6 @@
 # Smart Paper Translator
 
-Smart Paper Translator 0.1.20 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个连接本机 Codex 的原生右侧栏。Codex 对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
+Smart Paper Translator 0.1.21 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个连接本机 Codex 的原生右侧栏。Codex 对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
 
 ## 功能
 
@@ -17,6 +17,7 @@ Smart Paper Translator 0.1.20 是面向 macOS Zotero 9 内置 PDF Reader 的学�
 ### Codex ACP 论文对话
 
 - 在 Zotero 主窗口 Reader 的原生右侧 Item Pane 显示“Codex 对话”。插件只通过 `item-details.tabID → Zotero.Reader.getByTabID()` 获取当前 PDF 附件；无法精确解析时直接禁用，不猜测父条目附件。
+- PDF 划线弹窗提供“添加到 Codex”：点击只把选中文本及 PDF 坐标加入当前附件的内存草稿，自动尝试展开同一 Reader tab 的 Codex 侧栏并聚焦问题输入框，不启动 ACP、不请求模型。多个选区可累积、去重和删除，卡片只显示页码与文本；正在生成时加入的选区留给下一轮发送。按 PDF 禁用划线翻译不会关闭此入口。
 - 每个 PDF 附件永久绑定一个 Codex session。同一 PDF 的多个 Reader 视图共享状态和单 turn 锁，不同 PDF 可并行对话。
 - 第一条真实消息会把源 PDF 原子复制为专用工作区中的 `source.pdf`，再以 `application/pdf` 的 ACP `resource_link` 引用；后续 turn 只发送文本。
 - Zotero 重启后，在用户重新加载或首次发送前通过 `session/load` 恢复同一 Codex thread，并用 thread 回放对账本地镜像。交付状态不确定时必须先对账，避免重复发送。
@@ -27,6 +28,7 @@ Smart Paper Translator 0.1.20 是面向 macOS Zotero 9 内置 PDF Reader 的学�
 - Codex 思考增量中的最新非空状态行会显示在输入框上方的加载栏中；空白分隔块被忽略，历史思考不再堆成可展开卡片，任务结束后加载栏自动隐藏。
 - 设置页提供默认关闭的“开发者模式”。只有开启后，Codex 侧栏才显示“复制日志”按钮，并在内存中记录当前实时 turn 的工具调用与思考事件；关闭后立即清空且停止采集。日志会脱敏用户主目录和常见密钥字段，并限制事件、字符串及集合大小，但复制前仍应检查其中的命令、路径和工具输出。
 - 首轮实际发送给 ACP 的论文安全边界和 `resource_link` 只作为协议上下文保存；用户消息气泡始终只显示用户输入的问题，远端回放也会做同样的展示归一化。
+- 选区在真正发送时才以版本化 JSON 文本交给本机 Codex，包含 `pageIndex`、页码、页标签、单页或跨页矩形坐标，并明确把选区文字标记为不可信论文数据而非指令。已发送消息的本地镜像和 `session/load` 回放会恢复可读问题与选区卡片；旧纯文本历史保持原样。
 - 设置页的模型与推理强度只作为新会话默认值；首条消息发送前即可在侧栏为当前 PDF 单独选择，创建后也可继续修改同一个 session。模型变化时会使用该模型实际支持的推理强度列表。
 - 支持 ACP 权限请求和表单 elicitation。命令、cwd、主机、读写位置及适配器提供的授权选项会在侧栏显示；插件不会自动批准。
 - Codex 生成文件留在该 PDF 的专用工作区，不覆盖 Zotero PDF、不修改条目、不自动导入附件。
@@ -72,6 +74,7 @@ smart-paper-translator/
 
 - 翻译链路与 Codex ACP 链路完全独立。翻译 API Key 仍保存在 Mozilla Login Manager，不写入偏好、JSON 或 XPI。
 - 打开 PDF、展开 Codex 侧栏和读取离线镜像不会启动 ACP、下载依赖或产生 Codex 用量。用户发送消息会启动已经准备好的本地适配器；用户明确点击“准备并检测”或“重新检测”也会启动 ACP，并使用临时空 session 更新选项目录，但不发送提示词。
+- 未发送的 Codex 问题和 PDF 选区草稿只保存在插件进程内存中，按附件隔离；切换 Reader tab、折叠侧栏或重建视图时保留，发送成功或插件退出时清除。自动展开能力缺失时草稿仍保留，可手动打开 Codex 侧栏。
 - 第一条 Codex 消息会把 PDF 的本地快照交给本机 Codex；后续消息只发送文本。同一 thread 中 Codex 仍可读取自己的工作区和上下文。
 - 本机 Codex 的 Skills/MCP 可能访问论文之外的数据或服务；实际访问仍受 Codex 配置、沙箱和逐次权限审批约束。
 - 原始 HTML 不会渲染，远程图片不会自动加载；Markdown、公式、Codex 指令、工具输出和权限详情均通过受限 DOM/MathML 节点显示，不使用 `innerHTML`。HTTP/HTTPS 链接只在明确点击后交给系统浏览器，网页访问不发生在插件渲染过程中。
@@ -87,7 +90,7 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.20.xpi
+unzip -t dist/smart-paper-translator-0.1.21.xpi
 ```
 
 真实 npx 下载、Codex 用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。

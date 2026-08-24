@@ -44,6 +44,12 @@ var SmartPaperTranslatorPlugin = {
       service: this.service,
       getPreference,
       setPreference,
+      canAddSelectionToCodex: (context) =>
+        this.codexChatUI?.canAddSelectionContext(context) || false,
+      addSelectionToCodex: (context) => {
+        if (!this.codexChatUI) throw new Error("Codex 对话尚未初始化");
+        return this.codexChatUI.addSelectionContext(context);
+      },
       stylesheetText: readerStylesheet,
       log: (message, error) => this.log(message, error)
     });

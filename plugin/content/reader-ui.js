@@ -16,6 +16,51 @@
     return element;
   }
 
+  function normalizeSelectionRects(value) {
+    if (!Array.isArray(value) || !value.length) return null;
+    const rects = [];
+    for (const rect of value) {
+      if (!Array.isArray(rect) || rect.length !== 4) return null;
+      if (!rect.every((coordinate) =>
+        typeof coordinate === "number" && Number.isFinite(coordinate)
+      )) return null;
+      rects.push(rect.slice());
+    }
+    return rects;
+  }
+
+  function normalizeCodexSelection(annotation) {
+    const text = String(annotation?.text || "").trim();
+    const position = annotation?.position;
+    const pageIndex = position?.pageIndex;
+    const rects = normalizeSelectionRects(position?.rects);
+    if (!text || !Number.isSafeInteger(pageIndex) || pageIndex < 0 || !rects) return null;
+    const pageLabelValue = String(annotation?.pageLabel || "").trim();
+    const nextPageRects = position?.nextPageRects == null
+      ? null
+      : normalizeSelectionRects(position.nextPageRects);
+    if (position?.nextPageRects != null && !nextPageRects) return null;
+    return {
+      schemaVersion: 1,
+      source: "source.pdf",
+      text,
+      location: {
+        coordinateSystem: "pdf-points",
+        pageIndex,
+        pageNumber: pageIndex + 1,
+        pageLabel: pageLabelValue || null,
+        rects,
+        nextPage: nextPageRects
+          ? {
+              pageIndex: pageIndex + 1,
+              pageNumber: pageIndex + 2,
+              rects: nextPageRects
+            }
+          : null
+      }
+    };
+  }
+
   function createSVGElement(doc, tag, attributes = {}) {
     const element = doc.createElementNS("http://www.w3.org/2000/svg", tag);
     for (const [name, value] of Object.entries(attributes)) {
@@ -114,10 +159,20 @@
   }
 
   class ReaderUI {
-    constructor({ service, getPreference, setPreference, stylesheetText, log } = {}) {
+    constructor({
+      service,
+      getPreference,
+      setPreference,
+      canAddSelectionToCodex,
+      addSelectionToCodex,
+      stylesheetText,
+      log
+    } = {}) {
       this.service = service;
       this.getPreference = getPreference;
       this.setPreference = setPreference;
+      this.canAddSelectionToCodex = canAddSelectionToCodex;
+      this.addSelectionToCodex = addSelectionToCodex;
       this.stylesheetText = stylesheetText || "";
       this.log = log || (() => {});
       this.states = new Map();
@@ -800,9 +855,59 @@
 
     handleSelectionPopup({ reader, doc, params, append }) {
       const itemID = reader.itemID;
-      if (this._isSelectionTranslationDisabled(itemID)) return;
+      const translationDisabled = this._isSelectionTranslationDisabled(itemID);
+      const selection = normalizeCodexSelection(params?.annotation);
+      let codexAvailable = false;
+      if (selection && typeof this.canAddSelectionToCodex === "function") {
+        try {
+          codexAvailable = Boolean(this.canAddSelectionToCodex({
+            reader,
+            tabID: reader?.tabID,
+            attachmentID: itemID
+          }));
+        }
+        catch (error) {
+          this.log("检查 Codex 选区入口失败", error);
+        }
+      }
+      if (translationDisabled && !codexAvailable) return;
       this._ensureStylesheet(doc);
-      const container = createElement(doc, "div", "spt-selection-translation");
+      const container = createElement(
+        doc,
+        "div",
+        translationDisabled ? "spt-selection-codex-only" : "spt-selection-translation"
+      );
+      let codexButton = null;
+      let codexStatus = null;
+      if (codexAvailable) {
+        const codexActions = createElement(doc, "div", "spt-selection-codex-actions");
+        codexButton = createElement(
+          doc,
+          "button",
+          "spt-codex-selection-button",
+          "添加到 Codex"
+        );
+        codexButton.type = "button";
+        codexButton.title = "把选中文本及其 PDF 位置加入当前论文的 Codex 草稿";
+        codexButton.setAttribute("aria-label", "把选中文本和位置添加到 Codex 对话草稿");
+        codexStatus = createElement(doc, "div", "spt-selection-codex-status");
+        codexStatus.setAttribute("role", "status");
+        codexActions.append(codexButton, codexStatus);
+        container.append(codexActions);
+      }
+
+      if (translationDisabled) {
+        append(container);
+        this._bindCodexSelectionAction({
+          reader,
+          itemID,
+          selection,
+          button: codexButton,
+          status: codexStatus
+        });
+        return;
+      }
+
       const button = createElement(doc, "button", "spt-translate-button", "翻译");
       button.type = "button";
       button.setAttribute("aria-label", "翻译选中文本");
@@ -817,6 +922,14 @@
       if (text) status.textContent = "检查本地缓存…";
       container.append(button, cacheTag, status, resultNode);
       append(container);
+
+      this._bindCodexSelectionAction({
+        reader,
+        itemID,
+        selection,
+        button: codexButton,
+        status: codexStatus
+      });
 
       const isCurrent = () => container.isConnected && reader.itemID === itemID;
       let forceRefreshOnClick = false;
@@ -954,6 +1067,40 @@
       }
     }
 
+    _bindCodexSelectionAction({ reader, itemID, selection, button, status }) {
+      if (!button || !selection || typeof this.addSelectionToCodex !== "function") return;
+      let adding = false;
+      button.addEventListener("click", async () => {
+        if (adding || button.disabled || reader.itemID !== itemID) return;
+        adding = true;
+        button.disabled = true;
+        button.textContent = "添加中…";
+        status.textContent = "";
+        try {
+          const result = await this.addSelectionToCodex({
+            tabID: reader.tabID,
+            attachmentID: itemID,
+            selection
+          });
+          if (reader.itemID !== itemID) return;
+          button.textContent = result?.added === false ? "已在草稿中" : "已添加";
+          status.textContent = result?.revealed === false
+            ? "已加入草稿；请手动打开右侧 Codex 对话"
+            : "已加入右侧 Codex 对话草稿";
+        }
+        catch (error) {
+          if (reader.itemID !== itemID) return;
+          button.disabled = false;
+          button.textContent = "添加到 Codex";
+          status.textContent = error?.message || "无法添加到 Codex 对话";
+          status.classList.add("spt-error");
+        }
+        finally {
+          adding = false;
+        }
+      });
+    }
+
     onPreferencesChanged() {
       for (const state of this.states.values()) {
         if (state.destroyed) continue;
@@ -1012,6 +1159,8 @@
     }
   }
 
-  modules.ReaderUI = { ReaderUI, createElement };
-  if (typeof module !== "undefined" && module.exports) module.exports = { ReaderUI, createElement };
+  modules.ReaderUI = { ReaderUI, createElement, normalizeCodexSelection };
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { ReaderUI, createElement, normalizeCodexSelection };
+  }
 })(typeof globalThis !== "undefined" ? globalThis : this);

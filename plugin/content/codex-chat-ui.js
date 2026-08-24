@@ -5,6 +5,9 @@
   const Constants = modules.Constants || (
     typeof require === "function" ? require("./constants.js") : null
   );
+  const CodexChat = modules.CodexChat || (
+    typeof require === "function" ? require("./codex-chat.js") : null
+  );
 
   const CODEX_L10N_RESOURCE = "smart-paper-translator-codex-chat.ftl";
   const LEGACY_CODEX_L10N_RESOURCE = "smart-paper-translator.ftl";
@@ -33,6 +36,13 @@
     const reader = zotero.Reader.getByTabID(tabID);
     const attachmentID = Number(reader?.itemID);
     return Number.isSafeInteger(attachmentID) && attachmentID > 0 ? attachmentID : null;
+  }
+
+  function selectionPageLabel(selection) {
+    const location = selection?.location || {};
+    const firstPage = location.pageLabel || location.pageNumber || "?";
+    if (!location.nextPage) return `第 ${firstPage} 页`;
+    return `第 ${firstPage}–${location.nextPage.pageNumber} 页`;
   }
 
   const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
@@ -1133,7 +1143,131 @@
       this.pluginID = null;
       this.paneID = null;
       this.views = new Map();
+      this.drafts = new Map();
+      this.pendingDraftFocus = new Set();
       this.windowCleanups = new Map();
+    }
+
+    _draftFor(attachmentID, create = true) {
+      let draft = this.drafts.get(attachmentID);
+      if (!draft && create) {
+        draft = { question: "", selections: [] };
+        this.drafts.set(attachmentID, draft);
+      }
+      return draft || null;
+    }
+
+    _matchingReader({ tabID, attachmentID }, zotero = global.Zotero) {
+      if (!tabID || typeof zotero?.Reader?.getByTabID !== "function") return null;
+      const reader = zotero.Reader.getByTabID(tabID);
+      return Number(reader?.itemID) === Number(attachmentID) ? reader : null;
+    }
+
+    canAddSelectionContext({ reader, tabID, attachmentID } = {}) {
+      const normalizedAttachmentID = Number(attachmentID ?? reader?.itemID);
+      const normalizedTabID = tabID || reader?.tabID;
+      return Boolean(
+        Number.isSafeInteger(normalizedAttachmentID) &&
+        normalizedAttachmentID > 0 &&
+        this._matchingReader({
+          tabID: normalizedTabID,
+          attachmentID: normalizedAttachmentID
+        })
+      );
+    }
+
+    _itemDetailsForTab(tabID) {
+      for (const win of global.Zotero?.getMainWindows?.() || []) {
+        for (const details of win.document?.querySelectorAll?.("item-details") || []) {
+          if (details.tabID === tabID) return details;
+        }
+      }
+      return null;
+    }
+
+    async _revealCodexPane(tabID) {
+      const details = this._itemDetailsForTab(tabID);
+      if (!details || !this.paneID) return false;
+      const sidenavButtons = details.sidenav?.querySelectorAll?.("[data-pane]") || [];
+      const paneButton = Array.from(sidenavButtons).find(
+        (button) => button.dataset?.pane === this.paneID
+      );
+      const win = details.ownerDocument?.defaultView;
+      if (paneButton?.dispatchEvent && typeof win?.MouseEvent === "function") {
+        paneButton.dispatchEvent(new win.MouseEvent("click", {
+          bubbles: true,
+          button: 0,
+          detail: 1
+        }));
+        return true;
+      }
+
+      // Zotero 9.0.6 fallback. ItemPaneManager has no public "open section" API,
+      // so keep this target-version DOM bridge isolated and capability-guarded.
+      if (typeof details.scrollToPane !== "function") return false;
+      const parentPane = details.closest?.("item-pane, context-pane");
+      await details.scrollToPane(this.paneID, parentPane?.collapsed ? "instant" : "smooth");
+      if (parentPane && "collapsed" in parentPane) parentPane.collapsed = false;
+      details.sidenav?.render?.();
+      return true;
+    }
+
+    _viewForTab(tabID, attachmentID) {
+      for (const view of this.views.values()) {
+        const details = view.body?.closest?.("item-details");
+        if (details?.tabID === tabID && view.attachmentID === attachmentID) return view;
+      }
+      return null;
+    }
+
+    _draftFocusKey(tabID, attachmentID) {
+      return `${tabID}\u0000${attachmentID}`;
+    }
+
+    _focusDraftInput(view) {
+      const details = view?.body?.closest?.("item-details");
+      const key = this._draftFocusKey(details?.tabID, view?.attachmentID);
+      if (!this.pendingDraftFocus.has(key)) return false;
+      this.pendingDraftFocus.delete(key);
+      view.elements.input.focus?.();
+      return true;
+    }
+
+    _syncDraftViews(attachmentID) {
+      const draft = this._draftFor(attachmentID, false) || { question: "", selections: [] };
+      for (const view of this.views.values()) {
+        if (view.attachmentID !== attachmentID) continue;
+        if (view.elements.input.value !== draft.question) {
+          view.elements.input.value = draft.question;
+        }
+        this._renderDraftContexts(view);
+        this._updateComposerAvailability(view);
+      }
+    }
+
+    async addSelectionContext({ tabID, attachmentID, selection } = {}) {
+      const normalizedAttachmentID = Number(attachmentID);
+      if (!this.canAddSelectionContext({ tabID, attachmentID: normalizedAttachmentID })) {
+        throw new Error("无法精确匹配当前 Reader PDF，未添加选区");
+      }
+      const normalizedSelection = CodexChat.normalizeSelectionContext(selection);
+      if (!normalizedSelection) throw new Error("选中文本的位置无效，未添加到 Codex");
+      const draft = this._draftFor(normalizedAttachmentID);
+      const key = CodexChat.selectionContextKey(normalizedSelection);
+      const added = !draft.selections.some(
+        (candidate) => CodexChat.selectionContextKey(candidate) === key
+      );
+      if (added) draft.selections.push(normalizedSelection);
+      this._syncDraftViews(normalizedAttachmentID);
+      const focusKey = this._draftFocusKey(tabID, normalizedAttachmentID);
+      this.pendingDraftFocus.add(focusKey);
+      const revealed = await this._revealCodexPane(tabID).catch((error) => {
+        this.log("展开 Codex Item Pane 失败", error);
+        return false;
+      });
+      const view = this._viewForTab(tabID, normalizedAttachmentID);
+      if (view) this._focusDraftInput(view);
+      return { added, revealed };
     }
 
     _externalLinkOptions(view) {
@@ -1266,15 +1400,21 @@
       const activityText = doc.createElement("span");
       activityText.className = "spt-codex-activity-text";
       activity.append(activitySpinner, activityText);
+      const draftContexts = doc.createElement("div");
+      draftContexts.className = "spt-codex-draft-contexts";
+      draftContexts.hidden = true;
+      draftContexts.setAttribute("aria-label", "待发送的 PDF 选区上下文");
       const input = doc.createElement("textarea");
       input.rows = 3;
       input.placeholder = "围绕当前 PDF 向本机 Codex 提问…";
+      input.disabled = true;
       const actions = doc.createElement("div");
       const stop = makeButton(doc, "停止", () => this._run(body, "cancel"));
       stop.hidden = true;
       const send = makeButton(doc, "发送", () => this._run(body, "send"), "spt-codex-primary-button");
+      send.disabled = true;
       actions.append(stop, send);
-      composer.append(activity, input, actions);
+      composer.append(activity, draftContexts, input, actions);
       root.append(toolbar, configuration, notices, messages, composer);
       body.append(root);
       const view = {
@@ -1285,7 +1425,8 @@
         transcriptRendered: false,
         setSectionSummary,
         elements: {
-          status, configuration, notices, messages, activity, activityText, input, send, stop,
+          status, configuration, notices, messages, activity, activityText, draftContexts,
+          input, send, stop,
           reload, workspace, copyLog, reset
         },
         cleanups: []
@@ -1296,9 +1437,75 @@
           this._run(body, "send");
         }
       };
+      const inputChanged = () => {
+        if (!view.attachmentID) return;
+        this._draftFor(view.attachmentID).question = input.value;
+        this._syncDraftViews(view.attachmentID);
+      };
       input.addEventListener("keydown", keydown);
-      view.cleanups.push(() => input.removeEventListener("keydown", keydown));
+      input.addEventListener("input", inputChanged);
+      view.cleanups.push(
+        () => input.removeEventListener("keydown", keydown),
+        () => input.removeEventListener("input", inputChanged)
+      );
       this.views.set(body, view);
+    }
+
+    _appendSelectionContextCard(container, selection, { onRemove = null } = {}) {
+      const doc = container.ownerDocument || container.parentNode?.ownerDocument;
+      if (!doc) return;
+      const card = doc.createElement("article");
+      card.className = "spt-codex-selection-context";
+      const header = doc.createElement("header");
+      const page = doc.createElement("strong");
+      page.textContent = selectionPageLabel(selection);
+      header.append(page);
+      if (onRemove) {
+        const remove = makeButton(doc, "移除", onRemove, "spt-codex-selection-remove");
+        remove.title = "从本轮草稿中移除此 PDF 选区";
+        remove.setAttribute("aria-label", `移除${selectionPageLabel(selection)}的选区`);
+        header.append(remove);
+      }
+      const text = doc.createElement("div");
+      text.className = "spt-codex-selection-text";
+      text.textContent = selection.text;
+      card.append(header, text);
+      container.append(card);
+    }
+
+    _renderDraftContexts(view) {
+      const container = view?.elements?.draftContexts;
+      if (!container) return;
+      container.replaceChildren();
+      const draft = this._draftFor(view.attachmentID, false);
+      const selections = draft?.selections || [];
+      container.hidden = !selections.length;
+      for (const selection of selections) {
+        const key = CodexChat.selectionContextKey(selection);
+        this._appendSelectionContextCard(container, selection, {
+          onRemove: () => {
+            const current = this._draftFor(view.attachmentID, false);
+            if (!current) return;
+            current.selections = current.selections.filter(
+              (candidate) => CodexChat.selectionContextKey(candidate) !== key
+            );
+            this._syncDraftViews(view.attachmentID);
+          }
+        });
+      }
+    }
+
+    _updateComposerAvailability(view) {
+      if (!view?.elements?.input || !view.elements.send) return;
+      const state = view.state;
+      const busy = ["connecting", "generating", "cancelling"].includes(state?.status);
+      const waiting = state?.status === "waiting-approval";
+      const blocked = !view.attachmentID || !state || busy || waiting ||
+        state.sourceChanged || state.historyReadOnly;
+      const question = this._draftFor(view.attachmentID, false)?.question ||
+        view.elements.input.value || "";
+      view.elements.input.disabled = Boolean(blocked);
+      view.elements.send.disabled = Boolean(blocked || !question.trim());
     }
 
     async _loadView({ body, setSectionSummary }) {
@@ -1319,8 +1526,12 @@
         view.transcriptRendered = false;
         view.unsubscribe = this.service.subscribe(attachmentID, (state) => this._updateView(view, state));
       }
+      const draft = this._draftFor(attachmentID, false);
+      view.elements.input.value = draft?.question || "";
+      this._renderDraftContexts(view);
       try {
         this._updateView(view, await this.service.load(attachmentID));
+        this._focusDraftInput(view);
       }
       catch (error) {
         view.elements.notices.textContent = error.message || "无法加载论文对话";
@@ -1332,13 +1543,22 @@
     async _run(body, action) {
       const view = this.views.get(body);
       if (!view?.attachmentID) return;
-      let pendingText = "";
+      let pendingDraft = null;
       try {
         if (action === "send") {
-          pendingText = view.elements.input.value.trim();
-          if (!pendingText) return;
-          view.elements.input.value = "";
-          await this.service.send(view.attachmentID, pendingText);
+          const draft = this._draftFor(view.attachmentID);
+          draft.question = view.elements.input.value;
+          const question = draft.question.trim();
+          if (!question) return;
+          pendingDraft = {
+            question,
+            selections: CodexChat.normalizeSelectionContexts(draft.selections)
+          };
+          this.drafts.set(view.attachmentID, { question: "", selections: [] });
+          this._syncDraftViews(view.attachmentID);
+          await this.service.send(view.attachmentID, question, {
+            selections: pendingDraft.selections
+          });
         }
         else if (action === "reload") await this.service.reload(view.attachmentID);
         else if (action === "cancel") await this.service.cancel(view.attachmentID);
@@ -1360,7 +1580,20 @@
         }
       }
       catch (error) {
-        if (action === "send" && pendingText) view.elements.input.value ||= pendingText;
+        if (action === "send" && pendingDraft) {
+          const current = this._draftFor(view.attachmentID);
+          const restored = [];
+          const seen = new Set();
+          for (const selection of [...pendingDraft.selections, ...current.selections]) {
+            const key = CodexChat.selectionContextKey(selection);
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            restored.push(selection);
+          }
+          current.question ||= pendingDraft.question;
+          current.selections = restored;
+          this._syncDraftViews(view.attachmentID);
+        }
         view.elements.notices.textContent = error.message || "操作失败";
       }
     }
@@ -1583,7 +1816,19 @@
               });
             }
           });
-          article.append(header, content);
+          article.append(header);
+          const selections = entry.role === "user"
+            ? CodexChat.normalizeSelectionContexts(entry.selections)
+            : [];
+          if (selections.length) {
+            const contexts = doc.createElement("div");
+            contexts.className = "spt-codex-message-contexts";
+            for (const selection of selections) {
+              this._appendSelectionContextCard(contexts, selection);
+            }
+            article.append(contexts);
+          }
+          article.append(content);
           container.append(article);
         }
         else {
@@ -1676,8 +1921,6 @@
       view.elements.activity.dataset.status = state.status;
       view.elements.activityText.textContent = activityLabel;
       view.elements.stop.hidden = state.status !== "generating" && !waiting;
-      view.elements.send.disabled = busy || waiting || state.sourceChanged || state.historyReadOnly;
-      view.elements.input.disabled = busy || waiting || state.sourceChanged || state.historyReadOnly;
       view.elements.reset.disabled = busy || waiting;
       if (view.elements.copyLog) {
         const eventCount = Number(state.diagnosticEventCount) || 0;
@@ -1693,12 +1936,16 @@
       this._renderConfig(view, state);
       this._renderNotices(view, state);
       this._renderTranscript(view, state);
+      this._renderDraftContexts(view);
+      this._updateComposerAvailability(view);
     }
 
     shutdown() {
       for (const body of Array.from(this.views.keys())) this._destroyView(body);
       if (this.paneID) global.Zotero.ItemPaneManager.unregisterSection(this.paneID);
       this.paneID = null;
+      this.drafts.clear();
+      this.pendingDraftFocus.clear();
       for (const cleanup of this.windowCleanups.values()) cleanup();
       this.windowCleanups.clear();
     }
@@ -1711,6 +1958,7 @@
     CODEX_SIDENAV_L10N_ID,
     ensureCodexLocalization,
     resolveReaderAttachmentID,
+    selectionPageLabel,
     openExternalURL,
     renderSafeMarkdown,
     captureTranscriptViewport,

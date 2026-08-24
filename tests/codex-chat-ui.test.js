@@ -35,27 +35,76 @@ class Node {
     this.scrollTop = 0;
     this.scrollHeight = 0;
     this.clientHeight = 0;
+    this.hidden = false;
+    this.disabled = false;
+    this.value = "";
+    this.ownerDocument = null;
   }
-  append(...children) { this.children.push(...children); }
-  replaceChildren(...children) { this.children = [...children]; }
+  append(...children) {
+    for (const child of children) {
+      child.parentNode = this;
+      child.ownerDocument ||= this.ownerDocument;
+      this.children.push(child);
+    }
+  }
+  replaceChildren(...children) {
+    this.children = [];
+    this.append(...children);
+  }
   addEventListener(name, listener) { this.listeners.set(name, listener); }
   removeEventListener(name) { this.listeners.delete(name); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
+  focus() { this.focused = true; }
+  closest(selector) { return this.closestValues?.[selector] || null; }
+  dispatchEvent(event) {
+    event.target ||= this;
+    event.currentTarget ||= this;
+    return this.listeners.get(event.type)?.(event);
+  }
   get lastElementChild() { return [...this.children].reverse().find((child) => child.localName) || null; }
 }
 
 class Document {
   constructor() {
-    this.defaultView = { navigator: { clipboard: { writeText: async () => {} } } };
+    this.defaultView = {
+      navigator: { clipboard: { writeText: async () => {} } },
+      MouseEvent: class {
+        constructor(type, init = {}) { Object.assign(this, init, { type }); }
+      }
+    };
   }
-  createElement(name) { return new Node(name); }
-  createElementNS(_namespace, name) { return new Node(name); }
-  createTextNode(text) { return new Node(null, text); }
+  createElement(name) {
+    const node = new Node(name);
+    node.ownerDocument = this;
+    return node;
+  }
+  createElementNS(_namespace, name) { return this.createElement(name); }
+  createTextNode(text) {
+    const node = new Node(null, text);
+    node.ownerDocument = this;
+    return node;
+  }
 }
 
 function descendants(node) {
   return [node, ...node.children.flatMap(descendants)];
+}
+
+function makeSelection({ text = "Selected paper text", pageIndex = 2 } = {}) {
+  return {
+    schemaVersion: 1,
+    source: "source.pdf",
+    text,
+    location: {
+      coordinateSystem: "pdf-points",
+      pageIndex,
+      pageNumber: pageIndex + 1,
+      pageLabel: String(pageIndex + 1),
+      rects: [[10, 20, 30, 40]],
+      nextPage: null
+    }
+  };
 }
 
 test("Reader attachment resolution uses only the owning item-details tab ID", () => {
@@ -84,6 +133,203 @@ test("resolution fails closed for library panes, stale tabs, and standalone Read
   assert.equal(resolveReaderAttachmentID({
     closest: () => ({ tabID: "reader" })
   }, { Reader: { getByTabID: () => ({ itemID: 0 }) } }), null);
+});
+
+test("PDF selections accumulate in the matching in-memory draft without calling ACP", async () => {
+  const originalZotero = global.Zotero;
+  global.Zotero = {
+    Reader: {
+      getByTabID(tabID) {
+        return tabID === "reader-tab-10" ? { itemID: 10 } : null;
+      }
+    }
+  };
+  let serviceCalls = 0;
+  const ui = new CodexChatUI({
+    service: {
+      async send() { serviceCalls += 1; }
+    }
+  });
+  const doc = new Document();
+  const body = doc.createElement("section");
+  body.closestValues = { "item-details": { tabID: "reader-tab-10" } };
+  ui._renderShell({ doc, body, setSectionSummary() {} });
+  const view = ui.views.get(body);
+  view.attachmentID = 10;
+  view.state = { status: "ready", sourceChanged: false, historyReadOnly: false };
+  ui._revealCodexPane = async (tabID) => tabID === "reader-tab-10";
+  view.elements.input.value = "保留我已经写好的问题";
+  view.elements.input.listeners.get("input")();
+
+  try {
+    const selection = makeSelection();
+    assert.deepEqual(await ui.addSelectionContext({
+      tabID: "reader-tab-10",
+      attachmentID: 10,
+      selection
+    }), { added: true, revealed: true });
+    assert.deepEqual(await ui.addSelectionContext({
+      tabID: "reader-tab-10",
+      attachmentID: 10,
+      selection
+    }), { added: false, revealed: true });
+
+    assert.equal(serviceCalls, 0);
+    assert.equal(ui.drafts.get(10).question, "保留我已经写好的问题");
+    assert.equal(ui.drafts.get(10).selections.length, 1);
+    assert.equal(view.elements.draftContexts.children.length, 1);
+    assert.equal(view.elements.input.focused, true);
+
+    const remove = descendants(view.elements.draftContexts).find(
+      (node) => node.localName === "button" && node.textContent === "移除"
+    );
+    remove.listeners.get("click")();
+    assert.equal(ui.drafts.get(10).selections.length, 0);
+    assert.equal(ui.drafts.get(10).question, "保留我已经写好的问题");
+  }
+  finally {
+    global.Zotero = originalZotero;
+  }
+});
+
+test("selection drafts stay isolated by PDF when automatic pane reveal is unavailable", async () => {
+  const originalZotero = global.Zotero;
+  global.Zotero = {
+    Reader: {
+      getByTabID(tabID) {
+        return {
+          "reader-tab-10": { itemID: 10 },
+          "reader-tab-11": { itemID: 11 }
+        }[tabID] || null;
+      }
+    }
+  };
+  const ui = new CodexChatUI();
+  ui._revealCodexPane = async () => false;
+
+  try {
+    const first = await ui.addSelectionContext({
+      tabID: "reader-tab-10",
+      attachmentID: 10,
+      selection: makeSelection({ text: "Paper ten" })
+    });
+    const second = await ui.addSelectionContext({
+      tabID: "reader-tab-11",
+      attachmentID: 11,
+      selection: makeSelection({ text: "Paper eleven", pageIndex: 7 })
+    });
+    assert.equal(first.revealed, false);
+    assert.equal(second.revealed, false);
+    assert.deepEqual(ui.drafts.get(10).selections.map((entry) => entry.text), ["Paper ten"]);
+    assert.deepEqual(ui.drafts.get(11).selections.map((entry) => entry.text), ["Paper eleven"]);
+  }
+  finally {
+    global.Zotero = originalZotero;
+  }
+});
+
+test("Codex pane reveal dispatches only to the exact Reader tab's sidenav button", async () => {
+  const originalZotero = global.Zotero;
+  const doc = new Document();
+  const events = [];
+  const makeDetails = (tabID) => {
+    const button = doc.createElement("button");
+    button.dataset.pane = "qualified-codex-pane";
+    button.dispatchEvent = (event) => events.push({ tabID, type: event.type });
+    return {
+      tabID,
+      ownerDocument: doc,
+      sidenav: { querySelectorAll: () => [button] }
+    };
+  };
+  const wrong = makeDetails("reader-tab-wrong");
+  const right = makeDetails("reader-tab-right");
+  global.Zotero = {
+    getMainWindows: () => [{
+      document: { querySelectorAll: () => [wrong, right] }
+    }]
+  };
+  const ui = new CodexChatUI();
+  ui.paneID = "qualified-codex-pane";
+
+  try {
+    assert.equal(await ui._revealCodexPane("reader-tab-right"), true);
+    assert.deepEqual(events, [{ tabID: "reader-tab-right", type: "click" }]);
+    assert.equal(await ui._revealCodexPane("missing-tab"), false);
+  }
+  finally {
+    global.Zotero = originalZotero;
+  }
+});
+
+test("sending clears a selection draft on success and restores it intact on failure", async () => {
+  const doc = new Document();
+  const body = doc.createElement("section");
+  body.closestValues = { "item-details": { tabID: "reader-tab-10" } };
+  const sent = [];
+  let fail = false;
+  const ui = new CodexChatUI({
+    service: {
+      async send(attachmentID, question, options) {
+        sent.push({ attachmentID, question, options });
+        if (fail) throw new Error("simulated send failure");
+      }
+    }
+  });
+  ui._renderShell({ doc, body, setSectionSummary() {} });
+  const view = ui.views.get(body);
+  view.attachmentID = 10;
+  view.state = { status: "ready", sourceChanged: false, historyReadOnly: false };
+
+  ui.drafts.set(10, { question: "First question", selections: [makeSelection()] });
+  ui._syncDraftViews(10);
+  await ui._run(body, "send");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].question, "First question");
+  assert.equal(sent[0].options.selections[0].location.rects[0][3], 40);
+  assert.deepEqual(ui.drafts.get(10), { question: "", selections: [] });
+
+  fail = true;
+  ui.drafts.set(10, {
+    question: "Retry question",
+    selections: [makeSelection({ text: "Retry selection", pageIndex: 4 })]
+  });
+  ui._syncDraftViews(10);
+  await ui._run(body, "send");
+  assert.equal(view.elements.notices.textContent, "simulated send failure");
+  assert.equal(ui.drafts.get(10).question, "Retry question");
+  assert.equal(ui.drafts.get(10).selections[0].text, "Retry selection");
+});
+
+test("selection cards render hostile markup as text and never expose precise coordinates", () => {
+  const doc = new Document();
+  const messages = doc.createElement("div");
+  const ui = new CodexChatUI({ service: { revealCitation: async () => {} } });
+  const view = {
+    body: { ownerDocument: doc },
+    attachmentID: 10,
+    transcriptRendered: false,
+    elements: { messages, notices: doc.createElement("div") }
+  };
+  ui._renderTranscript(view, {
+    record: {
+      session: { workspacePath: "/workspace" },
+      transcript: [{
+        kind: "message",
+        role: "user",
+        text: "Question with <script>bad()</script>",
+        selections: [makeSelection({
+          text: '<img src="https://tracker.invalid/pixel"> **not Markdown**'
+        })]
+      }]
+    }
+  });
+
+  const nodes = descendants(messages);
+  assert.equal(nodes.some((node) => node.localName === "script" || node.localName === "img"), false);
+  const selectionText = nodes.find((node) => node.className === "spt-codex-selection-text");
+  assert.equal(selectionText.textContent, '<img src="https://tracker.invalid/pixel"> **not Markdown**');
+  assert.equal(nodes.some((node) => /10,20,30,40/u.test(node.textContent)), false);
 });
 
 test("restricted Markdown creates text and safe links but never HTML or remote images", () => {

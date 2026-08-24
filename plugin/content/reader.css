@@ -404,6 +404,35 @@
   width: 100%;
 }
 
+.spt-selection-codex-only,
+.spt-selection-codex-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+}
+
+.spt-codex-selection-button {
+  width: 100%;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, AccentColor 65%, transparent);
+  border-radius: 5px;
+  background: AccentColor;
+  color: AccentColorText;
+  box-shadow: 0 .5px 2.5px rgba(0, 0, 0, .18);
+  font: inherit;
+}
+
+.spt-codex-selection-button:disabled {
+  opacity: .7;
+}
+
+.spt-selection-codex-status {
+  color: var(--fill-secondary, rgba(0, 0, 0, .5));
+  font-size: 11px;
+}
+
 .spt-selection-cache-tag {
   margin-top: 1px;
 }
