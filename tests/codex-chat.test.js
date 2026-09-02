@@ -846,7 +846,7 @@ test("developer mode alone captures bounded redacted tool and thought diagnostic
   assert.equal(state.diagnosticEventCount, 3);
 
   const report = await service.getDiagnosticReport(10);
-  assert.equal(report.pluginVersion, "0.1.25");
+  assert.equal(report.pluginVersion, "0.1.28");
   assert.equal(report.eventCount, 3);
   assert.deepEqual(report.events.map((entry) => entry.sessionUpdate), [
     "agent_thought_chunk",

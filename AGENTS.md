@@ -14,7 +14,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.25`
+- 当前版本：`0.1.28`
 - 目标平台：macOS Zotero 9.0.6
 - 清单兼容范围：Zotero `9.0`–`9.0.*`
 - 插件源码根目录：`plugin/`
@@ -30,6 +30,7 @@
 - Codex 文本与 Web Search 卡片中的外部链接只能接受 HTTP/HTTPS，必须在用户点击后通过 `Zotero.launchURL()` 交给系统默认浏览器；不得在 Item Pane 内导航、自动打开链接或加载远程图片。Codex 文件引用需兼容单冒号 `:codex-file-citation{...}` 与双冒号格式，并继续执行工作区边界检查。
 - 完成态 View Image 只能在状态、read 语义、标题、输入路径、位置和资源链接相互印证后处理；源文件必须是 25 MiB 以内且扩展名与签名一致的 PNG/JPEG/GIF/WebP/AVIF 常规文件，拒绝 SVG。副本只能写入 ACP 工作区外的 `tool-images/论文标识/本地会话标识`，不得作为 cwd、资源、附加目录或软链接交给 Codex；界面不得回退渲染源路径。卡片默认折叠并在展开后才解码，放大层必须支持关闭按钮、背景点击、Escape 以及适应窗口/1:1 切换。重建会话必须删除旧会话图片目录。
 - Codex 公式固定使用 XPI 内置 KaTeX `0.18.4` 生成 MathML；必须保持 `trust: false`、宏展开/尺寸上限、每公式独立宏环境和 MathML 外部元素/资源属性过滤。不得使用 `innerHTML`、远程公式服务、运行时 CDN、KaTeX HTML 输出或可加载资源的可信命令。
+- Codex Mermaid 固定使用 XPI 内置 Mermaid `11.16.1`，只在出现 `mermaid` fenced code block 时按窗口延迟加载，不得使用 CDN 或运行时下载。由于 Zotero Item Pane 属于无 `body` 的 XUL 文档，运行时必须留在同窗口的本地 `about:blank` HTML iframe 与专用 Gecko sandbox 中；sandbox 必须以该 HTML 窗口为原型继承只读的 `window`/`document`，不得再次赋值，关闭插件时移除 iframe 并丢弃 sandbox 引用；不得在 Zotero 9.0.6 调用 `Cu.nukeSandbox()`。必须保持 `securityLevel: strict`、`htmlLabels: false`、安全配置锁定、源文本/边数/超时/SVG 大小与节点数上限。返回 SVG 只允许 Mermaid flowchart 生成的本地 `feDropShadow` 滤镜，不得放行其他滤镜原语，并继续拒绝活动元素、HTML、链接和非本地资源引用；结果需写入最长边不超过 4096 像素的固有尺寸并序列化为隔离的数据图片，宽图在侧栏横向滚动，不得作为活动 SVG 注入 Item Pane。解析、超限或安全校验失败时必须保留原始源码。
 - Codex 开发者模式必须默认关闭；关闭时不得采集或保留额外的可复制诊断日志，也不得显示复制入口。开启后仅允许在内存中有界记录当前实时 turn 的工具与思考诊断事件，脱敏常见密钥和用户主目录，不得自动落盘或上传；关闭模式、重建会话和插件退出必须清空。
 - 当前 PDF 的划线翻译禁用开关默认关闭，禁用附件 ID 列表仅持久化在本机 Zotero 偏好中；命中禁用状态时不得追加插件划线翻译 UI、查询划线缓存或发起翻译请求，且不得影响其他 PDF 或独立的“添加到 Codex”入口。
 
@@ -63,14 +64,19 @@ zotero-translate/
 │       ├── acp-client.js             # 固定版本准备、脱敏诊断、stdio JSON-RPC、握手、通知、取消与进程清理
 │       ├── codex-chat.js             # 每 PDF session、截图草稿/图片块/位置、回放、权限、引用与 View Image 边界
 │       ├── math-renderer.js          # KaTeX→MathML、有界不可信输入与安全导入/原始 TeX 回退
-│       ├── codex-chat-ui.js          # 原生 Item Pane、截图草稿/历史卡、安全 Markdown/工具图片、模态及外链
-│       ├── codex-chat.css            # Codex 侧栏、截图/工具图片/模态、消息、Web Search、加载与权限样式
+│       ├── mermaid-renderer.js       # Mermaid XUL/HTML sandbox、串行缓存、有界 SVG 校验与数据图片
+│       ├── codex-chat-ui.js          # 原生 Item Pane、截图草稿/历史卡、安全 Markdown/Mermaid/工具图片、模态及外链
+│       ├── codex-chat.css            # Codex 侧栏、Mermaid/截图/工具图片/模态、消息、Web Search、加载与权限样式
 │       ├── codex.svg                 # Codex Item Pane/Sidenav 单色图标
 │       ├── vendor/
-│       │   └── katex/
-│       │       ├── katex.min.js      # KaTeX 0.18.4 离线单文件运行时
-│       │       ├── LICENSE.txt       # KaTeX MIT 许可证
-│       │       └── README.md         # 版本、来源、摘要与集成边界
+│       │   ├── katex/
+│       │   │   ├── katex.min.js      # KaTeX 0.18.4 离线单文件运行时
+│       │   │   ├── LICENSE.txt       # KaTeX MIT 许可证
+│       │   │   └── README.md         # 版本、来源、摘要与集成边界
+│       │   └── mermaid/
+│       │       ├── mermaid.min.js    # Mermaid 11.16.1 离线浏览器运行时
+│       │       ├── LICENSE.txt       # Mermaid MIT 许可证
+│       │       └── README.md         # 版本、来源、哈希与安全集成边界
 │       ├── item-tree-ui.js           # 主页智能标签列、本地懒加载索引与列刷新
 │       ├── item-tree.css             # 智能标签列、主题色胶囊与无障碍模式样式
 │       ├── reader-ui.js              # Codex 选区/截图入口、划线缓存/重译、禁用开关、工具栏与可拖拽缩放悬浮面板
@@ -91,6 +97,7 @@ zotero-translate/
 │   ├── codex-chat.test.js            # PDF/截图图片块/位置/回放、View Image、配置、权限、重建与日志边界
 │   ├── codex-chat-ui.test.js         # 选区/截图草稿与历史、安全渲染、工具图、Web Search/外链/引用边界
 │   ├── math-renderer.test.js         # 公式回归样本、KaTeX 安全选项、MathML 导入过滤与回退
+│   ├── mermaid-renderer.test.js      # Mermaid 上限、固定安全配置、SVG 过滤、延迟加载/串行/缓存与回退
 │   ├── main.test.js                  # 设置桥接、默认配置、Codex 路径探测偏好读写作用域
 │   ├── service.test.js               # 摘要、缓存探测/强制刷新、缓存失效、并发与取消
 │   ├── item-tree-ui.test.js          # 智能标签列、异步刷新、渲染安全与清理
@@ -100,8 +107,11 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.25.xpi
-    ├── smart-paper-translator-0.1.24.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.28.xpi
+    ├── smart-paper-translator-0.1.27.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.26.xpi         # 历史版本归档
+    ├── smart-paper-translator-0.1.25.xpi         # 历史版本归档
+    ├── smart-paper-translator-0.1.24.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.23.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.22.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.21.xpi         # 历史版本归档

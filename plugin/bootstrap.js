@@ -16,6 +16,7 @@ async function startup({ id, version, rootURI }) {
     "content/constants.js",
     "content/vendor/katex/katex.min.js",
     "content/math-renderer.js",
+    "content/mermaid-renderer.js",
     "content/logic.js",
     "content/credentials.js",
     "content/cache.js",

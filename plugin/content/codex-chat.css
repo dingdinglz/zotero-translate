@@ -473,6 +473,16 @@ button.spt-codex-file-citation:hover {
   overflow: hidden;
 }
 
+.spt-codex-mermaid {
+  min-width: 0;
+  max-width: 100%;
+  margin: 9px 0;
+  overflow: hidden;
+  border: 1px solid var(--spt-codex-border);
+  border-radius: 9px;
+  background: color-mix(in srgb, CanvasText 4%, Canvas);
+}
+
 .spt-codex-code-header {
   display: flex;
   align-items: center;
@@ -497,6 +507,7 @@ button.spt-codex-file-citation:hover {
 }
 
 .spt-codex-code pre,
+.spt-codex-mermaid-source pre,
 .spt-codex-event pre,
 .spt-codex-interaction pre {
   width: 100%;
@@ -514,6 +525,58 @@ button.spt-codex-file-citation:hover {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.spt-codex-mermaid-preview {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 132px;
+  max-height: 520px;
+  padding: 12px;
+  align-items: center;
+  overflow: auto;
+  box-sizing: border-box;
+  background: #fff;
+  color: #424242;
+}
+
+.spt-codex-mermaid-image {
+  display: block;
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: 492px;
+  margin: auto;
+}
+
+.spt-codex-mermaid-status,
+.spt-codex-mermaid-error {
+  color: #555;
+  font-size: .86em;
+  text-align: center;
+}
+
+.spt-codex-mermaid-error {
+  color: #9b2c2c;
+}
+
+.spt-codex-mermaid-source {
+  border-top: 1px solid var(--spt-codex-border);
+  background: Canvas;
+}
+
+.spt-codex-mermaid-source summary {
+  padding: 6px 9px;
+  color: var(--spt-codex-muted);
+  font-size: .82em;
+  cursor: pointer;
+  user-select: none;
+}
+
+.spt-codex-mermaid-source[open] summary {
+  border-bottom: 1px solid var(--spt-codex-border);
 }
 
 .spt-codex-event {

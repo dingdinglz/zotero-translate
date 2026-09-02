@@ -14,6 +14,7 @@ const {
   resolveReaderAttachmentID,
   openExternalURL,
   renderSafeMarkdown,
+  appendMermaidBlock,
   captureTranscriptViewport,
   restoreTranscriptViewport,
   describeToolEntry,
@@ -588,6 +589,98 @@ test("academic Markdown renders emphasis, lists, tables, formula containers, and
   assert.deepEqual(opened, { path: "/workspace/source.pdf", start: undefined, end: undefined });
   assert.equal(citations[1].textContent, "▧ notes.md:12");
   assert.equal(nodes.some((node) => /:?codex-file-citation/u.test(node.textContent)), false);
+});
+
+test("Mermaid fenced blocks render as isolated diagrams and keep collapsible source", async () => {
+  const doc = new Document();
+  const container = new Node("div");
+  const diagram = [
+    "flowchart LR",
+    '  A["一天CGM<br/>288个五分钟位置"] --> B["拆成慢趋势和短期波动"]',
+    '  B --> C["每小时生成一个特征<br/>共24小时"]',
+    '  C --> D["24 × 128 的特征矩阵"]',
+    '  D --> E["对24小时做汇总"]',
+    '  E --> F["一天的特征向量<br/>128个浮点数"]',
+    '  F --> G["简单分类器"]',
+    '  G --> H["正常 / 糖尿病风险等概率"]'
+  ].join("\n");
+  const calls = [];
+  renderSafeMarkdown(doc, container, `\`\`\`mermaid\n${diagram}\n\`\`\``, {
+    mermaidRenderer: {
+      async render(renderDoc, source) {
+        calls.push({ renderDoc, source });
+        return {
+          dataURI: "data:image/svg+xml;charset=UTF-8,%3Csvg%2F%3E",
+          width: 640,
+          height: 320,
+          title: "CGM 特征学习流程"
+        };
+      }
+    }
+  });
+
+  const card = container.children[0];
+  assert.equal(card.className, "spt-codex-mermaid");
+  assert.equal(card.attributes.get("data-mermaid-state"), "rendering");
+  await card.mermaidRenderPromise;
+  assert.deepEqual(calls, [{ renderDoc: doc, source: diagram }]);
+  assert.equal(card.attributes.get("data-mermaid-state"), "ready");
+  const nodes = descendants(card);
+  const image = nodes.find((node) => node.className === "spt-codex-mermaid-image");
+  assert.equal(image.src, "data:image/svg+xml;charset=UTF-8,%3Csvg%2F%3E");
+  assert.equal(image.alt, "CGM 特征学习流程");
+  assert.equal(nodes.some((node) => node.localName === "iframe" || node.localName === "svg"), false);
+  const source = nodes.find((node) => node.className === "spt-codex-mermaid-source");
+  assert.equal(source.open, false);
+  assert.ok(nodes.some((node) => node.localName === "code" && node.textContent === diagram));
+});
+
+test("Mermaid rendering failures fail closed to the original source", async () => {
+  const doc = new Document();
+  const container = new Node("div");
+  const failures = [];
+  const card = appendMermaidBlock(doc, container, "flowchart LR\nA -->", {
+    mermaidRenderer: {
+      async render() { throw new Error("Parse error near A"); }
+    },
+    onMermaidError(error) { failures.push(error.message); }
+  });
+  await card.mermaidRenderPromise;
+
+  assert.equal(card.attributes.get("data-mermaid-state"), "error");
+  assert.deepEqual(failures, ["Parse error near A"]);
+  const nodes = descendants(card);
+  const source = nodes.find((node) => node.className === "spt-codex-mermaid-source");
+  assert.equal(source.open, true);
+  assert.ok(nodes.some((node) => node.className === "spt-codex-mermaid-error"));
+  assert.ok(nodes.some((node) => node.localName === "code" && node.textContent === "flowchart LR\nA -->"));
+  assert.equal(nodes.some((node) => node.localName === "img"), false);
+});
+
+test("an incomplete streaming Mermaid fence stays code until it is closed", () => {
+  const doc = new Document();
+  const container = new Node("div");
+  let renderCalls = 0;
+  renderSafeMarkdown(doc, container, "```mermaid\nflowchart LR\nA --> B", {
+    mermaidRenderer: {
+      async render() { renderCalls++; }
+    }
+  });
+  const nodes = descendants(container);
+  assert.equal(renderCalls, 0);
+  assert.equal(nodes.some((node) => node.className === "spt-codex-mermaid"), false);
+  assert.ok(nodes.some((node) => node.localName === "code" && node.textContent.includes("A --> B")));
+});
+
+test("wide Mermaid images keep readable dimensions and scroll inside the sidebar", () => {
+  const css = fs.readFileSync(
+    path.join(__dirname, "../plugin/content/codex-chat.css"),
+    "utf8"
+  );
+  assert.match(css, /\.spt-codex-mermaid-preview\s*\{[^}]*max-height:\s*520px/isu);
+  assert.match(css, /\.spt-codex-mermaid-preview\s*\{[^}]*overflow:\s*auto/isu);
+  assert.match(css, /\.spt-codex-mermaid-image\s*\{[^}]*flex:\s*0\s+0\s+auto/isu);
+  assert.match(css, /\.spt-codex-mermaid-image\s*\{[^}]*max-width:\s*none/isu);
 });
 
 test("tool and thought rows retain a fixed flex basis in long transcripts", () => {

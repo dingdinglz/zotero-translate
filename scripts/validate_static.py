@@ -18,7 +18,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.25"
+    assert manifest["version"] == "0.1.28"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -45,6 +45,7 @@ def main() -> None:
     pdf_screenshot = (PLUGIN / "content" / "pdf-screenshot.js").read_text(encoding="utf-8")
     chat_ui = (PLUGIN / "content" / "codex-chat-ui.js").read_text(encoding="utf-8")
     math_renderer = (PLUGIN / "content" / "math-renderer.js").read_text(encoding="utf-8")
+    mermaid_renderer = (PLUGIN / "content" / "mermaid-renderer.js").read_text(encoding="utf-8")
     bootstrap = (PLUGIN / "bootstrap.js").read_text(encoding="utf-8")
     assert 'ACP_PACKAGE_SPEC: "@agentclientprotocol/codex-acp@1.6.2"' in constants
     assert 'ACP_MODE: "agent"' in constants
@@ -91,15 +92,21 @@ def main() -> None:
     assert 'purpose: "version", allowDownload: true' not in bootstrap
     assert ".innerHTML =" not in chat_ui
     assert ".innerHTML =" not in math_renderer
+    assert ".innerHTML =" not in mermaid_renderer
     assert 'output: "mathml"' in math_renderer
     assert 'trust: false' in math_renderer
     assert 'maxExpand: 1000' in math_renderer
     assert 'maxSize: 20' in math_renderer
     assert '"content/vendor/katex/katex.min.js"' in bootstrap
     assert '"content/math-renderer.js"' in bootstrap
+    assert '"content/mermaid-renderer.js"' in bootstrap
+    assert '"content/vendor/mermaid/mermaid.min.js"' not in bootstrap
     assert bootstrap.index('"content/vendor/katex/katex.min.js"') < bootstrap.index(
         '"content/math-renderer.js"'
     ) < bootstrap.index('"content/codex-chat-ui.js"')
+    assert bootstrap.index('"content/mermaid-renderer.js"') < bootstrap.index(
+        '"content/codex-chat-ui.js"'
+    )
     katex_runtime = PLUGIN / "content" / "vendor" / "katex" / "katex.min.js"
     assert hashlib.sha256(katex_runtime.read_bytes()).hexdigest() == (
         "2ec5916941ef4383e0314eaabcc712301b06001d9fb68e08d751d2bae5a27a1a"
@@ -108,6 +115,36 @@ def main() -> None:
         PLUGIN / "content" / "vendor" / "katex" / "LICENSE.txt"
     ).read_text(encoding="utf-8")
     assert "The MIT License" in katex_license
+    assert 'MERMAID_VERSION = "11.16.1"' in mermaid_renderer
+    assert 'securityLevel: "strict"' in mermaid_renderer
+    assert "htmlLabels: false" in mermaid_renderer
+    assert "suppressErrorRendering: true" in mermaid_renderer
+    assert "MAX_MERMAID_SOURCE_LENGTH = 20000" in mermaid_renderer
+    assert "MAX_MERMAID_SVG_LENGTH = 2 * 1024 * 1024" in mermaid_renderer
+    assert "MAX_MERMAID_IMAGE_EDGE = 4096" in mermaid_renderer
+    assert 'data:image/svg+xml;charset=UTF-8' in mermaid_renderer
+    assert "hasUnsafeResourceReference" in mermaid_renderer
+    assert 'createElementNS(XHTML_NS, "iframe")' in mermaid_renderer
+    assert '"当前 Zotero 窗口无法创建 Mermaid 隔离文档"' in mermaid_renderer
+    assert '"filter", "fedropshadow"' in mermaid_renderer
+    assert '"stddeviation", "flood-color", "flood-opacity"' in mermaid_renderer
+    assert "content/vendor/mermaid/mermaid.min.js" in chat_ui
+    assert "runtimeURI" in mermaid_renderer
+    assert "Cu.Sandbox" in mermaid_renderer
+    assert "sandboxPrototype: win" in mermaid_renderer
+    assert "wantXrays: false" in mermaid_renderer
+    assert "sandbox.window =" not in mermaid_renderer
+    assert "sandbox.document =" not in mermaid_renderer
+    assert "scriptloader?.loadSubScript" in mermaid_renderer
+    assert ".nukeSandbox(" not in mermaid_renderer
+    mermaid_runtime = PLUGIN / "content" / "vendor" / "mermaid" / "mermaid.min.js"
+    assert hashlib.sha256(mermaid_runtime.read_bytes()).hexdigest() == (
+        "18327bef70d96fb505fe7287d9f6a7362ebf07ff6576ddfaffb1a06f3e1a2954"
+    )
+    mermaid_license = (
+        PLUGIN / "content" / "vendor" / "mermaid" / "LICENSE.txt"
+    ).read_text(encoding="utf-8")
+    assert "The MIT License" in mermaid_license
     assert "zotero.launchURL(url)" in chat_ui
     assert "只允许打开 HTTP 或 HTTPS 链接" in chat_ui
     assert ':codex-file-citation{' in chat_ui
@@ -164,12 +201,16 @@ def main() -> None:
         "content/pdf-screenshot.js",
         "content/codex-chat.js",
         "content/math-renderer.js",
+        "content/mermaid-renderer.js",
         "content/codex-chat-ui.js",
         "content/codex-chat.css",
         "content/codex.svg",
         "content/vendor/katex/katex.min.js",
         "content/vendor/katex/LICENSE.txt",
         "content/vendor/katex/README.md",
+        "content/vendor/mermaid/mermaid.min.js",
+        "content/vendor/mermaid/LICENSE.txt",
+        "content/vendor/mermaid/README.md",
         "locale/en-US/smart-paper-translator-codex-chat.ftl",
         "locale/zh-CN/smart-paper-translator-codex-chat.ftl",
     }

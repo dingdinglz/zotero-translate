@@ -11,6 +11,9 @@
   const MathRenderer = modules.MathRenderer || (
     typeof require === "function" ? require("./math-renderer.js") : null
   );
+  const MermaidRenderer = modules.MermaidRenderer || (
+    typeof require === "function" ? require("./mermaid-renderer.js") : null
+  );
   const PDFScreenshot = modules.PDFScreenshot || (
     typeof require === "function" ? require("./pdf-screenshot.js") : null
   );
@@ -330,6 +333,22 @@
     }
   }
 
+  function makeCodeCopyButton(doc, value) {
+    const copy = doc.createElement("button");
+    copy.type = "button";
+    copy.textContent = "复制";
+    copy.addEventListener("click", async () => {
+      try {
+        await copyTextToClipboard(doc, value);
+        copy.textContent = "已复制";
+      }
+      catch (_error) {
+        copy.textContent = "复制失败";
+      }
+    });
+    return copy;
+  }
+
   function appendCodeBlock(doc, container, value, language) {
     const wrapper = doc.createElement("div");
     wrapper.className = "spt-codex-code";
@@ -337,23 +356,7 @@
     header.className = "spt-codex-code-header";
     const label = doc.createElement("span");
     label.textContent = language || "code";
-    const copy = doc.createElement("button");
-    copy.type = "button";
-    copy.textContent = "复制";
-    copy.addEventListener("click", async () => {
-      try {
-        if (global.Zotero?.Utilities?.Internal?.copyTextToClipboard) {
-          global.Zotero.Utilities.Internal.copyTextToClipboard(value);
-        }
-        else {
-          await doc.defaultView.navigator.clipboard.writeText(value);
-        }
-        copy.textContent = "已复制";
-      }
-      catch (_error) {
-        copy.textContent = "复制失败";
-      }
-    });
+    const copy = makeCodeCopyButton(doc, value);
     header.append(label, copy);
     const pre = doc.createElement("pre");
     const code = doc.createElement("code");
@@ -361,6 +364,108 @@
     pre.append(code);
     wrapper.append(header, pre);
     container.append(wrapper);
+  }
+
+  function setLocalizedText(element, id, fallback) {
+    element.textContent = fallback;
+    element.setAttribute("data-l10n-id", id);
+  }
+
+  function appendMermaidBlock(doc, container, value, options = {}) {
+    const renderer = options.mermaidRenderer;
+    if (typeof renderer?.render !== "function") {
+      appendCodeBlock(doc, container, value, "mermaid");
+      return null;
+    }
+
+    const wrapper = doc.createElement("div");
+    wrapper.className = "spt-codex-mermaid";
+    wrapper.setAttribute("data-mermaid-state", "rendering");
+    const header = doc.createElement("div");
+    header.className = "spt-codex-code-header";
+    const label = doc.createElement("span");
+    label.textContent = "mermaid";
+    header.append(label, makeCodeCopyButton(doc, value));
+
+    const preview = doc.createElement("div");
+    preview.className = "spt-codex-mermaid-preview";
+    preview.setAttribute("role", "status");
+    const status = doc.createElement("span");
+    status.className = "spt-codex-mermaid-status";
+    setLocalizedText(
+      status,
+      "smart-paper-translator-codex-mermaid-rendering",
+      "正在渲染 Mermaid 图表…"
+    );
+    preview.append(status);
+
+    const source = doc.createElement("details");
+    source.className = "spt-codex-mermaid-source";
+    const sourceSummary = doc.createElement("summary");
+    setLocalizedText(
+      sourceSummary,
+      "smart-paper-translator-codex-mermaid-source",
+      "查看 Mermaid 源码"
+    );
+    const pre = doc.createElement("pre");
+    const code = doc.createElement("code");
+    code.textContent = value;
+    pre.append(code);
+    source.append(sourceSummary, pre);
+    wrapper.append(header, preview, source);
+    container.append(wrapper);
+
+    let failed = false;
+    const showFallback = (error) => {
+      if (failed) return;
+      failed = true;
+      wrapper.setAttribute("data-mermaid-state", "error");
+      preview.replaceChildren();
+      preview.setAttribute("role", "alert");
+      const message = doc.createElement("span");
+      message.className = "spt-codex-mermaid-error";
+      setLocalizedText(
+        message,
+        "smart-paper-translator-codex-mermaid-error",
+        "Mermaid 渲染失败，已在下方保留源码。"
+      );
+      const detail = String(error?.message || "").trim();
+      if (detail) message.title = detail.slice(0, 300);
+      preview.append(message);
+      source.open = true;
+      try { options.onMermaidError?.(error); }
+      catch (_error) {}
+    };
+
+    const renderPromise = Promise.resolve()
+      .then(() => renderer.render(doc, value))
+      .then((result) => {
+        if (!result?.dataURI || failed) throw new Error("Mermaid 渲染结果不可用");
+        const image = doc.createElement("img");
+        image.className = "spt-codex-mermaid-image";
+        image.alt = result.title || "Mermaid 图表";
+        if (!result.title) {
+          image.setAttribute("data-l10n-id", "smart-paper-translator-codex-mermaid-image");
+        }
+        image.decoding = "async";
+        image.draggable = false;
+        image.addEventListener("error", () => showFallback(new Error("Mermaid 图表无法解码")));
+        if (result.width && result.height) {
+          preview.style ||= {};
+          preview.style.aspectRatio = `${result.width} / ${result.height}`;
+        }
+        preview.replaceChildren(image);
+        preview.removeAttribute?.("role");
+        wrapper.setAttribute("data-mermaid-state", "ready");
+        image.src = result.dataURI;
+        return result;
+      })
+      .catch((error) => {
+        showFallback(error);
+        return null;
+      });
+    wrapper.mermaidRenderPromise = renderPromise;
+    return wrapper;
   }
 
   function splitTableRow(line) {
@@ -413,8 +518,13 @@
         while (index < lines.length && !new RegExp(`^\\s{0,3}${marker[0]}{${marker.length},}\\s*$`, "u").test(lines[index])) {
           code.push(lines[index++]);
         }
-        if (index < lines.length) index++;
-        appendCodeBlock(doc, container, code.join("\n"), language);
+        const closed = index < lines.length;
+        if (closed) index++;
+        const value = code.join("\n");
+        if (closed && MermaidRenderer?.isMermaidLanguage(language)) {
+          appendMermaidBlock(doc, container, value, options);
+        }
+        else appendCodeBlock(doc, container, value, language);
         continue;
       }
 
@@ -1107,6 +1217,7 @@
       service,
       stylesheetText,
       rootURI,
+      mermaidRenderer,
       requestScreenshotCapture,
       canStartScreenshotCapture,
       log
@@ -1114,6 +1225,9 @@
       this.service = service;
       this.stylesheetText = stylesheetText || "";
       this.rootURI = rootURI;
+      this.mermaidRenderer = mermaidRenderer || MermaidRenderer?.createMermaidRenderer?.({
+        runtimeURI: rootURI ? `${rootURI}content/vendor/mermaid/mermaid.min.js` : ""
+      });
       this.requestScreenshotCapture = requestScreenshotCapture;
       this.canStartScreenshotCapture = canStartScreenshotCapture;
       this.log = log || (() => {});
@@ -2209,6 +2323,8 @@
           content.className = "spt-codex-markdown";
           renderSafeMarkdown(doc, content, entry.text, {
             ...this._externalLinkOptions(view),
+            mermaidRenderer: this.mermaidRenderer,
+            onMermaidError: (error) => this.log("Mermaid rendering failed", error),
             onFileCitation: ({ path }) => {
               this.service.revealCitation(view.attachmentID, path).catch((error) => {
                 view.elements.notices.textContent = error.message || "无法打开引用文件";
@@ -2280,6 +2396,8 @@
               state.record.session.workspacePath,
               {
                 ...this._externalLinkOptions(view),
+                mermaidRenderer: this.mermaidRenderer,
+                onMermaidError: (error) => this.log("Mermaid rendering failed", error),
                 deferImageLoad: true,
                 registerDeferredImageLoader: (loader) => { loadDeferredImage = loader; },
                 onImagePreview: (image) => this._openImageLightbox(view, image)
@@ -2370,6 +2488,7 @@
       this.paneID = null;
       this.drafts.clear();
       this.pendingDraftFocus.clear();
+      this.mermaidRenderer?.shutdown?.();
       for (const cleanup of this.windowCleanups.values()) cleanup();
       this.windowCleanups.clear();
     }
@@ -2387,6 +2506,7 @@
     screenshotPositionSummary,
     openExternalURL,
     renderSafeMarkdown,
+    appendMermaidBlock,
     captureTranscriptViewport,
     restoreTranscriptViewport,
     describeToolEntry,
