@@ -9,6 +9,8 @@ smart-paper-translator-codex-mermaid-image =
     .alt = Mermaid diagram
 
 smart-paper-translator-agents-selector = Agent
+smart-paper-translator-agents-messages =
+    .aria-label = Conversation messages
 smart-paper-translator-agents-access = Access
 smart-paper-translator-agents-approval = Approval mode
 smart-paper-translator-agents-full = Full Access

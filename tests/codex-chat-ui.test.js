@@ -695,6 +695,112 @@ test("tool and thought rows retain a fixed flex basis in long transcripts", () =
   assert.match(css, /\.spt-codex-event\s+pre[\s\S]*?word-break:\s*break-word/isu);
 });
 
+test("selected transcript nodes survive streaming and final updates until selection clears", () => {
+  const doc = new Document();
+  const ui = new CodexChatUI({ service: {} });
+  ui._renderShell({ doc, body: doc.body });
+  const view = ui.views.get(doc.body);
+  view.attachmentID = 10;
+  const { messages } = view.elements;
+  const selection = {
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => ({ intersectsNode: (node) => node === messages })
+  };
+  doc.defaultView.getSelection = () => selection;
+  const state = (text, status = "generating") => ({
+    status,
+    record: {
+      session: { localID: "local-1", workspacePath: "/workspace" },
+      transcript: [{ id: "answer", kind: "message", role: "agent", text }]
+    }
+  });
+  view.state = state("Selected answer");
+  ui._renderTranscript(view, view.state);
+  const selectedArticle = messages.children[0];
+  view.state = state("Selected answer plus more");
+  ui._renderTranscript(view, view.state);
+  view.state = state("Selected answer plus the final paragraph", "ready");
+  ui._renderTranscript(view, view.state);
+  doc.dispatchEvent({ type: "selectionchange" });
+  assert.equal(messages.children[0], selectedArticle);
+  assert.equal(view.transcriptDeferred, true);
+
+  selection.isCollapsed = true;
+  doc.dispatchEvent({ type: "selectionchange" });
+  assert.notEqual(messages.children[0], selectedArticle);
+  assert.ok(descendants(messages).some((node) => node.textContent === "Selected answer plus the final paragraph"));
+  assert.equal(view.transcriptDeferred, false);
+
+  const callback = doc.listeners.get("selectionchange");
+  ui._destroyView(doc.body);
+  assert.equal(doc.listeners.has("selectionchange"), false);
+  view.transcriptDeferred = true;
+  ui._renderTranscript = () => assert.fail("Destroyed views must ignore late selection events");
+  callback();
+});
+
+test("selections outside the transcript do not pause updates", () => {
+  const doc = new Document();
+  const ui = new CodexChatUI({ service: {} });
+  ui._renderShell({ doc, body: doc.body });
+  const view = ui.views.get(doc.body);
+  const { messages, input } = view.elements;
+  doc.defaultView.getSelection = () => ({
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => ({ intersectsNode: (node) => node === input })
+  });
+  const state = {
+    record: {
+      session: { localID: "local-1", workspacePath: "/workspace" },
+      transcript: [{ id: "answer", kind: "message", role: "agent", text: "First" }]
+    }
+  };
+  ui._renderTranscript(view, state);
+  const firstArticle = messages.children[0];
+  state.record.transcript[0].text = "Updated";
+  ui._renderTranscript(view, state);
+  assert.notEqual(messages.children[0], firstArticle);
+  assert.equal(view.transcriptDeferred, false);
+});
+
+test("selected old transcripts never block a different paper, agent, session or load", () => {
+  for (const change of [
+    (view) => { view.attachmentID = 11; },
+    (view) => { view.agentId = "pi"; },
+    (_view, state) => { state.record.session.localID = "local-2"; },
+    (view) => { view.requestSerial++; }
+  ]) {
+    const doc = new Document();
+    const ui = new CodexChatUI({ service: {} });
+    ui._renderShell({ doc, body: doc.body });
+    const view = ui.views.get(doc.body);
+    view.attachmentID = 10;
+    const { messages } = view.elements;
+    doc.defaultView.getSelection = () => ({
+      isCollapsed: false,
+      rangeCount: 1,
+      getRangeAt: () => ({ intersectsNode: (node) => node === messages })
+    });
+    const state = {
+      record: {
+        session: { localID: "local-1", workspacePath: "/workspace" },
+        transcript: [{ id: "answer", kind: "message", role: "agent", text: "Old answer" }]
+      }
+    };
+    ui._renderTranscript(view, state);
+    const oldArticle = messages.children[0];
+    ui._renderTranscript(view, state);
+    assert.equal(view.transcriptDeferred, true);
+    change(view, state);
+    state.record.transcript[0].text = "Current answer";
+    ui._renderTranscript(view, state);
+    assert.notEqual(messages.children[0], oldArticle);
+    assert.equal(view.transcriptDeferred, false);
+  }
+});
+
 test("streaming rerenders preserve expanded events and a reader's scroll position", () => {
   const doc = new Document();
   const messages = new Node("div");

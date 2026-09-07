@@ -1,6 +1,6 @@
 # Smart Paper Translator
 
-Smart Paper Translator 0.1.33 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个可切换本机 Codex / Pi 的原生 **Agents** 右侧栏。对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
+Smart Paper Translator 0.1.34 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个可切换本机 Codex / Pi 的原生 **Agents** 右侧栏。对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
 
 ## 功能
 
@@ -26,6 +26,7 @@ Smart Paper Translator 0.1.33 是面向 macOS Zotero 9 内置 PDF Reader 的学�
 - 第一条真实消息会把源 PDF 原子复制为专用工作区中的 `source.pdf`，再以 `application/pdf` 的 ACP `resource_link` 引用；后续 turn 不重复附加 PDF，只发送文本以及用户本轮明确添加的截图图片块。
 - Zotero 重启后，在用户重新加载或首次发送前通过 `session/load` 恢复同一 Agent session，并用 thread 回放对账本地镜像。交付状态不确定时必须先对账，避免重复发送。
 - 支持流式文本、安全 Markdown（标题、强调、列表、引用、表格、代码）、完整的 KaTeX 0.18.4 → Firefox MathML 公式，以及 fenced `mermaid` 图表。Mermaid 11.16.1 随 XPI 离线内置并按窗口延迟加载；图表以严格模式、禁用 HTML 标签和交互的方式渲染，经本地资源与 SVG 白名单复核后作为隔离数据图片显示，宽图可横向滚动，源码可折叠查看和复制，解析失败或超限时自动展开源码。公式支持分式、求和上下标、集合运算、重音、根式、矩阵、对齐环境及上下花括号；解析失败时保留原始 TeX，不再输出命令粘连的伪公式。Codex 的 `:codex-file-citation{...}` 与兼容的 `::codex-file-citation{...}` 文件引用会显示为引用胶囊，并且只允许在当前论文工作区内定位。工具和计划卡片在长对话中保持固定高度；流式更新会保留已展开卡片与阅读位置，只有用户原本就在底部时才继续跟随新内容。
+- Codex / Pi 的对话消息、代码、表格及展开的工具内容支持鼠标选择文字，并使用原生 ⌘C（Windows/Linux 为 Ctrl+C）或“编辑 → 复制”。选中文字时暂停消息区重绘，取消选择后立即显示最新回复；生成、停止及授权状态仍正常更新。
 - 超宽工具输出、路径和表格被限制在 Item Pane 内，不再把用户消息推到侧栏可视区域之外。
 - `execute`、文件读取、图片查看和搜索等常见工具会显示为语义卡片，只呈现安全元数据，不再把内部 ID、时间戳及原始事件 JSON 暴露在界面中；权限审批使用同一套可读展示。Codex 完成态 `View Image` 会联合核对工具类型、标题、输入路径、位置和资源链接，再把通过常规文件、25 MiB、扩展名与文件签名校验的 PNG/JPEG/GIF/WebP/AVIF 复制到工作区外的会话媒体目录；SVG、未知格式、路径不一致和伪装文件只显示错误，不回退直读源路径。图片卡片默认折叠，用户展开后才解码本地副本；点击预览可在当前 Zotero 窗口放大，并在适应窗口与 1:1 原始像素间切换。Web Search 会区分多查询搜索、打开网页和页内查找，完整展示 ACP 返回的查询、页面、查找词，以及事件中实际携带的结果标题、摘要或文本；若固定适配器没有传回网页正文或结果摘要，卡片会明确标注协议事件未携带内容。
 - Agents 回答和 Web Search 卡片中的 HTTP/HTTPS 链接只在用户点击后通过 Zotero 9.0.6 的 `Zotero.launchURL()` 交给系统默认浏览器；插件不在 Item Pane 内导航，也不允许其他 URL scheme。
@@ -123,12 +124,16 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.33.xpi
+unzip -t dist/smart-paper-translator-0.1.34.xpi
 ```
 
 真实 npx 下载、Codex/Pi 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
 
-0.1.33 已通过 228 项自动测试、JavaScript/静态检查、构建、SHA-256、XPI 根目录与 `unzip -t` 检查，归档内 38 个运行时文件与源码逐字节一致。使用实际侧栏模块与样式的独立浏览器预览，检查了 240px / 320px / 500px 宽度、长模型名称、深色主题和选中值同步；模型与思考强度各占一行，完整名称自动换行，无横向溢出。配置失败恢复原值和生成期间禁用控件由回归测试覆盖。
+0.1.34 已通过 231 项自动测试、JavaScript/静态检查、构建、SHA-256、XPI 根目录与 `unzip -t` 检查，归档内 38 个运行时文件与源码逐字节一致。用实际侧栏模块与样式、合成消息制作独立浏览器预览，验证了文字及代码拖选、⌘C 复制与粘贴，以及流式更新期间保持选区、取消选择后恢复更新。回归测试覆盖最终回复补绘、不同论文/Agent/会话/加载请求的隔离和销毁后的监听器清理。
+
+0.1.34 的最终 XPI 已在 Zotero 9.0.6 中通过 `AddonManager.getInstallForFile()` 非安装式解析：插件 ID 为 `smart-paper-translator@zotero.local`，版本为 `0.1.34`，`error: 0`、`isCompatible: true`、`appDisabled: false`。本次未安装插件或进行真实模型/UI 冒烟测试。
+
+此前 0.1.33 已通过 228 项自动测试、JavaScript/静态检查、构建、SHA-256、XPI 根目录与 `unzip -t` 检查，归档内 38 个运行时文件与源码逐字节一致。使用实际侧栏模块与样式的独立浏览器预览，检查了 240px / 320px / 500px 宽度、长模型名称、深色主题和选中值同步；模型与思考强度各占一行，完整名称自动换行，无横向溢出。配置失败恢复原值和生成期间禁用控件由回归测试覆盖。
 
 0.1.33 的最终 XPI 已在 Zotero 9.0.6 中通过 `AddonManager.getInstallForFile()` 非安装式解析：插件 ID 为 `smart-paper-translator@zotero.local`，版本为 `0.1.33`，`error: 0`、`isCompatible: true`、`appDisabled: false`。未安装该 XPI 或调用真实模型。
 

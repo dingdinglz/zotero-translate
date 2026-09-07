@@ -9,6 +9,8 @@ smart-paper-translator-codex-mermaid-image =
     .alt = Mermaid 图表
 
 smart-paper-translator-agents-selector = Agent
+smart-paper-translator-agents-messages =
+    .aria-label = 对话消息
 smart-paper-translator-agents-access = 权限
 smart-paper-translator-agents-approval = 审批模式
 smart-paper-translator-agents-full = Full Access

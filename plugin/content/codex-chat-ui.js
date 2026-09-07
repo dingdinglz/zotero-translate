@@ -665,6 +665,15 @@
     return String(entry?.id || entry?.remoteID || `${entry?.kind || "entry"}-${index}`);
   }
 
+  function hasTranscriptSelection(container) {
+    const selection = container.ownerDocument?.defaultView?.getSelection?.();
+    if (!selection || selection.isCollapsed) return false;
+    for (let index = 0; index < selection.rangeCount; index++) {
+      if (selection.getRangeAt(index).intersectsNode(container)) return true;
+    }
+    return false;
+  }
+
   function captureTranscriptViewport(container, renderedBefore) {
     const expanded = new Set();
     const innerScroll = new Map();
@@ -1715,6 +1724,10 @@
       notices.className = "spt-codex-notices";
       const messages = doc.createElement("div");
       messages.className = "spt-codex-messages";
+      messages.tabIndex = 0;
+      messages.setAttribute("role", "region");
+      messages.setAttribute("aria-label", "对话消息");
+      messages.setAttribute("data-l10n-id", "smart-paper-translator-agents-messages");
       messages.setAttribute("aria-live", "polite");
       const composer = doc.createElement("div");
       composer.className = "spt-codex-composer";
@@ -1782,11 +1795,18 @@
         this._draftFor(view.attachmentID, true, view.agentId).question = input.value;
         this._syncDraftViews(view.attachmentID, view.agentId);
       };
+      const selectionChanged = () => {
+        if (this.views.get(body) === view && view.transcriptDeferred && view.state) {
+          this._renderTranscript(view, view.state);
+        }
+      };
       input.addEventListener("keydown", keydown);
       input.addEventListener("input", inputChanged);
+      doc.addEventListener("selectionchange", selectionChanged);
       view.cleanups.push(
         () => input.removeEventListener("keydown", keydown),
-        () => input.removeEventListener("input", inputChanged)
+        () => input.removeEventListener("input", inputChanged),
+        () => doc.removeEventListener("selectionchange", selectionChanged)
       );
       this.views.set(body, view);
     }
@@ -2481,6 +2501,18 @@
       const doc = view.body.ownerDocument;
       const container = view.elements.messages;
       const renderedBefore = Boolean(view.transcriptRendered);
+      const transcriptKey = JSON.stringify([
+        attachmentID, agentId, serial, state.record.session.localID
+      ]);
+      // Replacing selected nodes collapses Gecko's native selection. Keep the
+      // visible transcript stable until selection clears; view.state stays live.
+      if (renderedBefore && view.renderedTranscriptKey === transcriptKey &&
+        hasTranscriptSelection(container)) {
+        view.transcriptDeferred = true;
+        return;
+      }
+      view.transcriptDeferred = false;
+      view.renderedTranscriptKey = transcriptKey;
       const viewport = captureTranscriptViewport(container, renderedBefore);
       container.replaceChildren();
       if (!state.record.transcript.length) {

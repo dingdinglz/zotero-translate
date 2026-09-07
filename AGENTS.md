@@ -14,7 +14,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.33`
+- 当前版本：`0.1.34`
 - 目标平台：macOS Zotero 9.0.6
 - 清单兼容范围：Zotero `9.0`–`9.0.*`
 - 插件源码根目录：`plugin/`
@@ -30,6 +30,7 @@
 - Agents 每篇论文记住当前 Agent（默认 Codex）；历史、模型、思考、文字/选区/截图草稿均按论文和 Agent 隔离。切换只加载本地历史，连接、生成、授权和停止期间禁用 Agent/权限切换；截图捕获绑定启动时的 Agent。异步视图回调必须复核附件、Agent 与请求序号。
 - Pi 每篇论文懒创建独立 ACP 连接，避免单连接 session 替换影响其他论文；无 Reader 引用的空闲连接回收，重新发送用持久 session 恢复。探测连接独立；退出清理所有连接及子进程。
 - 原 Codex 数据在 `codex-acp/` 原路径兼容升级，旧记录缺失 agentId 时视为 Codex，保留 session ID、工作区与图片引用；Pi 使用 `pi-acp/` 独立目录。重建只影响当前 Agent；文字/选区草稿仅内存，截图草稿沿用本机恢复与删除规则。
+- Agents 消息区必须显式启用原生文本选择与复制；有选区时只延后当前论文/Agent/本地会话的消息 DOM 重绘，状态与停止/授权控件继续更新。选区取消后立即显示最新状态；切换论文、Agent、会话或重新加载不得被旧选区阻塞，窗口/视图销毁时移除监听器。
 - Agents 侧栏模型/思考控件使用单列布局，选中全名可换行；保留原生 select 的菜单和键盘语义，展示副本设为 `aria-hidden`，配置失败同步恢复原值，忙碌状态同时禁用原生控件和更新展示样式。不得以裁切、省略号或仅悬停提示代替完整名称。
 - Agents Item Pane 只能用 `tabID → Zotero.Reader.getByTabID()` 精确解析 Reader PDF 附件；失败时禁用，不得猜测父条目附件。独立 Reader 窗口不注册聊天。
 - PDF 选区加入 Codex 必须再次用 `tabID → Zotero.Reader.getByTabID() → itemID` 精确复核附件，只复制白名单文本与有限数值 PDF 坐标；未发送草稿仅驻留内存并按附件隔离，精确坐标只在用户发送时交给本机 Codex。侧栏自动展开只能操作同一 tab 的 `item-details`，能力缺失时保留草稿并失败关闭。
@@ -78,8 +79,8 @@ zotero-translate/
 │       ├── agents-chat.js            # 当前 Agent 偏好、服务路由、Pi 每论文连接/引用与独立探测生命周期
 │       ├── math-renderer.js          # KaTeX→MathML、有界不可信输入与安全导入/原始 TeX 回退
 │       ├── mermaid-renderer.js       # Mermaid XUL/HTML sandbox、串行缓存、有界 SVG 校验与数据图片
-│       ├── codex-chat-ui.js          # Agents Item Pane、完整换行的模型/思考选项、Agent/权限切换及安全渲染
-│       ├── codex-chat.css            # Agents 侧栏单列配置/完整选中值、Mermaid/媒体/模态、消息与权限样式
+│       ├── codex-chat-ui.js          # Agents Item Pane、完整换行的模型/思考选项、Agent/权限切换、文本选择保持及安全渲染
+│       ├── codex-chat.css            # Agents 侧栏单列配置/完整选中值、Mermaid/媒体/模态、消息选择与权限样式
 │       ├── codex.svg                 # 旧 Codex 单色图标（保留历史资源）
 │       ├── agents.svg                # Agents Item Pane/Sidenav 中性对话图标
 │       ├── vendor/
@@ -111,7 +112,7 @@ zotero-translate/
 │   ├── acp-client.test.js            # PATH/NVM/软链接发现、JSONL、双适配器准备/版本与进程清理
 │   ├── agents-chat.test.js           # Agent 切换/偏好、忙碌锁、Pi 每论文连接隔离与探测生命周期
 │   ├── codex-chat.test.js            # Codex 权限切换/失败、Pi 模型/思考/回放及 PDF/媒体/日志边界
-│   ├── codex-chat-ui.test.js         # Agent 快速切换/迟到回调、隔离草稿与安全渲染、工具图、Web Search/外链/引用边界
+│   ├── codex-chat-ui.test.js         # Agent 快速切换/迟到回调、隔离草稿、选择期间流式更新与安全渲染、工具图、Web Search/外链/引用边界
 │   ├── math-renderer.test.js         # 公式回归样本、KaTeX 安全选项、MathML 导入过滤与回退
 │   ├── mermaid-renderer.test.js      # Mermaid 上限、固定安全配置、SVG 过滤、延迟加载/串行/缓存与回退
 │   ├── main.test.js                  # ACP/Agent 设置桥接、只读发现、FilePicker 选取/取消与偏好作用域
@@ -124,8 +125,9 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.33.xpi
-    ├── smart-paper-translator-0.1.32.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.34.xpi
+    ├── smart-paper-translator-0.1.33.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.32.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.31.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.30.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.29.xpi         # 历史版本归档

@@ -290,6 +290,10 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  /* Override the Zotero XUL window's user-select: none for native selection/copy. */
+  -moz-user-select: text;
+  user-select: text;
+  cursor: text;
 }
 
 /* Prevent long transcripts from flex-shrinking tool/thought rows to zero height. */
