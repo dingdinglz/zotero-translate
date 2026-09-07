@@ -14,6 +14,7 @@ async function startup({ id, version, rootURI }) {
 
   const scripts = [
     "content/constants.js",
+    "content/agent-providers.js",
     "content/vendor/katex/katex.min.js",
     "content/math-renderer.js",
     "content/mermaid-renderer.js",
@@ -24,8 +25,10 @@ async function startup({ id, version, rootURI }) {
     "content/chat-cache.js",
     "content/api.js",
     "content/service.js",
+    "content/pi-acp-compat.js",
     "content/acp-client.js",
     "content/codex-chat.js",
+    "content/agents-chat.js",
     "content/item-tree-ui.js",
     "content/reader-ui.js",
     "content/codex-chat-ui.js",

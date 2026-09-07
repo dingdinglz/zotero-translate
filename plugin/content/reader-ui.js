@@ -12,6 +12,8 @@
     typeof require === "function" ? require("./pdf-screenshot.js") : null
   );
 
+  const Agents = modules.AgentProviders || (typeof require === "function" ? require("./agent-providers.js") : null);
+
   function createElement(doc, tag, className, text) {
     const element = doc.createElement(tag);
     if (className) element.className = className;
@@ -202,6 +204,8 @@
       screenshotBridge,
       canAddScreenshotToCodex,
       addScreenshotsToCodex,
+      getScreenshotAgent,
+      onScreenshotStateChanged,
       stylesheetText,
       log
     } = {}) {
@@ -216,6 +220,8 @@
       });
       this.canAddScreenshotToCodex = canAddScreenshotToCodex;
       this.addScreenshotsToCodex = addScreenshotsToCodex;
+      this.getScreenshotAgent = getScreenshotAgent;
+      this.onScreenshotStateChanged = onScreenshotStateChanged;
       this.stylesheetText = stylesheetText || "";
       this.states = new Map();
       this.stylesheets = new Set();
@@ -490,6 +496,7 @@
     }
 
     _updateScreenshotButton(state) {
+      this.onScreenshotStateChanged?.();
       const button = state?.screenshotButton;
       if (!button) return;
       const active = Boolean(
@@ -499,7 +506,7 @@
       button.disabled = !available;
       button.classList.toggle("active", active);
       button.setAttribute("aria-pressed", String(active));
-      const label = active ? "取消 PDF 截图" : "截取 PDF 原页区域到 Codex 草稿";
+      const label = active ? Agents.readerText("cancelScreenshot") : Agents.readerText("screenshot");
       button.title = state.screenshotProgress || (
         available
           ? label
@@ -798,11 +805,15 @@
       );
     }
 
+    isScreenshotPending(attachmentID) {
+      return [...this.states.values()].some((state) => Number(state.reader?.itemID) === Number(attachmentID) && Boolean(state.capturePromise));
+    }
+
     canStartScreenshotCapture({ tabID, attachmentID } = {}) {
       return this._screenshotAvailable(this._screenshotState({ tabID, attachmentID }));
     }
 
-    async startScreenshotCapture({ tabID, attachmentID, replaceScreenshotID = null } = {}) {
+    async startScreenshotCapture({ tabID, attachmentID, replaceScreenshotID = null, agentId = null } = {}) {
       const state = this._screenshotState({ tabID, attachmentID });
       if (!state || !this._screenshotAvailable(state)) {
         throw new PDFScreenshot.PDFScreenshotError(
@@ -819,6 +830,8 @@
       const normalizedAttachmentID = Number(attachmentID);
       state.screenshotProgress = "请在 PDF 页面中拖动框选";
       const operation = (async () => {
+        const targetAgent = agentId || await this.getScreenshotAgent?.(normalizedAttachmentID) || "codex";
+        if (state.destroyed || !this._screenshotAvailable(state)) throw new Error("Reader changed");
         const captures = await this.screenshotBridge.capture({
           doc: state.doc,
           onProgress: (message) => {
@@ -840,13 +853,14 @@
         if (typeof this.addScreenshotsToCodex !== "function") {
           throw new PDFScreenshot.PDFScreenshotError(
             "SCREENSHOT_DRAFT_UNAVAILABLE",
-            "Codex 截图草稿尚未初始化"
+            "Agents 截图草稿尚未初始化"
           );
         }
         return this.addScreenshotsToCodex({
           tabID,
           attachmentID: normalizedAttachmentID,
           captures,
+          ...(this.getScreenshotAgent || agentId ? { agentId: targetAgent } : {}),
           replaceScreenshotID
         });
       })();
@@ -1080,11 +1094,11 @@
           doc,
           "button",
           "spt-codex-selection-button",
-          "添加到 Codex"
+          Agents.readerText("add")
         );
         codexButton.type = "button";
-        codexButton.title = "把选中文本及其 PDF 位置加入当前论文的 Codex 草稿";
-        codexButton.setAttribute("aria-label", "把选中文本和位置添加到 Codex 对话草稿");
+        codexButton.title = Agents.readerText("selection");
+        codexButton.setAttribute("aria-label", Agents.readerText("selection"));
         codexStatus = createElement(doc, "div", "spt-selection-codex-status");
         codexStatus.setAttribute("role", "status");
         codexActions.append(codexButton, codexStatus);
@@ -1280,14 +1294,14 @@
           if (reader.itemID !== itemID) return;
           button.textContent = result?.added === false ? "已在草稿中" : "已添加";
           status.textContent = result?.revealed === false
-            ? "已加入草稿；请手动打开右侧 Codex 对话"
-            : "已加入右侧 Codex 对话草稿";
+            ? Agents.readerText("manual")
+            : Agents.readerText("added");
         }
         catch (error) {
           if (reader.itemID !== itemID) return;
           button.disabled = false;
-          button.textContent = "添加到 Codex";
-          status.textContent = error?.message || "无法添加到 Codex 对话";
+          button.textContent = Agents.readerText("add");
+          status.textContent = error?.message || Agents.readerText("failed");
           status.classList.add("spt-error");
         }
         finally {

@@ -1215,6 +1215,133 @@ test("sidebar renders per-PDF model controls before the first session is created
     ]
   });
   const nodes = descendants(configuration);
-  assert.equal(nodes.filter((node) => node.localName === "select").length, 2);
+  assert.equal(nodes.filter((node) => node.localName === "select").length, 3);
   assert.ok(nodes.some((node) => /设置页只提供默认值/u.test(node.textContent)));
+});
+
+test("sidebar full selected labels stay synchronized with native controls and failed selection rollback", async () => {
+  const doc = new Document(), configuration = doc.createElement("div");
+  const name = "openai-codex/GPT-6 Astra with a long model name";
+  let rejectChange;
+  const ui = new CodexChatUI({ service: { setSessionConfig: () => new Promise((_resolve, reject) => { rejectChange = reject; }) } });
+  const view = { body: { ownerDocument: doc }, attachmentID: 10, agentId: "pi", requestSerial: 1,
+    elements: { configuration, notices: new Node("div") } };
+  const state = { status: "ready", record: { session: { id: "pi-session", config: { model: "a", reasoningEffort: "max" } } },
+    configOptions: [
+      { id: "model", currentValue: "a", options: [{ value: "a", name }, { value: "b", name: "Another model" }] },
+      { id: "reasoning_effort", currentValue: "max", options: [{ value: "max", name: "Thinking: max" }] }
+    ] };
+  ui._renderConfig(view, state);
+  const controls = descendants(configuration).filter(node => node.localName === "select");
+  const labels = descendants(configuration).filter(node => node.className === "spt-codex-config-value");
+  assert.equal(labels[0].textContent, name);
+  assert.equal(labels[0].getAttribute("aria-hidden"), "true");
+  assert.equal(labels[1].textContent, "Thinking: max");
+  controls[0].value = "b";
+  const changed = controls[0].dispatchEvent({ type: "change" });
+  assert.equal(labels[0].textContent, "Another model");
+  assert.equal(controls[0].disabled, true);
+  rejectChange(new Error("Configuration rejected"));
+  await changed;
+  assert.equal(controls[0].value, "a");
+  assert.equal(controls[0].disabled, false);
+  assert.equal(labels[0].textContent, name);
+  assert.equal(controls[0].title, name);
+  state.status = "generating";
+  ui._renderConfig(view, state);
+  assert.ok(descendants(configuration).filter(node => node.localName === "select").every(node => node.disabled));
+});
+
+test("rapid Agent switches ignore late local history and subscription responses", async () => {
+  const original = global.Zotero;
+  global.Zotero = { Reader: { getByTabID: () => ({ itemID: 10 }) } };
+  let active = "codex", finishCodex;
+  const subscriptions = {};
+  const ui = new CodexChatUI({ service: {
+    getActiveAgent: async () => active,
+    forAgent: agentId => ({
+      subscribe(_id, callback) { subscriptions[agentId] = callback; return () => {}; },
+      load: async () => agentId === "codex" ? new Promise(resolve => { finishCodex = resolve; }) : { agentId, record: { draft: { screenshots: [] } } }
+    })
+  } });
+  const doc = new Document(), body = doc.createElement("section");
+  body.closestValues = { "item-details": { tabID: "tab-10" } };
+  ui._renderShell({ doc, body });
+  const updates = [];
+  ui._updateView = (_view, state) => updates.push(state.agentId);
+  ui._draftFor(10, true, "codex").question = "Codex draft";
+  ui._draftFor(10, true, "pi").question = "Pi draft";
+  try {
+    const old = ui._loadView({ body });
+    await new Promise(resolve => setImmediate(resolve));
+    active = "pi";
+    await ui._loadView({ body });
+    finishCodex({ agentId: "codex", record: { draft: { screenshots: [] } } });
+    await old;
+    subscriptions.codex({ agentId: "codex" });
+    assert.deepEqual(updates, ["pi"]);
+    assert.equal(ui.views.get(body).elements.input.value, "Pi draft");
+    assert.equal(ui._draftFor(10, false, "codex").question, "Codex draft");
+  } finally { global.Zotero = original; }
+});
+
+test("selection and screenshot drafts use their owning Agent even after a selection changes", async () => {
+  const original = global.Zotero;
+  global.Zotero = { Reader: { getByTabID: () => ({ itemID: 10 }) } };
+  let active = "pi";
+  const saves = [];
+  const ui = new CodexChatUI({ service: {
+    getActiveAgent: async () => active,
+    forAgent: agentId => ({ saveScreenshotDrafts: async () => { saves.push(agentId); return [makeScreenshot({ id: `shot-${agentId}` })]; } })
+  } });
+  ui._revealCodexPane = async () => false;
+  try {
+    await ui.addSelectionContext({ attachmentID: 10, tabID: "tab-10", selection: makeSelection({ text: "Pi context" }) });
+    active = "codex";
+    await ui.addScreenshotContexts({ attachmentID: 10, tabID: "tab-10", agentId: "pi", captures: [{}] });
+    await ui.addSelectionContext({ attachmentID: 10, tabID: "tab-10", selection: makeSelection({ text: "Codex context" }) });
+    assert.deepEqual(saves, ["pi"]);
+    assert.equal(ui._draftFor(10, false, "pi").screenshots.length, 1);
+    assert.equal(ui._draftFor(10, false, "pi").selections[0].text, "Pi context");
+    assert.equal(ui._draftFor(10, false, "codex").selections[0].text, "Codex context");
+    assert.equal(ui._draftFor(10, false, "codex").screenshots.length, 0);
+  } finally { global.Zotero = original; }
+});
+
+test("delayed screenshot removal updates only its original Agent draft", async () => {
+  let finish;
+  const ui = new CodexChatUI({ service: { forAgent: () => ({ deleteScreenshotDrafts: () => new Promise(resolve => { finish = resolve; }) }) } });
+  const doc = new Document(), body = doc.createElement("section");
+  ui._renderShell({ doc, body });
+  const view = ui.views.get(body);
+  view.attachmentID = 10; view.agentId = "codex";
+  ui._draftFor(10, true, "codex").screenshots = [makeScreenshot()];
+  ui._draftFor(10, true, "pi").screenshots = [makeScreenshot()];
+  ui._renderDraftContexts(view);
+  const remove = descendants(view.elements.draftContexts).find(node => node.textContent === "移除");
+  const pending = remove.listeners.get("click")();
+  view.agentId = "pi";
+  finish(); await pending;
+  assert.equal(ui._draftFor(10, false, "codex").screenshots.length, 0);
+  assert.equal(ui._draftFor(10, false, "pi").screenshots.length, 1);
+});
+
+test("Agent and Codex access selectors stay locked until cancellation finishes", () => {
+  const doc = new Document(), body = doc.createElement("section");
+  const ui = new CodexChatUI({ service: {} });
+  ui._renderShell({ doc, body });
+  const view = ui.views.get(body);
+  view.attachmentID = 10;
+  const state = { status: "ready", configOptions: [], record: { session: { config: {} } } };
+  for (const status of ["connecting", "generating", "waiting-approval", "cancelling", "ready"]) {
+    state.status = status; view.state = state;
+    ui._renderConfig(view, state);
+    ui._updateComposerAvailability(view);
+    const access = descendants(view.elements.configuration).find(node => node.localName === "select");
+    assert.equal(view.elements.agent.disabled, status !== "ready");
+    assert.equal(access.disabled, status !== "ready");
+  }
+  view.agentId = "pi";
+  ui._renderConfig(view, state);
+  assert.equal(descendants(view.elements.configuration).some(node => node.localName === "select"), false);
 });

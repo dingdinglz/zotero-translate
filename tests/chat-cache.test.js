@@ -165,3 +165,30 @@ test("corrupt ACP configuration catalog is backed up and ignored", async () => {
     path.startsWith("/chat/configuration-catalog.json.corrupt-")
   ));
 });
+
+test("legacy Codex records keep their original session and paths while Pi resets independently", async () => {
+  const { cache, io } = makeHarness();
+  const paper = makePaper();
+  const legacy = await cache.load(paper);
+  delete legacy.agentId;
+  legacy.session.id = "original-codex-session";
+  const screenshotDir = await cache.ensureScreenshotDirectory(paper, legacy);
+  io.setText(`${screenshotDir}/capture-shot-1.png`, "kept");
+  await io.writeJSON("/chat/records/1--ABCDEFGH.json", legacy);
+  assert.equal(validateChatRecord(legacy, paper), true);
+  assert.equal(validateChatRecord(legacy, paper, "pi"), false);
+  const loaded = await cache.load(paper);
+  assert.equal(loaded.session.id, legacy.session.id);
+  assert.equal(loaded.session.workspacePath, legacy.session.workspacePath);
+  loaded.session.config.mode = "agent-full-access";
+  await cache.save(paper, loaded);
+  assert.equal((await cache.load(paper)).session.config.mode, "agent-full-access");
+  const pi = new CodexChatCache({ rootPath: "/pi-chat", agentId: "pi", io, joinPath: (...parts) => parts.join("/"), randomID: () => "pi-local" });
+  const record = await pi.load(paper);
+  assert.equal(record.agentId, "pi");
+  assert.equal(record.session.config.mode, null);
+  assert.match(record.session.workspacePath, /^\/pi-chat\//u);
+  await pi.archiveAndReset(paper, "test");
+  assert.equal((await cache.load(paper)).session.id, legacy.session.id);
+  assert.equal(await io.exists(`${screenshotDir}/capture-shot-1.png`), true);
+});

@@ -1,6 +1,9 @@
 (function (scope) {
   "use strict";
 
+  const pathInputs = { node: "spt-acp-node-path", npx: "spt-acp-npx-path",
+    codex: "spt-codex-executable-path", pi: "spt-pi-executable-path" };
+
   const manager = {
     initialized: false,
     cleanups: [],
@@ -12,6 +15,7 @@
       this.win = win;
       this.doc = win.document;
       this.bridge = win.Zotero.SmartPaperTranslator;
+      win.MozXULElement?.insertFTLIfNeeded?.("smart-paper-translator-codex-chat.ftl");
 
       this._listen("spt-provider", "change", () => {
         this.updateProviderVisibility();
@@ -23,23 +27,61 @@
       this._listen("spt-reset-deepseek", "click", () => this.resetDeepSeek());
       this._listen("spt-reset-prompts", "click", () => this.resetPrompts());
       this._listen("spt-validate-prompts", "click", () => this.validatePrompts());
+      for (const agentId of ["codex", "pi"]) {
+        this._listen(`spt-agent-tab-${agentId}`, "click", () => this.selectAgentTab(agentId));
+        this._listen(`spt-agent-tab-${agentId}`, "keydown", (event) => {
+          const target = { ArrowLeft: agentId === "codex" ? "pi" : "codex",
+            ArrowRight: agentId === "codex" ? "pi" : "codex", Home: "codex", End: "pi" }[event.key];
+          if (!target) return;
+          event.preventDefault();
+          this.selectAgentTab(target, true);
+        });
+      }
+      this.selectAgentTab("codex");
+      this._listen("spt-acp-detect", "click", () => this.runSharedAction("detect"));
+      this._listen("spt-acp-inspect", "click", () => this.runSharedAction("inspect"));
+      for (const [kind, id] of Object.entries(pathInputs)) {
+        this._listen(id, "input", () => this._syncPathChoice(kind));
+        this._listen(id, "change", () => {
+          if (this.writingBoundValue) return;
+          this._commitPathInput(kind);
+        });
+        this._listen(`spt-path-options-${kind}`, "change", () => {
+          if (this.acpAction) return;
+          const path = this.doc.getElementById(`spt-path-options-${kind}`).value;
+          if (path && this.pathCandidates?.[kind]?.some(entry => entry.path === path)) {
+            this._setBoundValue(id, path);
+            this._commitPathInput(kind);
+          }
+          else this.doc.getElementById(id).focus();
+        });
+      }
       this._listen("spt-codex-auto-detect", "click", () => this.detectCodexPaths());
       this._listen("spt-codex-inspect", "click", () => this.inspectCodex());
       this._listen("spt-codex-prepare", "click", () => this.prepareCodex());
       this._listen("spt-codex-default-model", "change", () => {
         this._updateCodexReasoningOptions(true);
       });
-      for (const button of this.doc.querySelectorAll("[data-codex-browse]")) {
-        const handler = () => this.pickCodexPath(button.dataset.codexBrowse);
+      for (const button of this.doc.querySelectorAll("[data-acp-browse]")) {
+        const handler = () => this.pickCodexPath(button.dataset.acpBrowse);
         button.addEventListener("click", handler);
         this.cleanups.push(() => button.removeEventListener("click", handler));
       }
 
-      this.win.setTimeout(() => {
+      for (const action of ["detect", "inspect", "prepare", "browse"]) {
+        this._listen(`spt-pi-${action}`, "click", () => this.runPiAction(action));
+      }
+      this._listen("spt-pi-default-model", "change", () => this.renderPiReasoning(true));
+      const doc = this.doc;
+      const timer = this.win.setTimeout(() => {
+        if (this.doc !== doc) return;
         this.updateProviderVisibility();
         this.updateKeyStatus();
         this.renderCodexStatus(this.bridge.getCodexStatus());
+        this.renderPiStatus(this.bridge.getPiStatus());
+        this.refreshPathCandidates();
       }, 0);
+      this.cleanups.push(() => win.clearTimeout(timer));
     },
 
     _listen(id, event, handler) {
@@ -54,9 +96,14 @@
 
     _setBoundValue(id, value) {
       const element = this.doc.getElementById(id);
-      element.value = value;
-      element.dispatchEvent(new this.win.Event("input", { bubbles: true }));
-      element.dispatchEvent(new this.win.Event("change", { bubbles: true }));
+      if (element.value === value) return;
+      this.writingBoundValue = true;
+      try {
+        element.value = value;
+        element.dispatchEvent(new this.win.Event("input", { bubbles: true }));
+        element.dispatchEvent(new this.win.Event("change", { bubbles: true }));
+      }
+      finally { this.writingBoundValue = false; }
     },
 
     _status(id, message, kind = "normal") {
@@ -73,11 +120,16 @@
     },
 
     async updateKeyStatus() {
+      const doc = this.doc;
+      const request = this.keyStatusRequest = (this.keyStatusRequest || 0) + 1;
+      const current = () => this.doc === doc && this.keyStatusRequest === request;
       try {
         const hasKey = await this.bridge.hasAPIKey(this._provider());
+        if (!current()) return;
         this._status("spt-connection-status", hasKey ? "已安全保存 API Key" : "未保存 API Key", hasKey ? "success" : "normal");
       }
       catch (_error) {
+        if (!current()) return;
         this._status("spt-connection-status", "无法读取密钥状态", "error");
       }
     },
@@ -154,22 +206,156 @@
       }
     },
 
-    _codexPathsFromInputs() {
+    selectAgentTab(agentId, focus = false) {
+      if (agentId !== "codex" && agentId !== "pi") return;
+      for (const id of ["codex", "pi"]) {
+        const active = id === agentId;
+        const tab = this.doc.getElementById(`spt-agent-tab-${id}`);
+        tab.setAttribute("aria-selected", String(active));
+        tab.tabIndex = active ? 0 : -1;
+        this.doc.getElementById(`spt-agent-panel-${id}`).hidden = !active;
+        if (active && focus) tab.focus();
+      }
+    },
+
+    _syncPathChoice(kind) {
+      const select = this.doc?.getElementById(`spt-path-options-${kind}`);
+      if (!select) return;
+      const value = this.doc.getElementById(pathInputs[kind]).value.trim();
+      select.value = this.pathCandidates?.[kind]?.some(entry => entry.path === value) ? value : "";
+    },
+
+    _commitPathInput(kind) {
+      if (kind === "node" || kind === "npx") {
+        this._saveSharedPaths();
+        this.sharedVersions = {};
+        this.renderSharedStatus();
+        this.renderCodexStatus(this.bridge.getCodexStatus());
+        this.renderPiStatus(this.bridge.getPiStatus());
+      }
+      else if (kind === "codex") {
+        this._saveCodexPaths();
+        this.renderCodexStatus(this.bridge.getCodexStatus());
+      }
+      else {
+        this.bridge.setPiPaths({ piPath: this.doc.getElementById(pathInputs.pi).value.trim() });
+        this.renderPiStatus(this.bridge.getPiStatus());
+      }
+      this._syncPathChoice(kind);
+    },
+
+    async refreshPathCandidates() {
+      const doc = this.doc;
+      const request = this.pathDiscoveryRequest = (this.pathDiscoveryRequest || 0) + 1;
+      const current = () => this.doc === doc && request === this.pathDiscoveryRequest;
+      const status = doc.getElementById("spt-path-discovery-status");
+      this._localize(status, "paths-scanning", "正在查找本机安装…");
+      try {
+        const candidates = await this.bridge.listACPPathCandidates();
+        if (!current()) return;
+        this.pathCandidates = candidates;
+        let count = 0;
+        for (const kind of Object.keys(pathInputs)) {
+          const select = doc.getElementById(`spt-path-options-${kind}`);
+          const manual = doc.createElement("option");
+          manual.value = "";
+          this._localize(manual, "path-manual", "手动输入或浏览…");
+          select.replaceChildren(manual);
+          for (const entry of candidates[kind] || []) {
+            const option = doc.createElement("option");
+            option.value = entry.path;
+            this._localize(option, "path-option", `${entry.source === "nvm" ? `NVM ${entry.version}` : entry.source.toUpperCase()} · ${entry.path}`,
+              { source: entry.source, version: entry.version || "", path: entry.path });
+            select.append(option);
+            count += 1;
+          }
+          this._setControlDisabled(select, !(candidates[kind]?.length));
+          this._syncPathChoice(kind);
+        }
+        this._localize(status, count ? "paths-found" : "paths-empty",
+          count ? `已找到 ${count} 个路径候选；保留当前选择。` : "未找到安装，可手动输入路径或浏览文件。", { count });
+      }
+      catch (error) {
+        if (!current()) return;
+        this._localize(status, "paths-error", "无法读取候选路径，仍可手动输入或浏览文件。");
+      }
+    },
+
+    _sharedPathsFromInputs() {
       return {
-        nodePath: this.doc.getElementById("spt-codex-node-path").value.trim(),
-        npxCliPath: this.doc.getElementById("spt-codex-npx-path").value.trim(),
-        codexPath: this.doc.getElementById("spt-codex-executable-path").value.trim()
+        nodePath: this.doc.getElementById("spt-acp-node-path").value.trim(),
+        npxCliPath: this.doc.getElementById("spt-acp-npx-path").value.trim()
       };
     },
 
-    _saveCodexPaths() {
-      return this.bridge.setCodexPaths(this._codexPathsFromInputs());
+    _saveSharedPaths() {
+      return this.bridge.setACPPaths(this._sharedPathsFromInputs());
     },
 
-    _setCodexButtons(disabled) {
-      for (const id of ["spt-codex-auto-detect", "spt-codex-inspect", "spt-codex-prepare"]) {
-        this.doc.getElementById(id).disabled = disabled;
+    _saveCodexPaths() {
+      return this.bridge.setCodexPaths({ ...this._sharedPathsFromInputs(),
+        codexPath: this.doc.getElementById("spt-codex-executable-path").value.trim() });
+    },
+
+    // A shared path cannot change midway through either provider's inspection.
+    // Tabs only switch local panels and remain available while the controls are locked.
+    async _runACPAction(action, onError) {
+      if (this.acpAction || !this.doc) return;
+      const operation = { doc: this.doc, bridge: this.bridge, disabled: new Map() };
+      this.acpAction = operation;
+      const current = () => this.acpAction === operation && this.doc === operation.doc;
+      for (const control of this.doc.querySelectorAll(
+        '#spt-acp-settings input, #spt-acp-settings select, #spt-acp-settings button:not([role="tab"])'
+      )) {
+        operation.disabled.set(control, control.disabled);
+        control.disabled = true;
       }
+      try { await action(current, operation.bridge); }
+      catch (error) { if (current()) onError(error); }
+      finally {
+        if (current()) {
+          for (const [control, disabled] of operation.disabled) control.disabled = disabled;
+          this.acpAction = null;
+        }
+      }
+    },
+
+    _setControlDisabled(control, disabled) {
+      if (this.acpAction?.disabled.has(control)) this.acpAction.disabled.set(control, disabled);
+      control.disabled = this.acpAction ? true : disabled;
+    },
+
+    renderSharedStatus(result = {}) {
+      if (result.paths?.nodePath) this._setBoundValue("spt-acp-node-path", result.paths.nodePath);
+      if (result.paths?.npxCliPath) this._setBoundValue("spt-acp-npx-path", result.paths.npxCliPath);
+      if (result.versions) this.sharedVersions = result.versions;
+      for (const kind of ["node", "npx"]) {
+        const element = this.doc.getElementById(`spt-acp-${kind}-version`);
+        if (this.sharedVersions?.[kind]) {
+          element.removeAttribute("data-l10n-id");
+          element.textContent = this.sharedVersions[kind];
+        }
+        else this._localize(element, "runtime-unchecked", "尚未检测");
+      }
+      const status = this.doc.getElementById("spt-acp-status");
+      status.dataset.kind = result.healthy === false ? "error" : "normal";
+      if (result.lastError) {
+        status.removeAttribute("data-l10n-id");
+        status.textContent = result.lastError;
+      }
+      else this._localize(status, this.sharedVersions?.node ? "shared-checked" : "shared-needs-inspect",
+        this.sharedVersions?.node ? "已检测所选 Node / npx；Agent 要求在各自 Tab 中检测。" : "请选择或探测路径，然后检测 Node / npx。");
+    },
+
+    runSharedAction(action) {
+      return this._runACPAction(async (current, bridge) => {
+        if (action === "detect") return this.refreshPathCandidates();
+        this._saveSharedPaths();
+        this._localize(this.doc.getElementById("spt-acp-status"), "working", "正在检测…");
+        const result = await bridge.inspectACPRuntime();
+        if (!current()) return;
+        this.renderSharedStatus(result);
+      }, (error) => this.renderSharedStatus({ healthy: false, lastError: this._formatCodexError(error, "Node / npx error") }));
     },
 
     _codexStatus(name, value, kind = "normal") {
@@ -187,14 +373,17 @@
       }
     },
 
-    _populateCodexSelect(id, option, savedValue) {
+    _populateCodexSelect(id, option, savedValue, agent = "Codex") {
       const select = this.doc.getElementById(id);
       select.replaceChildren();
       const inherited = this.doc.createElement("option");
       inherited.value = "";
       inherited.textContent = option?.currentValue
-        ? `跟随 Codex 当前值（${option.currentValue}）`
+        ? `跟随 ${agent} 当前值（${option.currentValue}）`
         : "尚未读取选项，请准备或重新检测 ACP";
+      if (agent === "Pi") this._localize(inherited,
+        option?.currentValue ? "inherit" : "options-unavailable", inherited.textContent,
+        { agent, value: option?.currentValue || "" });
       select.append(inherited);
       const values = (option?.options || []).map((entry) =>
         typeof entry === "string" ? { value: entry, name: entry } : entry
@@ -212,7 +401,7 @@
         select.append(missing);
       }
       select.value = savedValue || "";
-      select.disabled = !values.length;
+      this._setControlDisabled(select, !values.length);
     },
 
     _catalogOptionsForModel(model) {
@@ -255,13 +444,10 @@
 
     renderCodexStatus(result = {}) {
       const paths = result.paths || {};
-      if (paths.nodePath) this._setBoundValue("spt-codex-node-path", paths.nodePath);
-      if (paths.npxCliPath) this._setBoundValue("spt-codex-npx-path", paths.npxCliPath);
+      this.renderSharedStatus(result);
       if (paths.codexPath) this._setBoundValue("spt-codex-executable-path", paths.codexPath);
       const versions = result.versions || {};
       const adapter = result.adapter || {};
-      this._codexStatus("node", versions.node || (paths.nodePath ? "路径已保存，尚未检测" : "未选择"));
-      this._codexStatus("npx", versions.npx || (paths.npxCliPath ? "路径已保存，尚未检测" : "未选择"));
       this._codexStatus("codex", versions.codex || (paths.codexPath ? "路径已保存，尚未检测" : "未选择"));
       this._codexStatus(
         "acp",
@@ -301,63 +487,117 @@
       );
     },
 
-    async detectCodexPaths() {
-      this._setCodexButtons(true);
-      this._codexStatus("health", "正在探测本地路径…");
-      try {
-        this.renderCodexStatus(await this.bridge.detectCodexPaths());
-      }
-      catch (error) {
-        this._codexStatus("error", this._formatCodexError(error, "自动探测失败"), "error");
-      }
-      finally {
-        this._setCodexButtons(false);
-      }
-    },
+    detectCodexPaths() { return this.runSharedAction("detect"); },
+    inspectCodex() { return this.runCodexAction("inspect"); },
+    prepareCodex() { return this.runCodexAction("prepare"); },
 
-    async inspectCodex() {
-      this._saveCodexPaths();
-      this._setCodexButtons(true);
-      this._codexStatus("health", "正在检测本地运行时和模型选项…");
-      try {
-        this.renderCodexStatus(await this.bridge.inspectCodexRuntime());
-      }
-      catch (error) {
-        this._codexStatus("error", this._formatCodexError(error, "检测失败"), "error");
-      }
-      finally {
-        this._setCodexButtons(false);
-      }
-    },
-
-    async prepareCodex() {
-      this._saveCodexPaths();
-      this._setCodexButtons(true);
-      this._codexStatus("health", "正在准备固定版本并读取模型选项；首次可能需要下载…");
-      try {
-        this.renderCodexStatus(await this.bridge.prepareCodexACP());
-      }
-      catch (error) {
-        this._codexStatus("error", this._formatCodexError(error, "ACP 准备失败"), "error");
-        this._codexStatus("health", "未就绪", "error");
-      }
-      finally {
-        this._setCodexButtons(false);
-      }
-    },
-
-    async pickCodexPath(kind) {
-      try {
-        const path = await this.bridge.pickCodexPath(kind);
-        if (!path) return;
-        const id = kind === "node" ? "spt-codex-node-path" :
-          kind === "npx" ? "spt-codex-npx-path" : "spt-codex-executable-path";
-        this._setBoundValue(id, path);
+    runCodexAction(action) {
+      return this._runACPAction(async (current, bridge) => {
         this._saveCodexPaths();
+        this._codexStatus("health", action === "prepare"
+          ? "正在准备固定版本并读取模型选项；首次可能需要下载…" : "正在检测…");
+        const method = { detect: "detectCodexPaths", inspect: "inspectCodexRuntime", prepare: "prepareCodexACP" }[action];
+        const result = await bridge[method]();
+        if (current()) this.renderCodexStatus(result);
+      }, (error) => {
+        this._codexStatus("error", this._formatCodexError(error, "Codex ACP error"), "error");
+        this._codexStatus("health", "未就绪", "error");
+      });
+    },
+
+    pickCodexPath(kind) {
+      return this._runACPAction(async (current, bridge) => {
+        const path = await bridge.pickCodexPath(kind, this.win);
+        if (!current() || !path) return;
+        const id = kind === "node" ? "spt-acp-node-path" :
+          kind === "npx" ? "spt-acp-npx-path" : "spt-codex-executable-path";
+        this._setBoundValue(id, path);
+        if (kind === "codex") {
+          this._saveCodexPaths();
+          this.renderCodexStatus(bridge.getCodexStatus());
+        }
+        else {
+          this._saveSharedPaths();
+          this.sharedVersions = {};
+          this.renderSharedStatus();
+          this.renderCodexStatus(bridge.getCodexStatus());
+          this.renderPiStatus(bridge.getPiStatus());
+        }
+      }, (error) => {
+        const message = this._formatCodexError(error, "Path selection failed");
+        if (kind === "codex") this._codexStatus("error", message, "error");
+        else this.renderSharedStatus({ healthy: false, lastError: message });
+      });
+    },
+
+    _localize(element, key, fallback, args = null) {
+      element.textContent = fallback;
+      element.setAttribute("data-l10n-id", `smart-paper-translator-agents-${key}`);
+      if (args) element.setAttribute("data-l10n-args", JSON.stringify(args));
+      else element.removeAttribute("data-l10n-args");
+    },
+
+    renderPiReasoning(resetInvalid = false) {
+      const model = this.doc.getElementById("spt-pi-default-model").value;
+      const options = this.piCatalog?.configOptionsByModel?.[model] || this.piCatalog?.configOptions || [];
+      const reasoning = options.find(entry => entry.id === "reasoning_effort");
+      const values = (reasoning?.options || []).map(entry => typeof entry === "string" ? entry : entry?.value);
+      let saved = this.doc.getElementById("spt-pi-default-reasoning").value;
+      if (resetInvalid && saved && !values.includes(saved)) {
+        saved = "";
+        this._setBoundValue("spt-pi-default-reasoning", "");
       }
-      catch (error) {
-        this._codexStatus("error", this._formatCodexError(error, "选择文件失败"), "error");
-      }
+      this._populateCodexSelect("spt-pi-default-reasoning", reasoning, saved, "Pi");
+    },
+
+    renderPiStatus(result = {}) {
+      if (!this.doc || !this.bridge) return;
+      this.renderSharedStatus(result);
+      if (result.paths?.piPath) this._setBoundValue("spt-pi-executable-path", result.paths.piPath);
+      const fallback = this.bridge.getPiStatus();
+      this.piCatalog = {
+        configOptions: result.configOptions || fallback.configOptions || [],
+        configOptionsByModel: result.configOptionsByModel || fallback.configOptionsByModel || {}
+      };
+      this._populateCodexSelect("spt-pi-default-model", this.piCatalog.configOptions.find((entry) => entry.id === "model"),
+        this.doc.getElementById("spt-pi-default-model").value, "Pi");
+      this.renderPiReasoning();
+      this.doc.getElementById("spt-pi-runtime").textContent = result.versions
+        ? result.versions.pi : result.paths?.piPath || "—";
+      this.doc.getElementById("spt-pi-adapter").textContent = result.adapter?.preparedVersion || "—";
+      this.doc.getElementById("spt-pi-catalog").textContent = result.updatedAt || fallback.updatedAt || "—";
+      this.doc.getElementById("spt-pi-status").dataset.kind = "normal";
+      const ready = Boolean(result.adapter?.preparedVersion && this.piCatalog.configOptions.length);
+      this._localize(this.doc.getElementById("spt-pi-status"), ready ? "ready" : "pi-needs-setup",
+        ready ? "已准备" : "请配置 Pi 并准备适配器");
+    },
+
+    runPiAction(action) {
+      if (action === "detect") return this.runSharedAction("detect");
+      return this._runACPAction(async (current, bridge) => {
+        this._saveSharedPaths();
+        bridge.setPiPaths({ piPath: this.doc.getElementById("spt-pi-executable-path").value });
+        this._localize(this.doc.getElementById("spt-pi-status"), "working", "正在检测…");
+        if (action === "browse") {
+          const path = await bridge.pickCodexPath("pi", this.win);
+          if (!current()) return;
+          if (path) {
+            this._setBoundValue("spt-pi-executable-path", path);
+            bridge.setPiPaths({ piPath: path });
+          }
+          this.renderPiStatus(bridge.getPiStatus());
+        }
+        else {
+          const method = { detect: "detectPiPaths", inspect: "inspectPiRuntime", prepare: "preparePiACP" }[action];
+          const result = await bridge[method]();
+          if (current()) this.renderPiStatus(result);
+        }
+      }, (error) => {
+        const status = this.doc.getElementById("spt-pi-status");
+        status.removeAttribute("data-l10n-id");
+        status.dataset.kind = "error";
+        status.textContent = this._formatCodexError(error, "Pi ACP error");
+      });
     },
 
     destroy() {
@@ -367,6 +607,10 @@
       this.doc = null;
       this.bridge = null;
       this.codexCatalog = { configOptions: [], configOptionsByModel: {}, updatedAt: null };
+      this.piCatalog = null;
+      this.sharedVersions = {};
+      this.acpAction = null;
+      this.pathCandidates = null;
     }
   };
 

@@ -18,7 +18,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.28"
+    assert manifest["version"] == "0.1.33"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -187,11 +187,32 @@ def main() -> None:
             assert "apikey" not in key.lower()
             assert "secret" not in key.lower()
 
+    providers = (PLUGIN / "content/agent-providers.js").read_text(encoding="utf-8")
+    assert 'packageSpec: "pi-acp@0.0.33"' in providers
+    assert 'reasoningID: "thought_level"' in providers
+    assert 'PI_OFFLINE: "1"' in acp_client
+    assert 'PI_ACP_PI_COMMAND: paths.piPath' in acp_client
+    assert 'await this.acp.stop()' in codex_chat
+    assert 'permissionVerified' in codex_chat
+    assert '"content/agent-providers.js"' in bootstrap
+    assert '"content/agents-chat.js"' in bootstrap
+    ElementTree.parse(PLUGIN / "content/agents.svg")
+    locales = [
+        (PLUGIN / "locale" / locale / "smart-paper-translator-codex-chat.ftl").read_text(encoding="utf-8")
+        for locale in ("en-US", "zh-CN")
+    ]
+    key_sets = [set(re.findall(r"^(smart-paper-translator-agents-[\w-]+)\s*=", ftl, re.M)) for ftl in locales]
+    assert key_sets[0] == key_sets[1]
+    assert len(key_sets[0]) >= 25
+
     required = {
         "manifest.json",
         "bootstrap.js",
         "prefs.js",
         "content/main.js",
+        "content/agent-providers.js",
+        "content/agents-chat.js",
+        "content/agents.svg",
         "content/preferences.xhtml",
         "content/item-tree-ui.js",
         "content/item-tree.css",

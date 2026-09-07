@@ -872,9 +872,13 @@
     return message;
   }
 
+  const Agents = modules.AgentProviders || (typeof require === "function" ? require("./agent-providers.js") : null);
+  const PiCompat = modules.PiACPCompat || (typeof require === "function" ? require("./pi-acp-compat.js") : null);
+
   class CodexChatService {
     constructor({
       paperRepository,
+      agentId = "codex",
       cache,
       acpClient,
       getPreference,
@@ -883,6 +887,7 @@
       randomID,
       log
     } = {}) {
+      this.provider = Agents.getProvider(agentId);
       this.paperRepository = paperRepository;
       this.cache = cache;
       this.acp = acpClient;
@@ -892,6 +897,7 @@
       this.randomID = randomID || (() => `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`);
       this.log = log || (() => {});
       this.states = new Map();
+      this.loadingStates = new Map();
       this.sessionStates = new Map();
       this.listeners = new Map();
       this.configurationCatalog = emptyConfigurationCatalog();
@@ -909,16 +915,18 @@
     }
 
     _runtimeFingerprint() {
-      return JSON.stringify([
+      const paths = [
         Constants.PREFS.codexNodePath,
         Constants.PREFS.codexNpxCliPath,
-        Constants.PREFS.codexExecutablePath
-      ].map((preference) => String(this.getPreference(preference) || "").trim()));
+        this.provider.executablePref
+      ].map((preference) => String(this.getPreference(preference) || "").trim());
+      if (this.provider.id === "pi") paths.push(PiCompat.REVISION);
+      return JSON.stringify(paths);
     }
 
     _catalogIsCurrent() {
       return Boolean(
-        this.configurationCatalog.adapterVersion === Constants.ACP_PACKAGE_VERSION &&
+        this.configurationCatalog.adapterVersion === this.provider.version &&
         this.configurationCatalog.runtimeFingerprint === this._runtimeFingerprint() &&
         this.configurationCatalog.configOptions.length
       );
@@ -955,14 +963,14 @@
       const base = this.configurationCatalog.configOptions;
       const baseModel = getConfigOption(base, "model");
       const selectedModel = state.record.session.config.model ||
-        String(this.getPreference(Constants.PREFS.codexDefaultModel) || "").trim() ||
+        String(this.getPreference(this.provider.modelPref) || "").trim() ||
         baseModel?.currentValue || null;
       const options = this._catalogOptionsForModel(selectedModel);
       const model = getConfigOption(options, "model");
       if (model && selectedModel) model.currentValue = selectedModel;
       const reasoning = getConfigOption(options, "reasoning_effort");
       const selectedReasoning = state.record.session.config.reasoningEffort ||
-        String(this.getPreference(Constants.PREFS.codexDefaultReasoningEffort) || "").trim() ||
+        String(this.getPreference(this.provider.reasoningPref) || "").trim() ||
         reasoning?.currentValue || null;
       if (reasoning && selectedReasoning) reasoning.currentValue = selectedReasoning;
       return options;
@@ -975,37 +983,44 @@
       if (reasoning) state.record.session.config.reasoningEffort = reasoning;
     }
 
-    async _enforceAgentModeForSession(sessionID, configOptions, modes) {
-      let options = configOptions || [];
-      if (modes) {
-        const available = (modes.availableModes || modes.modes || []).map((entry) =>
-          typeof entry === "string" ? entry : entry?.id
-        ).filter(Boolean);
-        if (available.length && !available.includes(Constants.ACP_MODE)) {
-          throw new CodexChatError("MODE_UNAVAILABLE", "codex-acp 不提供受审批的 agent 模式");
-        }
-        const current = modes.currentModeId || modes.currentMode || null;
-        if (current !== Constants.ACP_MODE) {
-          await this.acp.request("session/set_mode", {
-            sessionId: sessionID,
-            modeId: Constants.ACP_MODE
-          });
-          modes.currentModeId = Constants.ACP_MODE;
-        }
-        return options;
-      }
-      this._verifyMode(options);
+    async _requestConfig(params) {
+      const result = await this.acp.request("session/set_config_option", {
+        ...params,
+        configId: params.configId === "reasoning_effort" ? this.provider.reasoningID : params.configId
+      });
+      return result && {
+        ...result,
+        ...(Array.isArray(result.configOptions) ? {
+          configOptions: Agents.normalizeConfigOptions(result.configOptions, this.provider.id)
+        } : {})
+      };
+    }
+
+    async _enforceAgentModeForSession(sessionID, configOptions, modes, requested = this.provider.defaultMode) {
+      let options = Agents.normalizeConfigOptions(configOptions, this.provider.id);
+      if (this.provider.id === "pi") return options;
+      if (!Agents.validMode(requested, "codex")) throw new CodexChatError("MODE_UNAVAILABLE", "Unknown Codex access mode");
       const mode = getConfigOption(options, "mode");
-      if (!mode) {
-        throw new CodexChatError("MODE_UNAVAILABLE", "codex-acp 未提供可验证的 agent 模式");
-      }
-      if (mode.currentValue !== Constants.ACP_MODE) {
-        const result = await this.acp.request("session/set_config_option", {
-          sessionId: sessionID,
-          configId: "mode",
-          value: Constants.ACP_MODE
-        });
-        if (Array.isArray(result?.configOptions)) options = result.configOptions;
+      const available = modes
+        ? (modes.availableModes || modes.modes || []).map((entry) => typeof entry === "string" ? entry : entry?.id).filter(Boolean)
+        : configValues(mode);
+      if (!available.includes(requested)) throw new CodexChatError("MODE_UNAVAILABLE", "Codex does not advertise the selected access mode");
+      const current = modes ? modes.currentModeId || modes.currentMode : mode?.currentValue;
+      if (current !== requested) {
+        if (modes) {
+          const changed = await this.acp.request("session/set_mode", { sessionId: sessionID, modeId: requested });
+          const reported = changed?.modes?.currentModeId || changed?.currentModeId;
+          if (reported && reported !== requested) throw new CodexChatError("CONFIG_APPLY_FAILED", "Codex did not apply the selected access mode");
+          modes.currentModeId = requested;
+          if (mode) mode.currentValue = requested;
+        }
+        else {
+          const changed = await this._requestConfig({ sessionId: sessionID, configId: "mode", value: requested });
+          if (getConfigOption(changed?.configOptions, "mode")?.currentValue !== requested) {
+            throw new CodexChatError("CONFIG_APPLY_FAILED", "Codex did not confirm the selected access mode");
+          }
+          options = changed.configOptions;
+        }
       }
       return options;
     }
@@ -1062,7 +1077,7 @@
       return clone({
         schemaVersion: 1,
         pluginVersion: Constants.VERSION,
-        adapterVersion: Constants.ACP_PACKAGE_VERSION,
+        adapterVersion: this.provider.version,
         capturedAt: this.now(),
         scope: "current-turn-tool-and-thought-events",
         privacy: "memory-only; secrets and user-home segments redacted; strings and collections bounded",
@@ -1140,6 +1155,7 @@
         }
       }
       return clone({
+        agentId: this.provider.id,
         attachmentID: state.paper.attachmentID,
         paper: state.paper,
         record,
@@ -1160,6 +1176,15 @@
       if (this.stopped) throw new CodexChatError("CHAT_STOPPED", "Codex 对话服务已停止");
       await this.initialize();
       const context = await this.paperRepository.get(attachmentID);
+      const storageKey = context.paper.storageKey;
+      if (this.loadingStates.has(storageKey)) return this.loadingStates.get(storageKey);
+      const loading = this._loadState(context);
+      this.loadingStates.set(storageKey, loading);
+      try { return await loading; }
+      finally { this.loadingStates.delete(storageKey); }
+    }
+
+    async _loadState(context) {
       const storageKey = context.paper.storageKey;
       let state = this.states.get(storageKey);
       if (!state) {
@@ -1190,6 +1215,7 @@
           replay: null,
           remoteReady: false,
           modeInfo: null,
+          permissionVerified: false,
           saveTimer: null,
           imageCaptures: new Map(),
           activityText: null,
@@ -1235,11 +1261,11 @@
         if (state.record.session.id && isMissingSessionError(error)) {
           state.historyReadOnly = true;
           state.status = "thread-missing";
-          state.error = "Codex thread 已不存在；本地历史仅供查看。请确认新建会话。";
+          state.error = `${this.provider.label} 会话已不存在；本地历史仅供查看。请确认新建会话。`;
         }
         else {
           state.status = "error";
-          state.error = error.message || "无法恢复 Codex 会话";
+          state.error = error.message || "无法恢复 Agent 会话";
         }
       }
       await this._refreshSourceState(state);
@@ -1270,13 +1296,23 @@
           cwd: state.record.session.workspacePath,
           mcpServers: []
         });
-        state.configOptions = result?.configOptions || [];
+        state.configOptions = Agents.normalizeConfigOptions(result?.configOptions, this.provider.id);
         state.modeInfo = result?.modes || null;
         await this._enforceAgentMode(state);
-        this._verifyStoredConfiguration(state);
+        for (const [configId, key] of [["model", "model"], ["reasoning_effort", "reasoningEffort"]]) {
+          const requested = state.record.session.config[key];
+          const option = getConfigOption(state.configOptions, configId);
+          this._verifyStoredConfiguration(state, configId);
+          if (!requested || !option || option.currentValue === requested) continue;
+          const changed = await this._requestConfig({ sessionId: state.record.session.id, configId, value: requested });
+          if (getConfigOption(changed?.configOptions, configId)?.currentValue !== requested) {
+            throw new CodexChatError("CONFIG_APPLY_FAILED", "Agent 未确认已保存的会话配置");
+          }
+          state.configOptions = changed.configOptions;
+        }
         this._syncRecordConfiguration(state);
         const replay = state.replay || [];
-        normalizeTranscriptUserMessages(replay);
+        this._normalizeReplay(state, replay);
         for (const entry of replay) {
           if (entry.status === "streaming") entry.status = "complete";
           const persistedImage = entry.kind === "tool"
@@ -1324,7 +1360,7 @@
         state.remoteReady = false;
         if (isMissingSessionError(error)) {
           state.historyReadOnly = true;
-          state.error = "Codex thread 已不存在；本地历史仅供查看。请确认新建会话。";
+          state.error = `${this.provider.label} 会话已不存在；本地历史仅供查看。请确认新建会话。`;
         }
         throw error;
       }
@@ -1333,33 +1369,61 @@
       }
     }
 
-    _verifyMode(options) {
-      const mode = getConfigOption(options, "mode");
-      if (!mode) return;
-      const values = configValues(mode);
-      if (values.length && !values.includes(Constants.ACP_MODE)) {
-        throw new CodexChatError("MODE_UNAVAILABLE", "codex-acp 不提供受审批的 agent 模式");
-      }
-      if (mode.currentValue === "agent-full-access") {
-        throw new CodexChatError("MODE_UNSAFE", "拒绝加载 agent-full-access 会话");
-      }
-    }
-
-    async _enforceAgentMode(state) {
+    async _enforceAgentMode(state, requested = state.record.session.config.mode) {
+      state.permissionVerified = false;
       state.configOptions = await this._enforceAgentModeForSession(
-        state.record.session.id,
-        state.configOptions,
-        state.modeInfo
+        state.record.session.id, state.configOptions, state.modeInfo, requested
       );
-      state.record.session.config.mode = Constants.ACP_MODE;
+      state.permissionVerified = true;
     }
 
-    _verifyStoredConfiguration(state) {
+    async setAccessMode(attachmentID, requested) {
+      const state = await this._stateForAttachment(attachmentID);
+      if (state.turn || ["connecting", "cancelling", "waiting-approval"].includes(state.status)) {
+        throw new CodexChatError("TURN_ACTIVE", "Wait for the current operation before changing access mode");
+      }
+      if (this.provider.id !== "codex" || !Agents.validMode(requested, "codex")) {
+        throw new CodexChatError("CONFIG_FORBIDDEN", "This Agent has no selectable access mode");
+      }
+      const previous = state.record.session.config.mode;
+      if (!state.record.session.id) {
+        // Before session/new this is only a local intent; no process permissions change.
+        state.record.session.config.mode = requested;
+        try { await this.cache.save(state.paper, state.record); }
+        catch (error) { state.record.session.config.mode = previous; throw error; }
+        this._emit(state);
+        return this._snapshot(state);
+      }
+      state.status = "connecting";
+      state.error = null;
+      this._emit(state);
+      try {
+        await this.acp.start();
+        if (!state.remoteReady) await this._loadRemoteSession(state);
+        await this._enforceAgentMode(state, requested);
+        state.record.session.config.mode = requested;
+        await this.cache.save(state.paper, state.record);
+        state.status = "ready";
+      }
+      catch (error) {
+        state.record.session.config.mode = previous;
+        state.permissionVerified = false;
+        state.remoteReady = false;
+        state.status = "error";
+        state.error = error.message;
+        throw error;
+      }
+      finally { this._emit(state); }
+      return this._snapshot(state);
+    }
+
+    _verifyStoredConfiguration(state, configId = null) {
       const checks = [
         ["model", state.record.session.config.model, "保存的模型已不可用，请新建会话并重新选择"],
         ["reasoning_effort", state.record.session.config.reasoningEffort, "保存的推理强度已不可用，请重新选择"]
       ];
       for (const [id, selected, message] of checks) {
+        if (configId && configId !== id) continue;
         if (!selected) continue;
         const option = getConfigOption(state.configOptions, id);
         const values = configValues(option);
@@ -1382,6 +1446,7 @@
     }
 
     async _refreshConfigurationCatalog() {
+      if (this.provider.id === "pi") return this._refreshPiConfigurationCatalog();
       await this.acp.start();
       await this.acp.refreshAuthenticationStatus();
       const cwd = await this.cache.ensureConfigurationWorkspace();
@@ -1414,7 +1479,7 @@
         const configOptionsByModel = Object.create(null);
         for (const model of models) {
           if (getConfigOption(currentOptions, "model")?.currentValue !== model) {
-            const changed = await this.acp.request("session/set_config_option", {
+            const changed = await this._requestConfig({
               sessionId: probeSessionID,
               configId: "model",
               value: model
@@ -1437,7 +1502,7 @@
         }
         catalog = {
           schemaVersion: Constants.ACP_SCHEMA_VERSION,
-          adapterVersion: Constants.ACP_PACKAGE_VERSION,
+          adapterVersion: this.provider.version,
           runtimeFingerprint: this._runtimeFingerprint(),
           updatedAt: this.now(),
           configOptions: catalogConfigOptions(created.configOptions || currentOptions),
@@ -1471,6 +1536,55 @@
       }
       const snapshot = this.getConfigurationCatalog();
       return cleanupWarning ? { ...snapshot, cleanupWarning } : snapshot;
+    }
+
+    async _refreshPiConfigurationCatalog() {
+      try {
+        await this.acp.start();
+        const cwd = await this.cache.ensureConfigurationWorkspace();
+        const created = await this.acp.request("session/new", { cwd, mcpServers: [] });
+        if (!created?.sessionId) throw new CodexChatError("SESSION_NEW_FAILED", "Pi returned no session ID");
+        const options = catalogConfigOptions(Agents.normalizeConfigOptions(created.configOptions, "pi"));
+        const models = configValues(getConfigOption(options, "model"));
+        if (!models.length) throw new CodexChatError("ACP_NOT_AUTHENTICATED", "Configure a model provider in the local pi CLI, then detect again");
+        // Thinking levels depend on the model. Query each in this dedicated,
+        // prompt-free probe session instead of cloning the first model's list.
+        const configOptionsByModel = Object.create(null);
+        let currentOptions = options;
+        for (const model of models) {
+          if (getConfigOption(currentOptions, "model")?.currentValue !== model) {
+            const changed = await this._requestConfig({ sessionId: created.sessionId, configId: "model", value: model });
+            currentOptions = changed?.configOptions;
+          }
+          if (getConfigOption(currentOptions, "model")?.currentValue !== model ||
+              !configValues(getConfigOption(currentOptions, "reasoning_effort")).length) {
+            throw new CodexChatError("CONFIG_CATALOG_MODEL_FAILED", "Pi did not return this model's thinking levels");
+          }
+          configOptionsByModel[model] = catalogConfigOptions(currentOptions);
+        }
+        this.configurationCatalog = await this.cache.saveConfigurationCatalog({
+          schemaVersion: Constants.ACP_SCHEMA_VERSION, adapterVersion: this.provider.version,
+          runtimeFingerprint: this._runtimeFingerprint(), updatedAt: this.now(),
+          configOptions: options, configOptionsByModel
+        });
+        return this.getConfigurationCatalog();
+      }
+      finally {
+        // Pi has no session/close. Disconnect the dedicated probe without deleting paper history.
+        await this.acp.stop();
+      }
+    }
+
+    _normalizeReplay(state, replay) {
+      if (this.provider.id === "pi" && state.record.session.source?.snapshotPath) {
+        const suffix = `\n[Context] ${this.fileSystem.toFileURI(state.record.session.source.snapshotPath)}`;
+        for (const entry of replay) {
+          if (entry.role === "user" && entry.text?.startsWith(FIRST_PROMPT_SAFETY_PREFIX) && entry.text.endsWith(suffix)) {
+            entry.text = entry.text.slice(0, -suffix.length);
+          }
+        }
+      }
+      normalizeTranscriptUserMessages(replay);
     }
 
     async _sourceInfo(attachmentID) {
@@ -1536,9 +1650,9 @@
         cwd: state.record.session.workspacePath,
         mcpServers: []
       });
-      if (!result?.sessionId) throw new CodexChatError("SESSION_NEW_FAILED", "codex-acp 未返回 session ID");
+      if (!result?.sessionId) throw new CodexChatError("SESSION_NEW_FAILED", `${this.provider.command} 未返回 session ID`);
       state.record.session.id = result.sessionId;
-      state.configOptions = result.configOptions || [];
+      state.configOptions = Agents.normalizeConfigOptions(result.configOptions, this.provider.id);
       state.modeInfo = result.modes || null;
       this.sessionStates.set(result.sessionId, state);
       state.record.sync.state = "session-created";
@@ -1546,10 +1660,10 @@
       await this._enforceAgentMode(state);
 
       const selections = [
-        ["model", Constants.PREFS.codexDefaultModel, "model", "默认模型"],
+        ["model", this.provider.modelPref, "model", "默认模型"],
         [
           "reasoning_effort",
-          Constants.PREFS.codexDefaultReasoningEffort,
+          this.provider.reasoningPref,
           "reasoningEffort",
           "默认推理强度"
         ]
@@ -1570,7 +1684,7 @@
           );
         }
         if (requested && option.currentValue !== requested) {
-          const changed = await this.acp.request("session/set_config_option", {
+          const changed = await this._requestConfig({
             sessionId: result.sessionId,
             configId: configID,
             value: requested
@@ -1706,7 +1820,7 @@
       if (image !== true) {
         throw new CodexChatError(
           "IMAGE_PROMPT_UNSUPPORTED",
-          "当前 Codex 适配器不支持图片输入；截图草稿已保留"
+          `当前 ${this.provider.label} 适配器不支持图片输入；截图草稿已保留`
         );
       }
     }
@@ -1831,9 +1945,15 @@
         );
       }
 
+      if (state.turn || ["connecting", "cancelling", "waiting-approval"].includes(state.status)) {
+        throw new CodexChatError("TURN_ACTIVE", "请等待当前操作结束");
+      }
+
       state.activityText = null;
       this._resetDiagnosticLog(state, this.developerModeEnabled ? this.now() : null);
-      const turn = { userEntryID: null, firstPrompt: false, cancelled: false };
+      let finishTurn;
+      const settled = new Promise(resolve => { finishTurn = resolve; });
+      const turn = { userEntryID: null, firstPrompt: false, cancelled: false, settled };
       state.turn = turn;
       state.status = "connecting";
       state.error = null;
@@ -1842,6 +1962,7 @@
       let syncBeforePrompt = null;
       try {
         await this.acp.start();
+        if (turn.cancelled || this.stopped) throw new CodexChatError("TURN_CANCELLED", "本轮已停止");
         let imageBlocks = [];
         if (screenshotContexts.length) {
           this._assertImagePromptCapability();
@@ -1851,6 +1972,7 @@
         if (!state.record.session.id) await this._createSession(state);
         else if (!state.remoteReady) await this._loadRemoteSession(state);
         this._verifyStoredConfiguration(state);
+        await this._enforceAgentMode(state);
         if (turn.cancelled) throw new CodexChatError("TURN_CANCELLED", "本轮已停止");
 
         const firstPrompt = !state.record.session.pdfAttached;
@@ -1924,35 +2046,41 @@
           (state.historyReadOnly ? "thread-missing" : "error");
         state.error = turn.cancelled ? null :
           (state.historyReadOnly
-            ? "Codex thread 已不存在；本地历史仅供查看。请确认新建会话。"
+            ? `${this.provider.label} 会话已不存在；本地历史仅供查看。请确认新建会话。`
             : (error.message || "Codex 对话失败"));
         throw error;
       }
       finally {
-        state.turn = null;
-        state.activityText = null;
-        this._clearScheduledSave(state);
-        await this._settleToolImageCaptures(state);
-        await this.cache.save(state.paper, state.record);
-        this._emit(state);
+        try {
+          state.activityText = null;
+          this._clearScheduledSave(state);
+          await this._settleToolImageCaptures(state);
+          await this.cache.save(state.paper, state.record);
+        }
+        finally {
+          state.turn = null;
+          finishTurn();
+          this._emit(state);
+        }
       }
     }
 
     async cancel(attachmentID) {
       const state = await this._stateForAttachment(attachmentID);
-      if (!state.turn || !state.record.session.id) return this._snapshot(state);
+      if (!state.turn) return this._snapshot(state);
       state.turn.cancelled = true;
       state.status = "cancelling";
       for (const interaction of state.interactions.values()) interaction.cancel();
       state.interactions.clear();
       this._emit(state);
-      await this.acp.cancelSession(state.record.session.id);
+      if (state.record.session.id) await this.acp.cancelSession(state.record.session.id);
       return this._snapshot(state);
     }
 
     async setSessionConfig(attachmentID, configID, value) {
       const state = await this._stateForAttachment(attachmentID);
-      if (state.turn) throw new CodexChatError("TURN_ACTIVE", "生成期间不能更改会话配置");
+      if (state.turn || ["connecting", "cancelling", "waiting-approval"].includes(state.status)) throw new CodexChatError("TURN_ACTIVE", "生成期间不能更改会话配置");
+      if (configID === "mode") return this.setAccessMode(attachmentID, value);
       if (!["model", "reasoning_effort"].includes(configID)) {
         throw new CodexChatError("CONFIG_FORBIDDEN", "不允许修改该 ACP 配置项");
       }
@@ -1988,7 +2116,7 @@
         if (!liveOption || (liveValues.length && !liveValues.includes(requested))) {
           throw new CodexChatError("CONFIG_UNAVAILABLE", "所选配置已不可用");
         }
-        const result = await this.acp.request("session/set_config_option", {
+        const result = await this._requestConfig({
           sessionId: state.record.session.id,
           configId: configID,
           value: requested
@@ -1996,7 +2124,7 @@
         if (Array.isArray(result?.configOptions)) state.configOptions = result.configOptions;
         const applied = getConfigOption(state.configOptions, configID)?.currentValue;
         if (applied && applied !== requested) {
-          throw new CodexChatError("CONFIG_APPLY_FAILED", "Codex 未应用所选配置");
+          throw new CodexChatError("CONFIG_APPLY_FAILED", "Agent 未应用所选配置");
         }
         this._syncRecordConfiguration(state);
         state.status = "ready";
@@ -2094,9 +2222,10 @@
       if (event.type === "exit" || event.type === "stopped") {
         for (const state of this.states.values()) {
           state.remoteReady = false;
+          state.permissionVerified = false;
           if (state.turn) {
             state.status = "error";
-            state.error = event.error?.message || "codex-acp 进程异常退出";
+            state.error = event.error?.message || `${this.provider.command} 进程异常退出`;
             state.activityText = null;
             this._emit(state);
           }
@@ -2137,7 +2266,7 @@
     }
 
     _scheduleToolImageCapture(state, entry) {
-      if (!isCompletedViewImageTool(entry) || entry.imageSnapshot || state.replay) return;
+      if (this.provider.id !== "codex" || !isCompletedViewImageTool(entry) || entry.imageSnapshot || state.replay) return;
       const localID = state.record.session.localID;
       const entryID = entry.id;
       const captureKey = `${localID}:${entry.remoteID || entryID}`;
@@ -2356,6 +2485,14 @@
           rawInput: clone(update.rawInput || entry.rawInput || null),
           rawOutput: clone(update.rawOutput || entry.rawOutput || null)
         });
+        if (this.provider.id === "pi") {
+          const output = update._meta?.terminal_output;
+          if (output?.terminal_id === id && typeof output.data === "string") {
+            entry.rawOutput = (String(entry.rawOutput || "") + output.data).slice(-65536);
+          }
+          const exit = update._meta?.terminal_exit;
+          if (exit?.terminal_id === id && Number.isFinite(exit.exit_code)) entry.exitCode = exit.exit_code;
+        }
         if (!state.replay) this._scheduleToolImageCapture(state, entry);
       }
       else if (kind === "plan") {
@@ -2364,8 +2501,14 @@
         });
       }
       else if (kind === "config_option_update" || kind === "config_options_update") {
-        state.configOptions = update.configOptions || state.configOptions;
-        this._syncRecordConfiguration(state);
+        state.configOptions = update.configOptions ? Agents.normalizeConfigOptions(update.configOptions, this.provider.id) : state.configOptions;
+        // Configuration RPCs and replay can emit intermediate model defaults.
+        // Keep the user's pending/saved selection until the reply is confirmed.
+        if (state.status !== "connecting" && !state.replay) this._syncRecordConfiguration(state);
+      }
+      else if (kind === "current_mode_update" && this.provider.id === "codex") {
+        if (state.modeInfo) state.modeInfo.currentModeId = update.currentModeId;
+        if (update.currentModeId !== state.record.session.config.mode) state.permissionVerified = false;
       }
       else if (kind === "usage_update") {
         state.usage = clone(update);
@@ -2472,14 +2615,29 @@
       else interaction.resolve({ action: "cancel" });
     }
 
+    async releaseIdle() {
+      if (Agents.busy(this)) return false;
+      await this.acp.stop();
+      for (const state of this.states.values()) {
+        state.remoteReady = false;
+        state.permissionVerified = false;
+      }
+      return true;
+    }
+
     async shutdown() {
       this.stopped = true;
+      await Promise.allSettled(this.loadingStates.values());
+      const turns = [...this.states.values()].map(state => state.turn?.settled).filter(Boolean);
       for (const state of this.states.values()) {
+        if (state.turn) state.turn.cancelled = true;
         this._clearScheduledSave(state);
         this._resetDiagnosticLog(state);
         for (const interaction of state.interactions.values()) interaction.cancel();
         state.interactions.clear();
       }
+      await this.acp.shutdown();
+      await Promise.allSettled(turns);
       await Promise.all([...this.states.values()].map((state) =>
         this._settleToolImageCaptures(state)
       ));
@@ -2490,7 +2648,6 @@
           this.log("Final chat mirror save failed", error);
         })
       ));
-      await this.acp.shutdown();
     }
   }
 

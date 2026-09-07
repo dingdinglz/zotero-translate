@@ -99,7 +99,7 @@ function loadPreferencesManager() {
   return { manager, elements };
 }
 
-test("Codex path detection bridge reads and persists global preferences", async () => {
+test("Codex path detection leaves the shared runtime preferences unchanged", async () => {
   const { plugin, context, values, preferenceCalls, detectCalls, detected } = loadMainPlugin();
   plugin.acpClient = { getStatus: () => ({ preparedVersion: "" }) };
   plugin.codexChatService = { getConfigurationCatalog: () => [] };
@@ -114,9 +114,10 @@ test("Codex path detection bridge reads and persists global preferences", async 
     npxCliPath: "/configured/npx-cli.js",
     codexPath: "/configured/codex"
   }]);
-  assert.deepEqual(result.paths, detected);
-  assert.equal(values.get(Constants.PREFS.codexNodePath), detected.nodePath);
-  assert.equal(values.get(Constants.PREFS.codexNpxCliPath), detected.npxCliPath);
+  assert.equal(result.paths.codexPath, detected.codexPath);
+  assert.equal(result.paths.nodePath, "/configured/node");
+  assert.equal(values.get(Constants.PREFS.codexNodePath), "/configured/node");
+  assert.equal(values.get(Constants.PREFS.codexNpxCliPath), "/configured/npx-cli.js");
   assert.equal(values.get(Constants.PREFS.codexExecutablePath), detected.codexPath);
   assert.ok(preferenceCalls.length >= 6);
   assert.equal(preferenceCalls.every((call) => call.global === true), true);
@@ -280,4 +281,104 @@ test("configuration close warnings retain selectable options and detailed diagno
   const result = await context.Zotero.SmartPaperTranslator.inspectCodexRuntime();
   assert.deepEqual(JSON.parse(JSON.stringify(result.configOptions)), catalog.configOptions);
   assert.match(result.lastError, /CONFIG_CATALOG_CLOSE_FAILED/u);
+});
+
+test("Pi settings bridge uses the separate probe and stores only its own executable preference", async () => {
+  const { plugin, context, values } = loadMainPlugin();
+  const inspected = [], refreshes = [];
+  context.SmartPaperTranslatorModules.ACP.inspectLocalRuntime = async (paths, agentId) => {
+    inspected.push({ ...paths, agentId }); return { paths, healthy: true, versions: { node: "24.14.0", pi: "0.85.1" } };
+  };
+  plugin.piProbeService = {
+    acp: { getStatus: () => ({ preparedVersion: "0.0.33", requiredVersion: "0.0.33" }) },
+    getConfigurationCatalog: () => ({ configOptions: [] })
+  };
+  plugin.agentsChatService = { async refreshPiCatalog(options) { refreshes.push({ ...options }); return { configOptions: [{ id: "model" }] }; } };
+  plugin.credentials = {}; plugin.service = {};
+  plugin._installPreferenceBridge();
+  plugin.bridge.setPiPaths({ piPath: "/local/bin/pi" });
+  assert.equal(values.get(Constants.PREFS.codexExecutablePath), "/configured/codex");
+  assert.equal(values.get(Constants.PREFS.piExecutablePath), "/local/bin/pi");
+  const result = await plugin.bridge.preparePiACP();
+  assert.equal(inspected[0].agentId, "pi");
+  assert.equal(inspected[0].piPath, "/local/bin/pi");
+  assert.deepEqual(refreshes, [{ prepare: true }]);
+  assert.equal(result.adapter.preparedVersion, "0.0.33");
+  await plugin.bridge.inspectPiRuntime();
+  assert.deepEqual(refreshes.at(-1), { prepare: false });
+});
+
+test("shared Node / npx settings are used by both agents without changing either executable", async () => {
+  const { plugin, context, values, preferenceCalls } = loadMainPlugin();
+  const inspected = [];
+  context.SmartPaperTranslatorModules.ACP.inspectSharedRuntime = async (paths) => {
+    inspected.push({ ...paths }); return { paths, healthy: true };
+  };
+  context.SmartPaperTranslatorModules.ACP.detectSharedPaths = async () => ({ nodePath: "/new/node", npxCliPath: "/new/npx-cli.js" });
+  plugin.acpClient = { getStatus: () => ({}) };
+  plugin.codexChatService = { getConfigurationCatalog: () => ({}) };
+  plugin.piProbeService = { acp: plugin.acpClient, getConfigurationCatalog: () => ({}) };
+  plugin._installPreferenceBridge();
+  plugin.bridge.setPiPaths({ piPath: "/local/pi" });
+  await plugin.bridge.detectACPPaths();
+  await plugin.bridge.inspectACPRuntime();
+  assert.deepEqual(inspected, [{ nodePath: "/new/node", npxCliPath: "/new/npx-cli.js" }]);
+  for (const status of [plugin.bridge.getCodexStatus(), plugin.bridge.getPiStatus()]) {
+    assert.equal(status.paths.nodePath, "/new/node");
+    assert.equal(status.paths.npxCliPath, "/new/npx-cli.js");
+  }
+  assert.equal(values.get(Constants.PREFS.codexExecutablePath), "/configured/codex");
+  assert.equal(values.get(Constants.PREFS.piExecutablePath), "/local/pi");
+  assert.ok(preferenceCalls.every(call => call.global === true));
+});
+
+test("Pi path detection does not silently replace shared Node / npx", async () => {
+  const { plugin, context, values } = loadMainPlugin();
+  context.SmartPaperTranslatorModules.ACP.detectLocalPaths = async () => ({ nodePath: "/other/node", npxCliPath: "/other/npx.js", piPath: "/detected/pi" });
+  plugin.piProbeService = { acp: { getStatus: () => ({}) }, getConfigurationCatalog: () => ({}) };
+  plugin._installPreferenceBridge();
+  const result = await plugin.bridge.detectPiPaths();
+  assert.equal(result.paths.piPath, "/detected/pi");
+  assert.equal(result.paths.nodePath, "/configured/node");
+  assert.equal(values.get(Constants.PREFS.codexNpxCliPath), "/configured/npx-cli.js");
+});
+
+test("file selection uses Zotero FilePicker and only returns the result to the live preferences view", async () => {
+  const { plugin, context, preferenceCalls } = loadMainPlugin();
+  const parent = { browsingContext: { id: "preferences" } };
+  const opened = [];
+  let cancelled = false;
+  context.ChromeUtils = { importESModule(uri) {
+    assert.equal(uri, "chrome://zotero/content/modules/filePicker.mjs");
+    return { FilePicker: class {
+      modeOpen = 0; filterAll = 1; returnOK = 0;
+      init(win, title, mode) { opened.push({ win, title, mode }); }
+      appendFilters(filter) { assert.equal(filter, 1); }
+      async show() { return cancelled ? 1 : 0; }
+      get file() { assert.equal(cancelled, false); return "/chosen/executable"; }
+    } };
+  } };
+  for (const kind of ["node", "npx", "codex", "pi"]) {
+    assert.equal(await plugin._pickCodexPath(kind, parent), "/chosen/executable");
+    assert.equal(opened.at(-1).win, parent);
+  }
+  cancelled = true;
+  assert.equal(await plugin._pickCodexPath("node", parent), "");
+  assert.equal(preferenceCalls.length, 0);
+  await assert.rejects(plugin._pickCodexPath("unknown", parent));
+});
+
+test("candidate discovery bridge reads both agent configurations without writing preferences or inspecting a runtime", async () => {
+  const { plugin, context, preferenceCalls } = loadMainPlugin();
+  let inputs;
+  context.SmartPaperTranslatorModules.ACP.listRuntimePathCandidates = async configured => {
+    inputs = { ...configured }; return { node: [{ path: "/new/node" }] };
+  };
+  context.SmartPaperTranslatorModules.ACP.inspectLocalRuntime = () => { throw new Error("must not inspect"); };
+  plugin._installPreferenceBridge();
+  const result = await plugin.bridge.listACPPathCandidates();
+  assert.equal(result.node[0].path, "/new/node");
+  assert.equal(inputs.nodePath, "/configured/node");
+  assert.equal(inputs.codexPath, "/configured/codex");
+  assert.equal(preferenceCalls.some(call => call.operation === "set"), false);
 });

@@ -9,10 +9,13 @@
     typeof require === "function" ? require("./logic.js") : null
   );
 
-  function createChatRecord(paper, now, localID, workspacePath) {
+  const Agents = modules.AgentProviders || (typeof require === "function" ? require("./agent-providers.js") : null);
+
+  function createChatRecord(paper, now, localID, workspacePath, agentId = "codex") {
     const timestamp = now();
     return {
       schemaVersion: Constants.ACP_SCHEMA_VERSION,
+      agentId,
       paper: {
         storageKey: paper.storageKey,
         libraryID: paper.libraryID,
@@ -29,7 +32,7 @@
         source: null,
         sourceChangeAcknowledged: false,
         config: {
-          mode: Constants.ACP_MODE,
+          mode: Agents.getProvider(agentId).defaultMode,
           model: null,
           reasoningEffort: null
         }
@@ -48,16 +51,17 @@
     };
   }
 
-  function validateChatRecord(record, paper) {
+  function validateChatRecord(record, paper, agentId = "codex") {
     return Boolean(
       record &&
       record.schemaVersion === Constants.ACP_SCHEMA_VERSION &&
+      (record.agentId || "codex") === agentId &&
       record.paper?.storageKey === paper.storageKey &&
       record.paper?.attachmentKey === paper.attachmentKey &&
       record.session &&
       typeof record.session.localID === "string" &&
       typeof record.session.workspacePath === "string" &&
-      record.session.config?.mode === Constants.ACP_MODE &&
+      Agents.validMode(record.session.config?.mode, agentId) &&
       (
         record.draft == null ||
         (record.draft && Array.isArray(record.draft.screenshots))
@@ -71,10 +75,10 @@
     return JSON.parse(JSON.stringify(value));
   }
 
-  function emptyConfigurationCatalog() {
+  function emptyConfigurationCatalog(agentId = "codex") {
     return {
       schemaVersion: Constants.ACP_SCHEMA_VERSION,
-      adapterVersion: Constants.ACP_PACKAGE_VERSION,
+      adapterVersion: Agents.getProvider(agentId).version,
       runtimeFingerprint: "",
       updatedAt: null,
       configOptions: [],
@@ -82,11 +86,11 @@
     };
   }
 
-  function validateConfigurationCatalog(catalog) {
+  function validateConfigurationCatalog(catalog, agentId = "codex") {
     return Boolean(
       catalog &&
       catalog.schemaVersion === Constants.ACP_SCHEMA_VERSION &&
-      catalog.adapterVersion === Constants.ACP_PACKAGE_VERSION &&
+      catalog.adapterVersion === Agents.getProvider(agentId).version &&
       typeof catalog.runtimeFingerprint === "string" &&
       (catalog.updatedAt === null || typeof catalog.updatedAt === "string") &&
       Array.isArray(catalog.configOptions) &&
@@ -98,7 +102,8 @@
   }
 
   class CodexChatCache {
-    constructor({ rootPath, io, joinPath, now, randomID, onError } = {}) {
+    constructor({ rootPath, io, joinPath, now, randomID, onError, agentId = "codex" } = {}) {
+      this.agentId = Agents.getProvider(agentId).id;
       this.rootPath = rootPath;
       this.io = io;
       this.joinPath = joinPath || ((...parts) => parts.join("/"));
@@ -220,7 +225,7 @@
     async _newRecord(paper) {
       const localID = this.randomID();
       const workspacePath = this._workspacePath(paper, localID);
-      return createChatRecord(paper, this.now, localID, workspacePath);
+      return createChatRecord(paper, this.now, localID, workspacePath, this.agentId);
     }
 
     async _loadUnsafe(paper) {
@@ -229,7 +234,7 @@
       if (!(await this.io.exists(path))) return this._newRecord(paper);
       try {
         const record = await this.io.readJSON(path);
-        if (!validateChatRecord(record, paper)) {
+        if (!validateChatRecord(record, paper, this.agentId)) {
           throw new Logic.SmartTranslatorError("CHAT_CACHE_SCHEMA", "Codex 对话镜像结构无效");
         }
         return record;
@@ -253,7 +258,7 @@
         attachmentID: paper.attachmentID,
         title: paper.title || ""
       };
-      record.session.config.mode = Constants.ACP_MODE;
+      record.agentId = this.agentId;
       record.draft = {
         screenshots: Array.isArray(record.draft?.screenshots)
           ? record.draft.screenshots
@@ -272,7 +277,7 @@
 
     async save(paper, record) {
       return this._enqueue(paper.storageKey, async () => {
-        if (!validateChatRecord(record, paper)) {
+        if (!validateChatRecord(record, paper, this.agentId)) {
           throw new Logic.SmartTranslatorError("CHAT_CACHE_SCHEMA", "拒绝保存无效的 Codex 对话镜像");
         }
         await this._writeUnsafe(paper, clone(record));
@@ -338,11 +343,11 @@
     async loadConfigurationCatalog() {
       await this._ensureRoots();
       if (!(await this.io.exists(this.configurationCatalogPath))) {
-        return emptyConfigurationCatalog();
+        return emptyConfigurationCatalog(this.agentId);
       }
       try {
         const catalog = await this.io.readJSON(this.configurationCatalogPath);
-        if (!validateConfigurationCatalog(catalog)) {
+        if (!validateConfigurationCatalog(catalog, this.agentId)) {
           throw new Logic.SmartTranslatorError(
             "CONFIG_CATALOG_SCHEMA",
             "Codex 配置选项目录结构无效"
@@ -352,7 +357,7 @@
       }
       catch (error) {
         await this._backupCorrupt(this.configurationCatalogPath, error);
-        const catalog = emptyConfigurationCatalog();
+        const catalog = emptyConfigurationCatalog(this.agentId);
         await this.io.writeJSON(this.configurationCatalogPath, catalog, {
           tmpPath: `${this.configurationCatalogPath}.tmp`
         });
@@ -365,10 +370,10 @@
         const normalized = {
           ...clone(catalog),
           schemaVersion: Constants.ACP_SCHEMA_VERSION,
-          adapterVersion: Constants.ACP_PACKAGE_VERSION,
+          adapterVersion: Agents.getProvider(this.agentId).version,
           updatedAt: catalog.updatedAt || this.now()
         };
-        if (!validateConfigurationCatalog(normalized)) {
+        if (!validateConfigurationCatalog(normalized, this.agentId)) {
           throw new Logic.SmartTranslatorError(
             "CONFIG_CATALOG_SCHEMA",
             "拒绝保存无效的 Codex 配置选项目录"
@@ -426,11 +431,11 @@
     }
   }
 
-  function createZoteroChatCache({ onError } = {}) {
+  function createZoteroChatCache({ onError, agentId = "codex" } = {}) {
     const rootPath = global.PathUtils.join(
       global.Zotero.DataDirectory.dir,
       Constants.STORAGE_DIRECTORY,
-      Constants.ACP_DIRECTORY
+      Agents.getProvider(agentId).directory
     );
     const io = {
       exists: (path) => global.IOUtils.exists(path),
@@ -444,6 +449,7 @@
     };
     return new CodexChatCache({
       rootPath,
+      agentId,
       io,
       joinPath: (...parts) => global.PathUtils.join(...parts),
       onError

@@ -117,7 +117,7 @@ class FakeACP {
       if (this.setConfigHook) return this.setConfigHook(params, this);
       return { configOptions };
     }
-    if (method === "session/set_mode") return {};
+    if (method === "session/set_mode") return this.setModeHook?.(params) || {};
     if (method === "session/close") {
       this.closedSessionIDs ||= [];
       this.closedSessionIDs.push(params.sessionId);
@@ -127,7 +127,7 @@ class FakeACP {
     if (method === "session/delete") throw new Error("temporary sessions must not be deleted");
     if (method === "session/load") {
       await this.loadHook?.(params, this);
-      return { configOptions };
+      return this.loadResult || { configOptions };
     }
     if (method === "session/prompt") {
       if (this.promptHook) return this.promptHook(params, this);
@@ -140,6 +140,7 @@ class FakeACP {
     throw new Error(`unexpected method ${method}`);
   }
   async cancelSession(sessionID) { this.cancelled.push(sessionID); }
+  async stop() { this.started = false; this.stopCalled = true; }
   async shutdown() { this.shutdownCalled = true; }
 }
 
@@ -147,14 +148,16 @@ function makeHarness({
   acp = new FakeACP(),
   hasPDFToText = true,
   io = new MemoryIO(),
-  preferenceOverrides = {}
+  preferenceOverrides = {},
+  agentId = "codex"
 } = {}) {
   const paper = makePaper();
   const prefs = makePreferenceStore(preferenceOverrides);
   let cacheID = 0;
   let messageID = 0;
   const cache = new CodexChatCache({
-    rootPath: "/chat",
+    rootPath: agentId === "codex" ? "/chat" : "/pi-chat",
+    agentId,
     io,
     joinPath: (...parts) => parts.join("/"),
     randomID: () => `workspace-${++cacheID}`,
@@ -209,6 +212,7 @@ function makeHarness({
     async reveal(path) { this.revealed.push(path); }
   };
   const service = new CodexChatService({
+    agentId,
     paperRepository: {
       async get(id) {
         if (id !== 10) throw new Error("wrong attachment");
@@ -846,7 +850,7 @@ test("developer mode alone captures bounded redacted tool and thought diagnostic
   assert.equal(state.diagnosticEventCount, 3);
 
   const report = await service.getDiagnosticReport(10);
-  assert.equal(report.pluginVersion, "0.1.28");
+  assert.equal(report.pluginVersion, "0.1.33");
   assert.equal(report.eventCount, 3);
   assert.deepEqual(report.events.map((entry) => entry.sessionUpdate), [
     "agent_thought_chunk",
@@ -1247,4 +1251,252 @@ test("changing an existing session model also mirrors its model-specific reasoni
   const state = await service.setSessionConfig(10, "model", "model-b");
   assert.equal(state.record.session.config.model, "model-b");
   assert.equal(state.record.session.config.reasoningEffort, "low");
+});
+
+test("Full Access is scoped, confirmed remotely, persisted, restored and downgraded", async () => {
+  const acp = new FakeACP();
+  const modes = () => ({ currentModeId: "agent", availableModes: [{ id: "agent" }, { id: "agent-full-access" }] });
+  acp.newSessionResult = { sessionId: acp.sessionID, configOptions, modes: modes() };
+  acp.loadResult = { configOptions, modes: modes() };
+  const h = makeHarness({ acp });
+  assert.equal((await h.service.load(10)).record.session.config.mode, "agent");
+  await h.service.send(10, "first");
+  await h.service.setSessionConfig(10, "mode", "agent-full-access");
+  assert.equal(acp.requests.at(-1).params.modeId, "agent-full-access");
+  assert.equal((await h.cache.load(h.paper)).session.config.mode, "agent-full-access");
+  h.service.states.clear(); h.service.sessionStates.clear();
+  const restored = await h.service.reload(10);
+  assert.equal(restored.record.session.config.mode, "agent-full-access");
+  assert.equal(acp.requests.at(-1).params.modeId, "agent-full-access");
+  await h.service.setAccessMode(10, "agent");
+  assert.equal((await h.cache.load(h.paper)).session.config.mode, "agent");
+  assert.equal((await h.cache.load(makePaper({ storageKey: "1--IJKLMNOP", attachmentID: 11 }))).session.config.mode, "agent");
+  await h.service.shutdown();
+});
+
+test("permission failure retains the saved choice and blocks unconfirmed sends", async () => {
+  const acp = new FakeACP();
+  acp.newSessionResult = { sessionId: acp.sessionID, configOptions, modes: {
+    currentModeId: "agent", availableModes: [{ id: "agent" }, { id: "agent-full-access" }]
+  } };
+  const h = makeHarness({ acp });
+  await h.service.send(10, "first");
+  acp.setModeHook = async () => { throw new Error("mode rejected"); };
+  await assert.rejects(h.service.setAccessMode(10, "agent-full-access"), /mode rejected/u);
+  assert.equal((await h.cache.load(h.paper)).session.config.mode, "agent");
+  const state = h.service.states.get(h.paper.storageKey);
+  assert.equal(state.permissionVerified, false);
+  acp.loadResult = { configOptions, modes: {
+    currentModeId: "agent-full-access", availableModes: [{ id: "agent" }, { id: "agent-full-access" }]
+  } };
+  await assert.rejects(h.service.send(10, "blocked"), /mode rejected/u);
+  assert.equal(acp.requests.filter(r => r.method === "session/prompt").length, 1);
+  await h.service.shutdown();
+});
+
+test("permission preferences before connection are local intent and concurrent loads share a state", async () => {
+  const h = makeHarness();
+  const [a, b] = await Promise.all([h.service._stateForAttachment(10), h.service._stateForAttachment(10)]);
+  assert.equal(a, b);
+  await h.service.setAccessMode(10, "agent-full-access");
+  assert.equal(h.acp.requests.length, 0);
+  for (const status of ["connecting", "cancelling", "waiting-approval"]) {
+    a.status = status;
+    await assert.rejects(h.service.setAccessMode(10, "agent"), { code: "TURN_ACTIVE" });
+  }
+  a.status = "ready";
+  await h.service.setAccessMode(10, "agent");
+  assert.equal((await h.cache.load(h.paper)).session.config.mode, "agent");
+  await h.service.shutdown();
+});
+
+function piACP() {
+  const acp = new FakeACP();
+  acp.sessionID = "pi-session";
+  const options = [
+    { id: "model", currentValue: "provider/model-a", options: [{ value: "provider/model-a" }, { value: "provider/model-b" }] },
+    { id: "thought_level", currentValue: "medium", options: [{ value: "medium" }, { value: "high" }, { value: "off" }] }
+  ];
+  acp.newSessionResult = { sessionId: acp.sessionID, configOptions: options, modes: { currentModeId: "medium" } };
+  acp.loadResult = { configOptions: options, modes: { currentModeId: "off" } };
+  acp.getStatus = () => ({ healthy: Boolean(acp.started), preparedVersion: "0.0.33", requiredVersion: "0.0.33", capabilities: { loadSession: true, promptCapabilities: { image: acp.imageCapable !== false } } });
+  acp.setConfigHook = ({ configId, value }) => {
+    assert.ok(["model", "thought_level"].includes(configId));
+    for (const option of options) if (option.id === configId) option.currentValue = value;
+    return { configOptions: options.map(option => ({ ...option })) };
+  };
+  return acp;
+}
+
+test("Pi probe is isolated, uses thought_level, sends no prompt and closes only its process", async () => {
+  const h = makeHarness({ acp: piACP(), agentId: "pi" });
+  const catalog = await h.service.refreshConfigurationCatalog();
+  assert.equal(h.service.configurationCatalog.adapterVersion, "0.0.33");
+  assert.deepEqual(catalog.configOptions.map(option => option.id), ["model", "reasoning_effort"]);
+  assert.deepEqual(h.acp.requests.map(r => r.method), ["session/new", "session/set_config_option"]);
+  assert.equal(h.acp.stopCalled, true);
+  assert.equal((await h.service.load(10)).record.session.config.mode, null);
+  assert.equal((await h.service.load(10)).record.session.id, null);
+  await h.service.shutdown();
+});
+
+test("Pi catalog keeps per-model max support and invalidates legacy shared thinking options", async () => {
+  const acp = piACP();
+  const models = [{ value: "provider/model-a" }, { value: "provider/model-b" }];
+  const optionsFor = model => [
+    { id: "model", currentValue: model, options: models },
+    { id: "thought_level", currentValue: model.endsWith("a") ? "max" : "off",
+      options: (model.endsWith("a") ? ["high", "xhigh", "max"] : ["off"]).map(value => ({ value })) }
+  ];
+  acp.newSessionResult = { sessionId: "pi-probe", configOptions: optionsFor("provider/model-a") };
+  acp.setConfigHook = ({ configId, value }) => {
+    assert.equal(configId, "model");
+    return { configOptions: optionsFor(value) };
+  };
+  const h = makeHarness({ acp, agentId: "pi" });
+  const catalog = await h.service.refreshConfigurationCatalog();
+  const levels = model => catalog.configOptionsByModel[model].find(option => option.id === "reasoning_effort").options.map(option => option.value);
+  assert.deepEqual(levels("provider/model-a"), ["high", "xhigh", "max"]);
+  assert.deepEqual(levels("provider/model-b"), ["off"]);
+  await h.service.setSessionConfig(10, "model", "provider/model-a");
+  await h.service.setSessionConfig(10, "reasoning_effort", "max");
+  await h.service.setSessionConfig(10, "model", "provider/model-b");
+  await assert.rejects(h.service.setSessionConfig(10, "reasoning_effort", "max"), { code: "CONFIG_UNAVAILABLE" });
+  assert.equal((await h.service.load(10)).record.session.config.reasoningEffort, "off");
+  const paths = JSON.parse(h.service.configurationCatalog.runtimeFingerprint);
+  paths.pop();
+  h.service.configurationCatalog.runtimeFingerprint = JSON.stringify(paths);
+  assert.equal(h.service.getConfigurationCatalog().configOptions.length, 0);
+  assert.ok(acp.requests.every(request => ["session/new", "session/set_config_option"].includes(request.method)));
+  await h.service.shutdown();
+});
+
+test("Pi max is persisted after confirmation and restored without downgrade", async () => {
+  const acp = piACP();
+  for (const result of [acp.newSessionResult, acp.loadResult]) {
+    const thought = result.configOptions.find(option => option.id === "thought_level");
+    if (!thought.options.some(option => option.value === "max")) thought.options.push({ value: "max" });
+  }
+  const h = makeHarness({ acp, agentId: "pi" });
+  await h.service.send(10, "fixture question");
+  await h.service.setSessionConfig(10, "reasoning_effort", "max");
+  assert.equal((await h.cache.load(h.paper)).session.config.reasoningEffort, "max");
+  const original = acp.setConfigHook;
+  acp.setConfigHook = () => { throw new Error("SPT_PI_THINKING_NOT_APPLIED"); };
+  await assert.rejects(h.service.setSessionConfig(10, "reasoning_effort", "high"), /SPT_PI_THINKING_NOT_APPLIED/u);
+  assert.equal((await h.cache.load(h.paper)).session.config.reasoningEffort, "max");
+  acp.setConfigHook = original;
+  acp.loadResult.configOptions.find(option => option.id === "thought_level").currentValue = "high";
+  const state = await h.service._stateForAttachment(10);
+  state.remoteReady = false;
+  await h.service._loadRemoteSession(state);
+  assert.equal((await h.service.load(10)).record.session.config.reasoningEffort, "max");
+  assert.ok(acp.requests.some(request => request.method === "session/set_config_option" && request.params.configId === "thought_level" && request.params.value === "max"));
+  await h.service.shutdown();
+});
+
+test("Pi restore applies the saved model before validating max and ignores intermediate defaults", async () => {
+  const acp = piACP();
+  const h = makeHarness({ acp, agentId: "pi" });
+  const state = await h.service._stateForAttachment(10);
+  state.record.session.id = "pi-session";
+  state.record.session.config = { model: "provider/model-a", reasoningEffort: "max", mode: null };
+  const opts = (model, thinking) => [
+    { id: "model", currentValue: model, options: [{ value: "provider/model-a" }, { value: "provider/model-b" }] },
+    { id: "thought_level", currentValue: thinking, options: (model.endsWith("a") ? ["high", "max"] : ["off"]).map(value => ({ value })) }
+  ];
+  acp.loadResult = { configOptions: opts("provider/model-b", "off") };
+  acp.setConfigHook = ({ configId, value }) => {
+    const configOptions = configId === "model" ? opts(value, "high") : opts("provider/model-a", value);
+    acp.emit("session/update", { sessionId: "pi-session", update: { sessionUpdate: "config_option_update", configOptions } });
+    return { configOptions };
+  };
+  await h.service._loadRemoteSession(state);
+  assert.deepEqual(acp.requests.filter(request => request.method === "session/set_config_option").map(request => [request.params.configId, request.params.value]), [["model", "provider/model-a"], ["thought_level", "max"]]);
+  assert.equal(state.record.session.config.reasoningEffort, "max");
+  await h.service.shutdown();
+});
+
+test("Pi configuration and persistent replay survive reconnect without exposing resource wrappers", async () => {
+  const acp = piACP();
+  const h = makeHarness({ acp, agentId: "pi", preferenceOverrides: { [Constants.PREFS.piDefaultReasoningEffort]: "high" } });
+  await h.service.send(10, "Explain this paper");
+  assert.equal((await h.service.load(10)).record.session.config.reasoningEffort, "high");
+  assert.ok(acp.requests.some(r => r.params.configId === "thought_level" && r.params.value === "high"));
+  await h.service.setSessionConfig(10, "model", "provider/model-b");
+  await assert.rejects(h.service.setAccessMode(10, "agent-full-access"), { code: "CONFIG_FORBIDDEN" });
+  const prompt = acp.requests.find(r => r.method === "session/prompt").params.prompt;
+  const wire = prompt.map(block => block.type === "text" ? block.text : block.type === "resource_link" ? `\n[Context] ${block.uri}` : "").join("");
+  acp.loadHook = (_params, client) => client.emit("session/update", { sessionId: client.sessionID, update: {
+    sessionUpdate: "user_message_chunk", content: { type: "text", text: wire }
+  } });
+  await h.service.releaseIdle();
+  assert.equal(acp.stopCalled, true);
+  const state = await h.service.reload(10);
+  assert.equal(state.record.session.config.model, "provider/model-b");
+  assert.equal(state.record.session.config.reasoningEffort, "high");
+  assert.equal(state.record.transcript[0].text, "Explain this paper");
+  assert.equal(acp.requests.some(r => ["session/set_mode", "session/close", "session/delete"].includes(r.method)), false);
+  await h.service.shutdown();
+});
+
+test("Pi terminal events retain output and unsupported image input preserves the draft", async () => {
+  const acp = piACP();
+  const h = makeHarness({ acp, agentId: "pi" });
+  acp.promptHook = async (_params, client) => {
+    client.emit("session/update", { sessionId: client.sessionID, update: { sessionUpdate: "tool_call", toolCallId: "bash-1", title: "bash", kind: "execute", status: "in_progress" } });
+    client.emit("session/update", { sessionId: client.sessionID, update: { sessionUpdate: "tool_call_update", toolCallId: "bash-1", _meta: { terminal_output: { terminal_id: "bash-1", data: "hello pi" } } } });
+    client.emit("session/update", { sessionId: client.sessionID, update: { sessionUpdate: "tool_call_update", toolCallId: "bash-1", status: "completed", _meta: { terminal_exit: { terminal_id: "bash-1", exit_code: 0 } } } });
+    return { stopReason: "end_turn" };
+  };
+  await h.service.send(10, "test");
+  const state = await h.service.load(10);
+  const tool = state.record.transcript.find(entry => entry.remoteID === "bash-1");
+  assert.equal(tool.rawOutput, "hello pi");
+  assert.equal(tool.exitCode, 0);
+  const drafts = await h.service.saveScreenshotDrafts(10, [screenshotCapture()]);
+  acp.imageCapable = false;
+  await assert.rejects(h.service.send(10, "", { screenshots: drafts }), { code: "IMAGE_PROMPT_UNSUPPORTED" });
+  assert.equal((await h.service.load(10)).record.draft.screenshots.length, 1);
+  await h.service.shutdown();
+});
+
+test("stopping during initialization cancels the first turn without creating a session", async () => {
+  const h = makeHarness({ acp: piACP(), agentId: "pi" });
+  let connected;
+  h.acp.start = () => new Promise(resolve => { connected = resolve; });
+  const send = assert.rejects(h.service.send(10, "cancelled"), { code: "TURN_CANCELLED" });
+  await new Promise(resolve => setImmediate(resolve));
+  const pending = await h.service.cancel(10);
+  assert.equal(pending.status, "cancelling");
+  connected(); await send;
+  assert.equal((await h.service.load(10)).status, "cancelled");
+  assert.equal(h.acp.requests.length, 0);
+  await h.service.shutdown();
+});
+
+test("Pi missing login fails closed and extension choices require their exact option IDs", async () => {
+  const acp = piACP();
+  const h = makeHarness({ acp, agentId: "pi" });
+  const request = acp.request.bind(acp);
+  acp.request = async (method, params, options) => {
+    if (method === "session/new") throw new Error("auth_required: no available models");
+    return request(method, params, options);
+  };
+  await assert.rejects(h.service.refreshConfigurationCatalog(), /auth_required/u);
+  assert.equal(acp.stopCalled, true);
+  assert.equal(acp.requests.length, 0);
+  acp.request = request;
+  await h.service.send(10, "first");
+  const reply = acp.handlers.get("session/request_permission")({ sessionId: acp.sessionID,
+    toolCall: { toolCallId: "extension-confirm", title: "Confirm extension action" },
+    options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }, { optionId: "no", name: "No", kind: "reject_once" }]
+  });
+  const state = await h.service.load(10);
+  assert.equal(state.pendingInteractions.length, 1);
+  const id = state.pendingInteractions[0].id;
+  await assert.rejects(h.service.respondPermission(10, id, "allow-all"), { code: "PERMISSION_INVALID" });
+  await h.service.respondPermission(10, id, "no");
+  assert.deepEqual(await reply, { outcome: { outcome: "selected", optionId: "no" } });
+  await h.service.shutdown();
 });

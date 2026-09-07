@@ -197,7 +197,7 @@ test("disabled selection translation still offers a local-only Codex draft actio
   assert.equal(cacheLookups, 0);
   assert.equal(translationCalls, 0);
   const codexButton = container.children[0].children[0];
-  assert.equal(codexButton.textContent, "添加到 Codex");
+  assert.equal(codexButton.textContent, "添加到 Agents");
   await codexButton.dispatch("click");
   assert.equal(codexButton.textContent, "已添加");
   assert.deepEqual(addedContext, {
@@ -509,7 +509,7 @@ test("Reader screenshot toolbar sends clean cross-page captures only to the exac
 
   const screenshotButton = appended[2];
   assert.equal(screenshotButton.disabled, false);
-  assert.equal(screenshotButton.getAttribute("aria-label"), "截取 PDF 原页区域到 Codex 草稿");
+  assert.equal(screenshotButton.getAttribute("aria-label"), "截取 PDF 原页区域到 Agents 草稿");
   await screenshotButton.dispatch("click");
   await new Promise((resolve) => setImmediate(resolve));
 

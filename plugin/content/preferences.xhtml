@@ -76,65 +76,138 @@
     </description>
   </groupbox>
 
-  <groupbox data-search-strings-raw="Codex,ACP,Node,npx,本地模型,侧栏,对话">
-    <label><html:h2>本地 Codex（ACP）</html:h2></label>
-    <description>
-      Reader 右侧“Codex 对话”使用本机 Codex 登录和配置，与上方翻译 API 完全独立。打开 PDF 或展开侧栏不会启动 ACP、下载依赖或产生模型用量。
+  <groupbox id="spt-acp-settings" data-search-strings-raw="Agents,Codex,Pi,ACP,Node,npx,本地模型,侧栏,对话">
+    <label><html:h2 data-l10n-id="smart-paper-translator-agents-settings-title">Agents（ACP）</html:h2></label>
+    <description data-l10n-id="smart-paper-translator-agents-overview">
+      Reader 右侧“Agents”使用本机 Agent 登录和配置，与上方翻译 API 完全独立。打开 PDF 或展开侧栏不会启动 ACP、下载依赖或产生模型用量。
     </description>
+    <html:h3 data-l10n-id="smart-paper-translator-agents-shared-runtime">公共运行环境</html:h3>
+    <html:p data-l10n-id="smart-paper-translator-agents-shared-runtime-help">Codex 和 Pi 共用这里选择的 Node 与 npx；下方 Tab 只配置各自的 Agent。Pi 需要 Node 22.19.0 或更新版本。</html:p>
+    <html:p class="spt-path-help" data-l10n-id="smart-paper-translator-agents-path-help">自动列出 PATH、NVM 和常见安装位置；可下拉选择，也可编辑路径或浏览文件。刷新列表不会执行程序或改变已选路径。</html:p>
     <html:div class="spt-prefs-grid spt-codex-prefs-grid">
-      <html:label for="spt-codex-node-path">Node</html:label>
-      <html:div class="spt-prefs-path-row">
-        <html:input id="spt-codex-node-path" type="text" preference="extensions.smart-paper-translator.codexNodePath" placeholder="/absolute/path/to/node" />
-        <html:button type="button" data-codex-browse="node">选择…</html:button>
+      <html:label for="spt-acp-node-path">Node</html:label>
+      <html:div class="spt-path-field">
+        <html:select id="spt-path-options-node" data-path-candidates="node" data-l10n-id="smart-paper-translator-agents-path-candidates" data-l10n-args='{"name":"Node"}' aria-label="Node 路径候选">
+          <html:option value="" data-l10n-id="smart-paper-translator-agents-path-manual">手动输入或浏览…</html:option>
+        </html:select>
+        <html:div class="spt-prefs-path-row">
+          <html:input id="spt-acp-node-path" type="text" preference="extensions.smart-paper-translator.codexNodePath" placeholder="/absolute/path/to/node" />
+          <html:button type="button" data-acp-browse="node" data-l10n-id="smart-paper-translator-agents-browse">选择…</html:button>
+        </html:div>
       </html:div>
 
-      <html:label for="spt-codex-npx-path">npx-cli.js</html:label>
-      <html:div class="spt-prefs-path-row">
-        <html:input id="spt-codex-npx-path" type="text" preference="extensions.smart-paper-translator.codexNpxCliPath" placeholder="/absolute/path/to/npx-cli.js" />
-        <html:button type="button" data-codex-browse="npx">选择…</html:button>
+      <html:label for="spt-acp-npx-path">npx-cli.js</html:label>
+      <html:div class="spt-path-field">
+        <html:select id="spt-path-options-npx" data-path-candidates="npx" data-l10n-id="smart-paper-translator-agents-path-candidates" data-l10n-args='{"name":"npx-cli.js"}' aria-label="npx-cli.js 路径候选">
+          <html:option value="" data-l10n-id="smart-paper-translator-agents-path-manual">手动输入或浏览…</html:option>
+        </html:select>
+        <html:div class="spt-prefs-path-row">
+          <html:input id="spt-acp-npx-path" type="text" preference="extensions.smart-paper-translator.codexNpxCliPath" placeholder="/absolute/path/to/npx-cli.js" />
+          <html:button type="button" data-acp-browse="npx" data-l10n-id="smart-paper-translator-agents-browse">选择…</html:button>
+        </html:div>
       </html:div>
-
-      <html:label for="spt-codex-executable-path">Codex</html:label>
-      <html:div class="spt-prefs-path-row">
-        <html:input id="spt-codex-executable-path" type="text" preference="extensions.smart-paper-translator.codexExecutablePath" placeholder="/absolute/path/to/codex" />
-        <html:button type="button" data-codex-browse="codex">选择…</html:button>
-      </html:div>
-
-      <html:label for="spt-codex-default-model">新会话默认模型</html:label>
-      <html:select id="spt-codex-default-model" preference="extensions.smart-paper-translator.codexDefaultModel">
-        <html:option value="">跟随 Codex 当前值</html:option>
-      </html:select>
-
-      <html:label for="spt-codex-default-reasoning">新会话默认推理强度</html:label>
-      <html:select id="spt-codex-default-reasoning" preference="extensions.smart-paper-translator.codexDefaultReasoningEffort">
-        <html:option value="">跟随 Codex 当前值</html:option>
-      </html:select>
     </html:div>
     <html:div class="spt-prefs-inline spt-codex-actions">
-      <html:button id="spt-codex-auto-detect" type="button">自动探测本地路径</html:button>
-      <html:button id="spt-codex-inspect" type="button">重新检测</html:button>
-      <html:button id="spt-codex-prepare" type="button">准备并检测 ACP 1.6.2</html:button>
+      <html:button id="spt-acp-detect" type="button" data-l10n-id="smart-paper-translator-agents-shared-detect">刷新路径列表</html:button>
+      <html:button id="spt-acp-inspect" type="button" data-l10n-id="smart-paper-translator-agents-shared-inspect">检测 Node / npx</html:button>
     </html:div>
-    <html:div id="spt-codex-status" class="spt-codex-runtime-status" role="status">
+    <html:p id="spt-path-discovery-status" class="spt-path-help" role="status"></html:p>
+    <html:div class="spt-codex-runtime-status" role="status">
       <html:dl>
-        <html:dt>Node</html:dt><html:dd data-codex-status="node">未检测</html:dd>
-        <html:dt>npx</html:dt><html:dd data-codex-status="npx">未检测</html:dd>
-        <html:dt>Codex</html:dt><html:dd data-codex-status="codex">未检测</html:dd>
-        <html:dt>codex-acp</html:dt><html:dd data-codex-status="acp">未准备</html:dd>
-        <html:dt>登录状态</html:dt><html:dd data-codex-status="login">未检测</html:dd>
-        <html:dt>健康状态</html:dt><html:dd data-codex-status="health">未检测</html:dd>
-        <html:dt>ACP 能力</html:dt><html:dd data-codex-status="capabilities">未握手</html:dd>
-        <html:dt>模型选项目录</html:dt><html:dd data-codex-status="catalog">未读取</html:dd>
-        <html:dt>固定模式</html:dt><html:dd data-codex-status="mode">agent（受审批）</html:dd>
-        <html:dt>最近错误</html:dt><html:dd data-codex-status="error">无</html:dd>
+        <html:dt>Node</html:dt><html:dd id="spt-acp-node-version">—</html:dd>
+        <html:dt>npx</html:dt><html:dd id="spt-acp-npx-version">—</html:dd>
+        <html:dt data-l10n-id="smart-paper-translator-agents-status">状态</html:dt><html:dd id="spt-acp-status">—</html:dd>
       </html:dl>
     </html:div>
-    <description class="spt-prefs-warning">
-      上面的模型和推理强度仅是新 PDF 会话的默认值；每篇 PDF 都可在 Reader 侧栏中单独选择。“准备并检测”是唯一允许 npx 下载固定包 @agentclientprotocol/codex-acp@1.6.2 的入口；“准备并检测”和“重新检测”会创建一个不发送提示词的临时空 session 来读取动态选项，随后关闭释放，不删除 Codex thread，也不产生模型生成用量。聊天启动使用离线 npm 模式，不会静默下载或升级。插件固定使用受审批的 agent 模式，专用论文工作区默认可写、网络默认关闭，绝不启用 agent-full-access。
-    </description>
-    <description class="spt-prefs-warning">
-      Codex 会继承本机账号、配置、全局指令、Skills 与 MCP；这些能力可能访问论文之外的本地或外部数据。插件不读取、保存或显示 token。侧栏仅支持 Zotero 主窗口内的 Reader tab，独立 Reader 窗口不提供聊天。
-    </description>
+    <html:div class="spt-agent-tabs" role="tablist" data-l10n-id="smart-paper-translator-agents-settings-tabs" aria-label="Agent 配置">
+      <html:button id="spt-agent-tab-codex" type="button" role="tab" aria-selected="true" aria-controls="spt-agent-panel-codex" tabindex="0">Codex</html:button>
+      <html:button id="spt-agent-tab-pi" type="button" role="tab" aria-selected="false" aria-controls="spt-agent-panel-pi" tabindex="-1">Pi</html:button>
+    </html:div>
+    <html:div id="spt-agent-panel-codex" class="spt-agent-panel" role="tabpanel" aria-labelledby="spt-agent-tab-codex">
+      <html:h3 data-l10n-id="smart-paper-translator-agents-codex-title">本地 Codex（ACP）</html:h3>
+      <html:div class="spt-prefs-grid spt-codex-prefs-grid">
+        <html:label for="spt-codex-executable-path">Codex</html:label>
+        <html:div class="spt-path-field">
+          <html:select id="spt-path-options-codex" data-path-candidates="codex" data-l10n-id="smart-paper-translator-agents-path-candidates" data-l10n-args='{"name":"Codex"}' aria-label="Codex 路径候选">
+            <html:option value="" data-l10n-id="smart-paper-translator-agents-path-manual">手动输入或浏览…</html:option>
+          </html:select>
+          <html:div class="spt-prefs-path-row">
+            <html:input id="spt-codex-executable-path" type="text" preference="extensions.smart-paper-translator.codexExecutablePath" placeholder="/absolute/path/to/codex" />
+            <html:button type="button" data-acp-browse="codex" data-l10n-id="smart-paper-translator-agents-browse">选择…</html:button>
+          </html:div>
+        </html:div>
+
+        <html:label for="spt-codex-default-model" data-l10n-id="smart-paper-translator-agents-default-model">新会话默认模型</html:label>
+        <html:select id="spt-codex-default-model" preference="extensions.smart-paper-translator.codexDefaultModel">
+          <html:option value="">跟随 Codex 当前值</html:option>
+        </html:select>
+
+        <html:label for="spt-codex-default-reasoning" data-l10n-id="smart-paper-translator-agents-default-thinking">新会话默认思考强度</html:label>
+        <html:select id="spt-codex-default-reasoning" preference="extensions.smart-paper-translator.codexDefaultReasoningEffort">
+          <html:option value="">跟随 Codex 当前值</html:option>
+        </html:select>
+      </html:div>
+      <html:div class="spt-prefs-inline spt-codex-actions">
+        <html:button id="spt-codex-auto-detect" type="button" data-l10n-id="smart-paper-translator-agents-codex-detect">刷新路径列表</html:button>
+        <html:button id="spt-codex-inspect" type="button">重新检测</html:button>
+        <html:button id="spt-codex-prepare" type="button">准备并检测 ACP 1.6.2</html:button>
+      </html:div>
+      <html:div id="spt-codex-status" class="spt-codex-runtime-status" role="status">
+        <html:dl>
+          <html:dt>Codex</html:dt><html:dd data-codex-status="codex">未检测</html:dd>
+          <html:dt>codex-acp</html:dt><html:dd data-codex-status="acp">未准备</html:dd>
+          <html:dt>登录状态</html:dt><html:dd data-codex-status="login">未检测</html:dd>
+          <html:dt>健康状态</html:dt><html:dd data-codex-status="health">未检测</html:dd>
+          <html:dt>ACP 能力</html:dt><html:dd data-codex-status="capabilities">未握手</html:dd>
+          <html:dt>模型选项目录</html:dt><html:dd data-codex-status="catalog">未读取</html:dd>
+          <html:dt data-l10n-id="smart-paper-translator-agents-default-mode">默认模式</html:dt><html:dd data-codex-status="mode">agent（受审批）</html:dd>
+          <html:dt>最近错误</html:dt><html:dd data-codex-status="error">无</html:dd>
+        </html:dl>
+      </html:div>
+      <description class="spt-prefs-warning">
+        上面的模型和推理强度仅是新 PDF 会话的默认值；每篇 PDF 都可在 Reader 侧栏中单独选择。“准备并检测”是唯一允许 npx 下载固定包 @agentclientprotocol/codex-acp@1.6.2 的入口；“准备并检测”和“重新检测”会创建一个不发送提示词的临时空 session 来读取动态选项，随后关闭释放，不删除 Codex thread，也不产生模型生成用量。聊天启动使用离线 npm 模式，不会静默下载或升级。
+      </description>
+      <html:p data-l10n-id="smart-paper-translator-agents-codex-mode-info">新建 Codex 会话默认使用审批模式；可在 Agents 侧栏按会话选择 Full Access，允许操作工作区外文件及联网。</html:p>
+      <description class="spt-prefs-warning">
+        Codex 会继承本机账号、配置、全局指令、Skills 与 MCP；这些能力可能访问论文之外的本地或外部数据。插件不读取、保存或显示 token。侧栏仅支持 Zotero 主窗口内的 Reader tab，独立 Reader 窗口不提供聊天。
+      </description>
+    </html:div>
+    <html:div id="spt-agent-panel-pi" class="spt-agent-panel" role="tabpanel" aria-labelledby="spt-agent-tab-pi" hidden="hidden">
+      <html:h3 data-l10n-id="smart-paper-translator-agents-pi-title">本地 Pi（ACP）</html:h3>
+      <html:p data-l10n-id="smart-paper-translator-agents-pi-setup">沿用本机 Pi 的登录、模型及扩展配置；共用上方公共运行环境中的 Node / npx。先在终端配置 Pi，再准备固定版本 pi-acp 0.0.33。</html:p>
+      <html:div class="spt-prefs-grid spt-codex-prefs-grid">
+        <html:label for="spt-pi-executable-path">Pi</html:label>
+        <html:div class="spt-path-field">
+          <html:select id="spt-path-options-pi" data-path-candidates="pi" data-l10n-id="smart-paper-translator-agents-path-candidates" data-l10n-args='{"name":"Pi"}' aria-label="Pi 路径候选">
+            <html:option value="" data-l10n-id="smart-paper-translator-agents-path-manual">手动输入或浏览…</html:option>
+          </html:select>
+          <html:div class="spt-prefs-path-row">
+            <html:input id="spt-pi-executable-path" type="text" preference="extensions.smart-paper-translator.piExecutablePath" placeholder="/absolute/path/to/pi" />
+            <html:button id="spt-pi-browse" type="button" data-l10n-id="smart-paper-translator-agents-browse">选择…</html:button>
+          </html:div>
+        </html:div>
+        <html:label for="spt-pi-default-model" data-l10n-id="smart-paper-translator-agents-default-model">新会话默认模型</html:label>
+        <html:select id="spt-pi-default-model" preference="extensions.smart-paper-translator.piDefaultModel"><html:option value="">Pi</html:option></html:select>
+        <html:label for="spt-pi-default-reasoning" data-l10n-id="smart-paper-translator-agents-default-thinking">新会话默认思考强度</html:label>
+        <html:select id="spt-pi-default-reasoning" preference="extensions.smart-paper-translator.piDefaultReasoningEffort"><html:option value="">Pi</html:option></html:select>
+      </html:div>
+      <html:p data-l10n-id="smart-paper-translator-agents-pi-thinking">思考档位随模型变化，支持的模型可选择 max。更新插件后请重新检测 Pi，以刷新选项。</html:p>
+      <html:div class="spt-prefs-inline spt-codex-actions">
+        <html:button id="spt-pi-detect" type="button" data-l10n-id="smart-paper-translator-agents-pi-detect">刷新路径列表</html:button>
+        <html:button id="spt-pi-inspect" type="button" data-l10n-id="smart-paper-translator-agents-inspect">重新检测</html:button>
+        <html:button id="spt-pi-prepare" type="button" data-l10n-id="smart-paper-translator-agents-pi-prepare">准备并检测 pi-acp 0.0.33</html:button>
+      </html:div>
+      <html:div class="spt-codex-runtime-status" role="status">
+        <html:dl>
+          <html:dt data-l10n-id="smart-paper-translator-agents-runtime">本机运行时</html:dt><html:dd id="spt-pi-runtime">—</html:dd>
+          <html:dt>pi-acp</html:dt><html:dd id="spt-pi-adapter">—</html:dd>
+          <html:dt data-l10n-id="smart-paper-translator-agents-catalog">模型选项目录</html:dt><html:dd id="spt-pi-catalog">—</html:dd>
+          <html:dt data-l10n-id="smart-paper-translator-agents-status">状态</html:dt><html:dd id="spt-pi-status">—</html:dd>
+        </html:dl>
+      </html:div>
+      <html:p data-l10n-id="smart-paper-translator-agents-pi-offline">准备按钮是唯一允许下载 pi-acp 的入口。检测只创建空会话，不发送提示词；聊天启动使用已准备的软件和 Pi 离线启动设置。需要 Pi 0.85.1 或更新版本。</html:p>
+      <html:p data-l10n-id="smart-paper-translator-agents-pi-access">Pi 按本机配置直接执行工具；这里不提供 Codex 的审批模式。扩展发出的交互请求仍需回应。</html:p>
+    </html:div>
   </groupbox>
 
   <groupbox data-search-strings-raw="开发者模式,Codex,日志,复制日志,调试">
@@ -143,7 +216,8 @@
       id="spt-codex-developer-mode"
       native="true"
       preference="extensions.smart-paper-translator.codexDeveloperMode"
-      label="在 Codex 侧栏显示“复制日志”按钮"
+      label="在 Agents 侧栏显示“复制日志”按钮"
+      data-l10n-id="smart-paper-translator-agents-developer-checkbox"
     />
     <description>
       默认关闭。开启后，插件只在内存中记录当前实时 turn 的工具调用与思考状态事件；侧栏会显示“复制日志”按钮。关闭时立即清空日志并停止采集。日志不会自动落盘或上传，但复制内容可能包含脱敏后的命令、路径与工具输出，请在分享前确认范围。
@@ -200,7 +274,8 @@
   <groupbox data-search-strings-raw="隐私,数据,缓存,网络">
     <label><html:h2>隐私与存储</html:h2></label>
     <description>
-      打开论文时，未缓存的摘要翻译会把标题和 Zotero 摘要发送给所选 API；缺少智能标签时会用相同数据额外发起一次短请求。主页智能标签列只读取本地缓存，不会联网，也不会写入 Zotero 原生标签。划线缓存命中时直接显示且不联网，只有点击“重新翻译”才会绕过缓存再次发送；未命中文本在自动模式关闭时只有点击“翻译”后才发送，打开时会在划线后立即发送。译文、原文与智能标签按论文保存在本机 Zotero 数据目录，不参与 Zotero 同步。API Key 单独保存在 Zotero 的登录信息存储中。Codex 对话首次发送时把真实 PDF 复制到该论文的专用工作区并交给本机 Codex；后续只发送文本。对话镜像、Codex 生成文件与旧会话工作区留在本机，不自动覆盖 PDF、修改条目或导入附件。
+      打开论文时，未缓存的摘要翻译会把标题和 Zotero 摘要发送给所选 API；缺少智能标签时会用相同数据额外发起一次短请求。主页智能标签列只读取本地缓存，不会联网，也不会写入 Zotero 原生标签。划线缓存命中时直接显示且不联网，只有点击“重新翻译”才会绕过缓存再次发送；未命中文本在自动模式关闭时只有点击“翻译”后才发送，打开时会在划线后立即发送。译文、原文与智能标签按论文保存在本机 Zotero 数据目录，不参与 Zotero 同步。API Key 单独保存在 Zotero 的登录信息存储中。
     </description>
+    <html:p data-l10n-id="smart-paper-translator-agents-privacy">Agents 首次发送时将 PDF 副本交给当前 Agent；后续发送问题及明确添加的选区和截图。Codex/Pi 的对话与媒体各自存储在本机，插件不自动修改 Zotero 条目或导入附件。Full Access 和 Pi 可操作工作区外文件并联网，专用工作区不是这两种执行方式的沙箱。</html:p>
   </groupbox>
 </vbox>

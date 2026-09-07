@@ -6,6 +6,9 @@
     typeof require === "function" ? require("./constants.js") : null
   );
 
+  const Agents = modules.AgentProviders || (typeof require === "function" ? require("./agent-providers.js") : null);
+  const PiCompat = modules.PiACPCompat || (typeof require === "function" ? require("./pi-acp-compat.js") : null);
+
   class ACPError extends Error {
     constructor(code, message, details) {
       super(message);
@@ -167,6 +170,7 @@
   class ACPClient {
     constructor({
       processFactory,
+      agentId = "codex",
       getPreparedVersion,
       setPreparedVersion,
       requestTimeoutMs,
@@ -174,6 +178,7 @@
       timers,
       log
     } = {}) {
+      this.provider = Agents.getProvider(agentId);
       this.processFactory = processFactory;
       this.getPreparedVersion = getPreparedVersion || (() => "");
       this.setPreparedVersion = setPreparedVersion || (() => {});
@@ -195,6 +200,7 @@
       this.initializeResult = null;
       this.authStatus = null;
       this.closed = false;
+      this.cleanupTasks = new Set();
       this.generation = 0;
     }
 
@@ -222,6 +228,15 @@
     async prepare() {
       if (this.closed) throw new ACPError("ACP_CLOSED", "ACP 客户端已关闭");
       await this.stop();
+      if (this.provider.id === "pi") {
+        // pi-acp has no --version CLI. Preparation only initializes ACP; it never prompts Pi.
+        try {
+          await this._start({ allowUnprepared: true, allowDownload: true });
+          this.setPreparedVersion(this.provider.version);
+          return this.getStatus();
+        }
+        finally { await this.stop(); }
+      }
       let process;
       try {
         process = await this.processFactory({ purpose: "version", allowDownload: true });
@@ -232,7 +247,7 @@
           "无法启动 codex-acp 准备进程",
           {
             stage: "启动 npm/npx",
-            packageSpec: Constants.ACP_PACKAGE_SPEC,
+            packageSpec: this.provider.packageSpec,
             cause: sanitizeDiagnostic(error?.message || error)
           }
         );
@@ -247,7 +262,7 @@
             "准备 codex-acp 超时",
             {
               stage: "npm 下载与版本检查",
-              packageSpec: Constants.ACP_PACKAGE_SPEC,
+              packageSpec: this.provider.packageSpec,
               hint: "请检查网络、代理和 npm registry 后重试。"
             }
           ),
@@ -263,7 +278,7 @@
           "codex-acp 准备进程执行异常",
           {
             stage: "npm 下载与版本检查",
-            packageSpec: Constants.ACP_PACKAGE_SPEC,
+            packageSpec: this.provider.packageSpec,
             cause: sanitizeDiagnostic(error?.message || error)
           }
         );
@@ -275,7 +290,7 @@
           "codex-acp 准备失败",
           {
             stage: "npm 下载与版本检查",
-            packageSpec: Constants.ACP_PACKAGE_SPEC,
+            packageSpec: this.provider.packageSpec,
             exitCode: result.exitCode,
             hint: prepareFailureHint(diagnostic),
             stderr: result.stderr,
@@ -284,14 +299,14 @@
         );
       }
       const versionMatch = String(result.stdout).match(/(?:^|\s)(\d+\.\d+\.\d+)(?:\s|$)/u);
-      if (!versionMatch || versionMatch[1] !== Constants.ACP_PACKAGE_VERSION) {
+      if (!versionMatch || versionMatch[1] !== this.provider.version) {
         throw new ACPError(
           "ACP_VERSION_MISMATCH",
-          `codex-acp 版本不匹配：需要 ${Constants.ACP_PACKAGE_VERSION}`,
+          `codex-acp 版本不匹配：需要 ${this.provider.version}`,
           {
             stage: "版本校验",
-            packageSpec: Constants.ACP_PACKAGE_SPEC,
-            expectedVersion: Constants.ACP_PACKAGE_VERSION,
+            packageSpec: this.provider.packageSpec,
+            expectedVersion: this.provider.version,
             detectedVersion: versionMatch?.[1] || "未识别",
             stderr: result.stderr,
             stdout: sanitizeDiagnostic(result.stdout)
@@ -304,7 +319,7 @@
         await this.stop();
         throw new ACPError("ACP_NOT_AUTHENTICATED", "本机 Codex 尚未登录");
       }
-      this.setPreparedVersion(Constants.ACP_PACKAGE_VERSION);
+      this.setPreparedVersion(this.provider.version);
       return this.getStatus();
     }
 
@@ -348,12 +363,12 @@
       }
     }
 
-    async _start({ allowUnprepared }) {
+    async _start({ allowUnprepared, allowDownload = false }) {
       if (this.process) await this.stop();
-      if (!allowUnprepared && this.getPreparedVersion() !== Constants.ACP_PACKAGE_VERSION) {
+      if (!allowUnprepared && this.getPreparedVersion() !== this.provider.version) {
         throw new ACPError(
           "ACP_NOT_PREPARED",
-          `请先在设置中准备并检测 codex-acp ${Constants.ACP_PACKAGE_VERSION}`
+          `请先在设置中准备并检测 ${this.provider.command} ${this.provider.version}`
         );
       }
       const generation = ++this.generation;
@@ -362,7 +377,12 @@
       this.initialized = false;
       this.initializeResult = null;
       this.authStatus = null;
-      this.process = await this.processFactory({ purpose: "serve", allowDownload: false });
+      const process = await this.processFactory({ purpose: "serve", allowDownload });
+      if (this.closed || generation !== this.generation) {
+        await this._terminateProcess(process);
+        throw new ACPError("ACP_STOPPED", "ACP startup was cancelled");
+      }
+      this.process = process;
       this.readTasks = [
         this._readStdout(this.process, generation),
         this._readStderr(this.process, generation),
@@ -380,9 +400,12 @@
             title: Constants.PLUGIN_NAME,
             version: Constants.VERSION
           }
-        });
+        }, { timeoutMs: allowDownload ? this.prepareTimeoutMs : this.requestTimeoutMs });
         if (this.initializeResult?.protocolVersion !== Constants.ACP_PROTOCOL_VERSION) {
-          throw new ACPError("ACP_PROTOCOL_MISMATCH", "codex-acp 不支持所需的 ACP 协议版本");
+          throw new ACPError("ACP_PROTOCOL_MISMATCH", `${this.provider.command} 不支持所需的 ACP 协议版本`);
+        }
+        if (this.provider.id === "pi" && this.initializeResult?.agentInfo?.version !== this.provider.version) {
+          throw new ACPError("ACP_VERSION_MISMATCH", `pi-acp requires ${this.provider.version}`);
         }
         this.initialized = true;
         this._emit({ type: "ready", status: this.getStatus() });
@@ -432,7 +455,7 @@
         const exitCode = Number(result?.exitCode ?? result ?? 0);
         this._failProcess(new ACPError(
           "ACP_PROCESS_EXIT",
-          `codex-acp 进程已退出（${exitCode}）`,
+          `${this.provider.command} 进程已退出（${exitCode}）`,
           this.stderr
         ));
       }
@@ -497,7 +520,7 @@
     }
 
     async request(method, params = {}, { timeoutMs = this.requestTimeoutMs } = {}) {
-      if (!this.process) throw new ACPError("ACP_NOT_RUNNING", "codex-acp 尚未启动");
+      if (!this.process) throw new ACPError("ACP_NOT_RUNNING", `${this.provider.command} 尚未启动`);
       const id = this.nextRequestID++;
       let resolvePending;
       let rejectPending;
@@ -525,7 +548,7 @@
     }
 
     notify(method, params = {}) {
-      if (!this.process) throw new ACPError("ACP_NOT_RUNNING", "codex-acp 尚未启动");
+      if (!this.process) throw new ACPError("ACP_NOT_RUNNING", `${this.provider.command} 尚未启动`);
       return this._write({ jsonrpc: "2.0", method, params });
     }
 
@@ -534,12 +557,16 @@
         await this.process.stdin.write(JSON.stringify(message) + "\n");
       }
       catch (error) {
-        throw new ACPError("ACP_WRITE_FAILED", "无法写入 codex-acp 进程", error.message);
+        throw new ACPError("ACP_WRITE_FAILED", `无法写入 ${this.provider.command} 进程`, error.message);
       }
     }
 
     async refreshAuthenticationStatus() {
       await this.start();
+      if (this.provider.id === "pi") {
+        // Pi authenticates out of band; session/new reports auth_required when no model is usable.
+        return { status: "configured-in-pi" };
+      }
       this.authStatus = await this.request("authentication/status", {});
       return this.authStatus;
     }
@@ -560,11 +587,12 @@
       return {
         healthy: Boolean(this.process && this.initialized),
         preparedVersion: this.getPreparedVersion() || "",
-        requiredVersion: Constants.ACP_PACKAGE_VERSION,
+        requiredVersion: this.provider.version,
         agent: this.initializeResult?.agentInfo || null,
         capabilities: this.initializeResult?.agentCapabilities || null,
         authentication: this.authStatus || null,
-        mode: Constants.ACP_MODE,
+        agentId: this.provider.id,
+        mode: this.provider.defaultMode,
         lastError: this.stderr || ""
       };
     }
@@ -580,8 +608,9 @@
       for (const entry of this.incoming.values()) entry.settled = true;
       this.incoming.clear();
       this._emit({ type: "exit", error, diagnostic: this.stderr });
-      try { current.stdin?.close?.(); }
-      catch (_error) {}
+      const cleanup = this._terminateProcess(current);
+      this.cleanupTasks.add(cleanup);
+      void cleanup.finally(() => this.cleanupTasks.delete(cleanup));
     }
 
     async stop() {
@@ -591,15 +620,28 @@
       this.initializeResult = null;
       this.authStatus = null;
       ++this.generation;
-      const error = new ACPError("ACP_STOPPED", "codex-acp 已停止");
+      const error = new ACPError("ACP_STOPPED", `${this.provider.command} 已停止`);
       for (const pending of this.pending.values()) pending.reject(error);
       this.pending.clear();
       for (const entry of this.incoming.values()) entry.settled = true;
       this.incoming.clear();
-      if (!process) return;
-      this._emit({ type: "stopped" });
+      if (process) {
+        this._emit({ type: "stopped" });
+        await this._terminateProcess(process);
+      }
+      await Promise.allSettled(this.cleanupTasks);
+    }
+
+    async _terminateProcess(process) {
       try { await process.stdin?.close?.(); }
       catch (_error) {}
+      if (this.provider.id === "pi") {
+        try {
+          await withTimeout(process.wait(), 1500, () => new Error("ACP shutdown timeout"), this.timers);
+          return;
+        }
+        catch (_error) {}
+      }
       try { await process.kill?.(1000); }
       catch (_error) {}
     }
@@ -609,6 +651,7 @@
       this.listeners.clear();
       this.requestHandlers.clear();
       await this.stop();
+      if (this.starting) await Promise.allSettled([this.starting]);
     }
   }
 
@@ -616,53 +659,86 @@
     return global.Services.dirsvc.get("Home", global.Ci.nsIFile).path;
   }
 
-  async function listNVMVersions(homePath) {
-    const root = global.PathUtils.join(homePath, ".nvm", "versions", "node");
-    try {
-      const children = await global.IOUtils.getChildren(root);
-      return children.sort().reverse();
-    }
-    catch (_error) {
-      return [];
-    }
+  function environmentValue(name) {
+    try { return String(global.Services.env.get(name) || ""); }
+    catch (_error) { return ""; }
   }
 
-  async function firstExisting(candidates) {
-    for (const candidate of candidates) {
-      if (isAbsolutePath(candidate) && await global.IOUtils.exists(candidate)) return candidate;
+  async function listNVMVersions(homePath) {
+    const roots = [...new Set([
+      environmentValue("NVM_DIR"), global.PathUtils.join(homePath, ".nvm"),
+      environmentValue("XDG_CONFIG_HOME") && global.PathUtils.join(environmentValue("XDG_CONFIG_HOME"), "nvm")
+    ].filter(isAbsolutePath))];
+    const children = [];
+    for (const root of roots) {
+      try { children.push(...await global.IOUtils.getChildren(global.PathUtils.join(root, "versions", "node"))); }
+      catch (_error) { /* An absent NVM install does not block PATH discovery. */ }
     }
+    return [...new Set(children)].filter(path => /\/v\d+\.\d+\.\d+$/u.test(path))
+      .sort((a, b) => b.slice(b.lastIndexOf("/") + 1).localeCompare(a.slice(a.lastIndexOf("/") + 1), "en", { numeric: true }))
+      .slice(0, 128);
+  }
+
+  async function isRuntimeFile(path) {
+    if (!isAbsolutePath(path) || path.length > 4096) return false;
+    try { return (await global.IOUtils.stat(path, { followSymlinks: true })).type === "regular"; }
+    catch (_error) { return false; }
+  }
+
+  function npxLinkTarget(path) {
+    try {
+      const file = global.Cc["@mozilla.org/file/local;1"].createInstance(global.Ci.nsIFile);
+      file.initWithPath(path);
+      if (file.isSymlink() && file.target.endsWith("/npx-cli.js")) return file.target;
+    }
+    catch (_error) { /* Only resolve existing npm links; never execute shell shims. */ }
     return "";
   }
 
-  async function detectLocalPaths(configured = {}) {
-    const home = getHomePath();
-    const nvmVersions = await listNVMVersions(home);
-    const nodeCandidates = [
-      configured.nodePath,
-      "/usr/local/bin/node",
-      "/opt/homebrew/bin/node",
-      ...nvmVersions.map((root) => global.PathUtils.join(root, "bin", "node")),
-      "/usr/bin/node"
-    ];
-    const nodePath = await firstExisting(nodeCandidates);
-    const nodeRoot = nodePath ? global.PathUtils.parent(global.PathUtils.parent(nodePath)) : "";
-    const npxCandidates = [
-      configured.npxCliPath,
-      nodeRoot && global.PathUtils.join(nodeRoot, "lib", "node_modules", "npm", "bin", "npx-cli.js"),
-      "/usr/local/lib/node_modules/npm/bin/npx-cli.js",
-      "/opt/homebrew/lib/node_modules/npm/bin/npx-cli.js",
-      ...nvmVersions.map((root) => global.PathUtils.join(root, "lib", "node_modules", "npm", "bin", "npx-cli.js"))
-    ];
-    const codexCandidates = [
-      configured.codexPath,
-      "/usr/local/bin/codex",
-      "/opt/homebrew/bin/codex",
-      ...nvmVersions.map((root) => global.PathUtils.join(root, "bin", "codex"))
-    ];
+  // Enumeration reads file metadata only: no shell startup files, executables, or downloads.
+  async function listRuntimePathCandidates(configured = {}) {
+    const candidates = { node: [], npx: [], codex: [], pi: [] };
+    const seen = Object.fromEntries(Object.keys(candidates).map(kind => [kind, new Set()]));
+    const add = async (kind, path, source, version = "") => {
+      if (seen[kind].has(path)) return;
+      seen[kind].add(path);
+      if (await isRuntimeFile(path)) candidates[kind].push({ path, source, version });
+    };
+    for (const [kind, key] of [["node", "nodePath"], ["npx", "npxCliPath"], ["codex", "codexPath"], ["pi", "piPath"]]) {
+      await add(kind, configured[key], "configured");
+    }
+    const directories = [];
+    if (isAbsolutePath(configured.nodePath)) directories.push({ path: global.PathUtils.parent(configured.nodePath), source: "node" });
+    for (const root of await listNVMVersions(getHomePath())) {
+      directories.push({ path: global.PathUtils.join(root, "bin"), source: "nvm", version: root.slice(root.lastIndexOf("/") + 1) });
+    }
+    const pathDirectories = environmentValue("PATH").split(":").filter(path => isAbsolutePath(path) && path.length <= 4096);
+    for (const path of [...new Set(pathDirectories)].slice(0, 128)) directories.push({ path, source: "path" });
+    for (const path of ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]) directories.push({ path, source: "standard" });
+    const searched = new Set();
+    for (const { path: directory, source, version } of directories) {
+      if (searched.has(directory)) continue;
+      searched.add(directory);
+      await Promise.all(["node", "codex", "pi"].map(kind => add(kind, global.PathUtils.join(directory, kind), source, version)));
+      const prefix = global.PathUtils.parent(directory);
+      await add("npx", global.PathUtils.join(prefix, "lib", "node_modules", "npm", "bin", "npx-cli.js"), source, version);
+      await add("npx", global.PathUtils.join(directory, "npx-cli.js"), source, version);
+      await add("npx", npxLinkTarget(global.PathUtils.join(directory, "npx")), source, version);
+    }
+    return candidates;
+  }
+
+  async function detectSharedPaths(configured = {}) {
+    const candidates = await listRuntimePathCandidates(configured);
+    return { nodePath: candidates.node[0]?.path || "", npxCliPath: candidates.npx[0]?.path || "" };
+  }
+
+  async function detectLocalPaths(configured = {}, agentId = "codex") {
+    const provider = Agents.getProvider(agentId);
+    const candidates = await listRuntimePathCandidates(configured);
     return {
-      nodePath,
-      npxCliPath: await firstExisting(npxCandidates),
-      codexPath: await firstExisting(codexCandidates)
+      nodePath: candidates.node[0]?.path || "", npxCliPath: candidates.npx[0]?.path || "",
+      [`${provider.id}Path`]: candidates[provider.id][0]?.path || ""
     };
   }
 
@@ -674,18 +750,26 @@
     }
   }
 
-  function createEnvironment(paths, { allowDownload }) {
+  function createEnvironment(paths, { allowDownload }, agentId = "codex") {
+    const provider = Agents.getProvider(agentId);
     const directories = [
-      global.PathUtils.parent(paths.codexPath),
       global.PathUtils.parent(paths.nodePath),
+      ...(paths[`${provider.id}Path`] ? [global.PathUtils.parent(paths[`${provider.id}Path`])] : []),
       "/opt/homebrew/bin",
       "/usr/local/bin",
       "/usr/bin",
       "/bin"
     ];
     return {
-      CODEX_PATH: paths.codexPath,
-      INITIAL_AGENT_MODE: Constants.ACP_MODE,
+      ...(paths[`${provider.id}Path`] ? (agentId === "codex" ? {
+        CODEX_PATH: paths.codexPath,
+        INITIAL_AGENT_MODE: Constants.ACP_MODE
+      } : {
+        PI_ACP_PI_COMMAND: paths.piPath,
+        PI_OFFLINE: "1",
+        PI_TELEMETRY: "0",
+        PI_SKIP_VERSION_CHECK: "1"
+      }) : {}),
       NO_BROWSER: "1",
       PATH: [...new Set(directories)].join(":"),
       npm_config_loglevel: "error",
@@ -693,7 +777,8 @@
     };
   }
 
-  async function createSubprocess(paths, { purpose, allowDownload }) {
+  async function createSubprocess(paths, { purpose, allowDownload }, agentId = "codex") {
+    const provider = Agents.getProvider(agentId);
     validateRuntimePaths(paths);
     const { Subprocess } = global.ChromeUtils.importESModule(
       "resource://gre/modules/Subprocess.sys.mjs"
@@ -702,15 +787,15 @@
       paths.npxCliPath,
       "--yes",
       "--package",
-      Constants.ACP_PACKAGE_SPEC,
-      "codex-acp"
+      provider.packageSpec,
+      ...(agentId === "pi" ? ["--", paths.nodePath, "--input-type=commonjs", "--eval", PiCompat.createLauncherSource()] : [provider.command])
     ];
     if (purpose === "version") argumentsList.push("--version");
     return Subprocess.call({
       command: paths.nodePath,
       arguments: argumentsList,
       environmentAppend: true,
-      environment: createEnvironment(paths, { allowDownload }),
+      environment: createEnvironment(paths, { allowDownload }, agentId),
       stderr: "pipe"
     });
   }
@@ -738,7 +823,7 @@
     };
   }
 
-  async function runLocalCommand(command, argumentsList, paths) {
+  async function runLocalCommand(command, argumentsList, paths, agentId = "codex") {
     const { Subprocess } = global.ChromeUtils.importESModule(
       "resource://gre/modules/Subprocess.sys.mjs"
     );
@@ -746,63 +831,122 @@
       command,
       arguments: argumentsList,
       environmentAppend: true,
-      environment: createEnvironment(paths, { allowDownload: false }),
+      environment: createEnvironment(paths, { allowDownload: false }, agentId),
       stderr: "pipe"
     });
     return collectSubprocess(process);
   }
 
-  async function inspectLocalRuntime(paths) {
+  async function validateExistingPaths(paths) {
     validateRuntimePaths(paths);
     for (const path of Object.values(paths)) {
       if (!(await global.IOUtils.exists(path))) {
         throw new ACPError("ACP_PATH_MISSING", `文件不存在：${path}`);
       }
     }
-    const [node, npx, codex, login] = await Promise.all([
-      runLocalCommand(paths.nodePath, ["--version"], paths),
-      runLocalCommand(paths.nodePath, [paths.npxCliPath, "--version"], paths),
-      runLocalCommand(paths.codexPath, ["--version"], paths),
-      runLocalCommand(paths.codexPath, ["login", "status"], paths)
-    ]);
-    const describe = (result) => result.exitCode === 0
-      ? result.stdout || result.stderr
+  }
+
+  function describeRuntime(result) {
+    return result.exitCode === 0 ? result.stdout || result.stderr
       : `检测失败（${result.exitCode}）：${result.stderr || result.stdout}`;
+  }
+
+  async function inspectSharedRuntime(paths) {
+    const shared = { nodePath: paths.nodePath, npxCliPath: paths.npxCliPath };
+    await validateExistingPaths(shared);
+    const [node, npx] = await Promise.all([
+      runLocalCommand(shared.nodePath, ["--version"], shared),
+      runLocalCommand(shared.nodePath, [shared.npxCliPath, "--version"], shared)
+    ]);
+    return {
+      paths: shared,
+      versions: { node: describeRuntime(node), npx: describeRuntime(npx) },
+      healthy: node.exitCode === 0 && npx.exitCode === 0,
+      lastError: [node, npx].filter((result) => result.exitCode !== 0)
+        .map(describeRuntime).join("\n")
+    };
+  }
+
+  async function inspectLocalRuntime(paths, agentId = "codex") {
+    const provider = Agents.getProvider(agentId);
+    await validateExistingPaths(paths);
+    const [node, npx, codex, login] = await Promise.all([
+      runLocalCommand(paths.nodePath, ["--version"], paths, agentId),
+      runLocalCommand(paths.nodePath, [paths.npxCliPath, "--version"], paths, agentId),
+      runLocalCommand(paths[`${provider.id}Path`], ["--version"], paths, agentId),
+      agentId === "codex" ? runLocalCommand(paths.codexPath, ["login", "status"], paths) : Promise.resolve({ exitCode: 0, stdout: "Pi: configure providers using the local pi CLI" })
+    ]);
+    const version = (result) => `${result.stdout}\n${result.stderr}`
+      .match(/^(?:v|pi\s+)?(\d+\.\d+\.\d+)(?:[-+][\w.-]+)?\s*$/imu)?.[1];
+    const atLeast = (value, required) => {
+      const match = value.match(/(\d+)\.(\d+)\.(\d+)/u);
+      const actual = match.slice(1).map(Number);
+      for (let index = 0; index < 3; index++) {
+        if (actual[index] !== required[index]) return actual[index] > required[index];
+      }
+      return true;
+    };
+    if (agentId === "pi") {
+      const details = {
+        stage: "runtime",
+        expectedVersion: "Pi >= 0.85.1; Node >= 22.19.0",
+        detectedVersion: `Pi ${version(codex) || "unknown"}; Node ${version(node) || "unknown"}`,
+        paths: { ...paths }
+      };
+      for (const [name, result] of [["Node", node], ["npx", npx], ["Pi", codex]]) {
+        if (result.exitCode !== 0) {
+          throw new ACPError("PI_RUNTIME_PROBE_FAILED", `${name} --version failed`, {
+            ...details, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr
+          });
+        }
+      }
+      if (!version(node) || !version(codex)) {
+        throw new ACPError("PI_RUNTIME_VERSION_UNKNOWN", "Could not read the Node / Pi version", {
+          ...details, stdout: `Node: ${node.stdout}\nPi: ${codex.stdout}`,
+          stderr: `Node: ${node.stderr}\nPi: ${codex.stderr}`
+        });
+      }
+      if (!atLeast(version(node), [22, 19, 0]) || !atLeast(version(codex), [0, 85, 1])) {
+        throw new ACPError("PI_RUNTIME_VERSION", "Pi >= 0.85.1 and Node >= 22.19.0 are required for offline startup", details);
+      }
+    }
     return {
       paths: { ...paths },
       versions: {
-        node: describe(node),
-        npx: describe(npx),
-        codex: describe(codex),
+        node: describeRuntime(node),
+        npx: describeRuntime(npx),
+        [provider.id]: describeRuntime(codex),
         codexACP: ""
       },
-      login: describe(login),
+      login: describeRuntime(login),
       healthy: node.exitCode === 0 && npx.exitCode === 0 && codex.exitCode === 0,
       lastError: [node, npx, codex].filter((result) => result.exitCode !== 0)
         .map((result) => result.stderr || result.stdout).join("\n")
     };
   }
 
-  function createZoteroACPClient({ getPreference, setPreference, log } = {}) {
+  function createZoteroACPClient({ getPreference, setPreference, log, agentId = "codex" } = {}) {
+    const provider = Agents.getProvider(agentId);
     const readPaths = () => ({
       nodePath: String(getPreference(Constants.PREFS.codexNodePath) || "").trim(),
       npxCliPath: String(getPreference(Constants.PREFS.codexNpxCliPath) || "").trim(),
-      codexPath: String(getPreference(Constants.PREFS.codexExecutablePath) || "").trim()
+      [`${provider.id}Path`]: String(getPreference(provider.executablePref) || "").trim()
     });
     const fingerprint = () => JSON.stringify(readPaths());
     return new ACPClient({
-      processFactory: (options) => createSubprocess(readPaths(), options),
+      agentId,
+      processFactory: (options) => createSubprocess(readPaths(), options, agentId),
       getPreparedVersion: () => {
         const savedFingerprint = String(
-          getPreference(Constants.PREFS.codexPreparedFingerprint) || ""
+          getPreference(provider.fingerprintPref) || ""
         );
         return savedFingerprint === fingerprint()
-          ? String(getPreference(Constants.PREFS.codexPreparedVersion) || "")
+          ? String(getPreference(provider.preparedPref) || "")
           : "";
       },
       setPreparedVersion: (version) => {
-        setPreference(Constants.PREFS.codexPreparedVersion, version);
-        setPreference(Constants.PREFS.codexPreparedFingerprint, fingerprint());
+        setPreference(provider.preparedPref, version);
+        setPreference(provider.fingerprintPref, fingerprint());
       },
       log
     });
@@ -819,6 +963,10 @@
     detectLocalPaths,
     validateRuntimePaths,
     inspectLocalRuntime,
+    detectSharedPaths,
+    listRuntimePathCandidates,
+    inspectSharedRuntime,
+    createSubprocess,
     createEnvironment,
     createZoteroACPClient
   };

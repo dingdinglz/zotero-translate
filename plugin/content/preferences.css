@@ -35,9 +35,106 @@
 }
 
 .spt-prefs-path-row input {
-  min-width: 320px;
+  min-width: 0;
   flex: 1;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#spt-acp-settings {
+  min-width: 0;
+}
+
+#spt-acp-settings .spt-prefs-grid {
+  grid-template-columns: 110px minmax(0, 1fr);
+}
+
+#spt-acp-settings h3 {
+  margin: 12px 0 8px;
+  font-size: 1em;
+}
+
+#spt-acp-settings p {
+  margin: 8px 0 12px;
+  line-height: 1.5;
+}
+
+#spt-acp-settings .spt-prefs-path-row,
+#spt-acp-settings select {
+  min-width: 0;
+}
+
+#spt-acp-settings .spt-prefs-path-row button {
+  flex: none;
+}
+
+#spt-acp-settings .spt-codex-actions {
+  flex-wrap: wrap;
+}
+
+.spt-path-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+#spt-acp-settings .spt-path-field input,
+#spt-acp-settings .spt-path-field select {
+  min-height: 28px;
+}
+
+#spt-acp-settings .spt-path-help {
+  color: color-mix(in srgb, currentColor 72%, transparent);
+  font-size: 0.95em;
+}
+
+.spt-agent-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  width: fit-content;
+  gap: 3px;
+  margin: 20px 0 4px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+.spt-agent-tabs [role="tab"] {
+  appearance: none;
+  min-width: 94px;
+  min-height: 32px;
+  margin: 0 !important;
+  padding: 6px 22px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.spt-agent-tabs [role="tab"]:hover {
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.spt-agent-tabs [role="tab"][aria-selected="true"] {
+  border-color: color-mix(in srgb, currentColor 10%, transparent);
+  background: var(--material-background, Canvas);
+  color: var(--fill-primary, CanvasText);
+  font-weight: 600;
+  box-shadow: 0 1px 3px #00000018;
+}
+
+.spt-agent-tabs [role="tab"]:focus-visible {
+  outline: 2px solid AccentColor;
+  outline-offset: 2px;
+}
+
+.spt-agent-panel[hidden] {
+  display: none !important;
 }
 
 .spt-codex-actions {
@@ -67,7 +164,9 @@
   overflow-wrap: anywhere;
 }
 
-.spt-codex-runtime-status [data-codex-status="error"] {
+.spt-codex-runtime-status [data-codex-status="error"],
+#spt-acp-status,
+#spt-pi-status {
   max-height: 240px;
   overflow: auto;
   white-space: pre-wrap;

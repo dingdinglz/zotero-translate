@@ -18,6 +18,8 @@
     typeof require === "function" ? require("./pdf-screenshot.js") : null
   );
 
+  const Agents = modules.AgentProviders || (typeof require === "function" ? require("./agent-providers.js") : null);
+
   const CODEX_L10N_RESOURCE = "smart-paper-translator-codex-chat.ftl";
   const LEGACY_CODEX_L10N_RESOURCE = "smart-paper-translator.ftl";
   const CODEX_HEADER_L10N_ID = "smart-paper-translator-codex-chat-pane-header";
@@ -366,9 +368,10 @@
     container.append(wrapper);
   }
 
-  function setLocalizedText(element, id, fallback) {
+  function setLocalizedText(element, id, fallback, args = null) {
     element.textContent = fallback;
     element.setAttribute("data-l10n-id", id);
+    if (args) element.setAttribute("data-l10n-args", JSON.stringify(args));
   }
 
   function appendMermaidBlock(doc, container, value, options = {}) {
@@ -1220,6 +1223,7 @@
       mermaidRenderer,
       requestScreenshotCapture,
       canStartScreenshotCapture,
+      isScreenshotPending,
       log
     } = {}) {
       this.service = service;
@@ -1230,6 +1234,7 @@
       });
       this.requestScreenshotCapture = requestScreenshotCapture;
       this.canStartScreenshotCapture = canStartScreenshotCapture;
+      this.isScreenshotPending = isScreenshotPending;
       this.log = log || (() => {});
       this.pluginID = null;
       this.paneID = null;
@@ -1237,13 +1242,27 @@
       this.drafts = new Map();
       this.pendingDraftFocus = new Set();
       this.windowCleanups = new Map();
+      this.selectionCleanup = service?.subscribeSelection?.(({ attachmentID }) => {
+        for (const view of this.views.values()) {
+          if (resolveReaderAttachmentID(view.body) === attachmentID) void this._loadView({ body: view.body });
+        }
+      });
     }
 
-    _draftFor(attachmentID, create = true) {
-      let draft = this.drafts.get(attachmentID);
+    _agentService(attachmentID, agentId = "codex") {
+      return this.service?.forAgent ? this.service.forAgent(agentId, attachmentID) : this.service || {};
+    }
+
+    _draftKey(attachmentID, agentId = "codex") {
+      return agentId === "codex" ? attachmentID : `${agentId}:${attachmentID}`;
+    }
+
+    _draftFor(attachmentID, create = true, agentId = "codex") {
+      const draftKey = this._draftKey(attachmentID, agentId);
+      let draft = this.drafts.get(draftKey);
       if (!draft && create) {
         draft = { question: "", selections: [], screenshots: [] };
-        this.drafts.set(attachmentID, draft);
+        this.drafts.set(draftKey, draft);
       }
       if (draft) {
         if (!Array.isArray(draft.selections)) draft.selections = [];
@@ -1333,14 +1352,14 @@
       return true;
     }
 
-    _syncDraftViews(attachmentID) {
-      const draft = this._draftFor(attachmentID, false) || {
+    _syncDraftViews(attachmentID, agentId = "codex") {
+      const draft = this._draftFor(attachmentID, false, agentId) || {
         question: "",
         selections: [],
         screenshots: []
       };
       for (const view of this.views.values()) {
-        if (view.attachmentID !== attachmentID) continue;
+        if (view.attachmentID !== attachmentID || (view.agentId || "codex") !== agentId) continue;
         if (view.elements.input.value !== draft.question) {
           view.elements.input.value = draft.question;
         }
@@ -1349,10 +1368,10 @@
       }
     }
 
-    _restoreScreenshotDrafts(attachmentID, state) {
+    _restoreScreenshotDrafts(attachmentID, state, agentId = "codex") {
       const persisted = CodexChat.normalizeStoredScreenshots(state?.record?.draft?.screenshots);
       if (!persisted.length) return false;
-      const draft = this._draftFor(attachmentID);
+      const draft = this._draftFor(attachmentID, true, agentId);
       const known = new Set(draft.screenshots.map((screenshot) => screenshot.id));
       let changed = false;
       for (const screenshot of persisted) {
@@ -1361,7 +1380,7 @@
         known.add(screenshot.id);
         changed = true;
       }
-      if (changed) this._syncDraftViews(attachmentID);
+      if (changed) this._syncDraftViews(attachmentID, agentId);
       return changed;
     }
 
@@ -1370,15 +1389,17 @@
       if (!this.canAddSelectionContext({ tabID, attachmentID: normalizedAttachmentID })) {
         throw new Error("无法精确匹配当前 Reader PDF，未添加选区");
       }
+      const agentId = await this.service?.getActiveAgent?.(normalizedAttachmentID) || "codex";
+      if (!this.canAddSelectionContext({ tabID, attachmentID: normalizedAttachmentID })) throw new Error("Reader changed");
       const normalizedSelection = CodexChat.normalizeSelectionContext(selection);
-      if (!normalizedSelection) throw new Error("选中文本的位置无效，未添加到 Codex");
-      const draft = this._draftFor(normalizedAttachmentID);
+      if (!normalizedSelection) throw new Error("选中文本的位置无效，未添加到 Agents");
+      const draft = this._draftFor(normalizedAttachmentID, true, agentId);
       const key = CodexChat.selectionContextKey(normalizedSelection);
       const added = !draft.selections.some(
         (candidate) => CodexChat.selectionContextKey(candidate) === key
       );
       if (added) draft.selections.push(normalizedSelection);
-      this._syncDraftViews(normalizedAttachmentID);
+      this._syncDraftViews(normalizedAttachmentID, agentId);
       const focusKey = this._draftFocusKey(tabID, normalizedAttachmentID);
       this.pendingDraftFocus.add(focusKey);
       const revealed = await this._revealCodexPane(tabID).catch((error) => {
@@ -1394,30 +1415,35 @@
       tabID,
       attachmentID,
       captures,
-      replaceScreenshotID = null
+      replaceScreenshotID = null,
+      agentId = null
     } = {}) {
       const normalizedAttachmentID = Number(attachmentID);
       if (!this.canAddScreenshotContext({ tabID, attachmentID: normalizedAttachmentID })) {
         throw new Error("无法精确匹配当前 Reader PDF，未添加截图");
       }
       if (!Array.isArray(captures) || !captures.length) {
-        throw new Error("没有可加入 Codex 草稿的 PDF 截图");
+        throw new Error("没有可加入 Agents 草稿的 PDF 截图");
       }
-      const draft = this._draftFor(normalizedAttachmentID);
+      agentId ||= await this.service?.getActiveAgent?.(normalizedAttachmentID) || "codex";
+      Agents.getProvider(agentId);
+      if (!this.canAddScreenshotContext({ tabID, attachmentID: normalizedAttachmentID })) throw new Error("Reader changed");
+      const service = this._agentService(normalizedAttachmentID, agentId);
+      const draft = this._draftFor(normalizedAttachmentID, true, agentId);
       const oldIndex = replaceScreenshotID
         ? draft.screenshots.findIndex((screenshot) => screenshot.id === replaceScreenshotID)
         : -1;
       if (replaceScreenshotID && oldIndex < 0) {
         throw new Error("待重新框选的截图已不在当前草稿中");
       }
-      const stored = await this.service.saveScreenshotDrafts(normalizedAttachmentID, captures);
+      const stored = await service.saveScreenshotDrafts(normalizedAttachmentID, captures);
       if (replaceScreenshotID) {
         const previous = draft.screenshots[oldIndex];
         try {
-          await this.service.deleteScreenshotDrafts(normalizedAttachmentID, [previous]);
+          await service.deleteScreenshotDrafts(normalizedAttachmentID, [previous]);
         }
         catch (error) {
-          await this.service.deleteScreenshotDrafts(normalizedAttachmentID, stored)
+          await service.deleteScreenshotDrafts(normalizedAttachmentID, stored)
             .catch((cleanupError) => this.log("清理未采用的 PDF 截图失败", cleanupError));
           throw error;
         }
@@ -1426,7 +1452,7 @@
       else {
         draft.screenshots.push(...stored);
       }
-      this._syncDraftViews(normalizedAttachmentID);
+      this._syncDraftViews(normalizedAttachmentID, agentId);
       const focusKey = this._draftFocusKey(tabID, normalizedAttachmentID);
       this.pendingDraftFocus.add(focusKey);
       const revealed = await this._revealCodexPane(tabID).catch((error) => {
@@ -1443,6 +1469,7 @@
       return {
         tabID: details?.tabID,
         attachmentID: view?.attachmentID,
+        agentId: view?.agentId || "codex",
         replaceScreenshotID
       };
     }
@@ -1487,11 +1514,11 @@
         pluginID,
         header: {
           l10nID: CODEX_HEADER_L10N_ID,
-          icon: this.rootURI + "content/codex.svg"
+          icon: this.rootURI + "content/agents.svg"
         },
         sidenav: {
           l10nID: CODEX_SIDENAV_L10N_ID,
-          icon: this.rootURI + "content/codex.svg"
+          icon: this.rootURI + "content/agents.svg"
         },
         onInit: ({ doc }) => {
           ensureCodexLocalization(doc.defaultView);
@@ -1540,6 +1567,8 @@
     _destroyView(body) {
       const view = this.views.get(body);
       if (!view) return;
+      ++view.requestSerial;
+      this.service?.release?.(view.agentId, view.attachmentID);
       view.closeImageLightbox?.();
       view.unsubscribe?.();
       for (const cleanup of view.cleanups) cleanup();
@@ -1641,6 +1670,21 @@
       body.replaceChildren();
       const root = doc.createElement("div");
       root.className = "spt-codex-chat";
+      const agentLabel = doc.createElement("label");
+      agentLabel.className = "spt-agents-selector";
+      const agentTitle = doc.createElement("span");
+      setLocalizedText(agentTitle, "smart-paper-translator-agents-selector", "Agent");
+      const agent = doc.createElement("select");
+      agent.setAttribute("aria-label", "Agent");
+      for (const provider of Object.values(Agents.providers)) {
+        const option = doc.createElement("option");
+        option.value = provider.id;
+        option.textContent = provider.label;
+        agent.append(option);
+      }
+      agent.value = "codex";
+      agent.addEventListener("change", () => this._switchAgent(body, agent.value));
+      agentLabel.append(agentTitle, agent);
       const toolbar = doc.createElement("div");
       toolbar.className = "spt-codex-toolbar";
       const statusGroup = doc.createElement("div");
@@ -1655,9 +1699,9 @@
       const toolbarActions = doc.createElement("div");
       toolbarActions.className = "spt-codex-toolbar-actions";
       const reload = makeButton(doc, "重新加载", () => this._run(body, "reload"), "spt-codex-button-subtle");
-      reload.title = "从 Codex thread 重新同步当前论文的对话";
+      reload.title = "从当前 Agent 重新同步当前论文的对话";
       const workspace = makeButton(doc, "工作区", () => this._run(body, "workspace"), "spt-codex-button-subtle");
-      workspace.title = "在 Finder 中显示当前论文的 Codex 工作区";
+      workspace.title = "在 Finder 中显示当前论文的 Agent 工作区";
       const copyLog = makeButton(doc, "复制日志", () => this._run(body, "copy-log"), "spt-codex-button-subtle");
       copyLog.title = "复制当前实时 turn 的脱敏工具与思考事件日志";
       copyLog.hidden = true;
@@ -1709,17 +1753,19 @@
       send.disabled = true;
       actions.append(screenshot, stop, send);
       composer.append(activity, draftContexts, input, actions);
-      root.append(toolbar, configuration, notices, messages, composer);
+      root.append(agentLabel, toolbar, configuration, notices, messages, composer);
       body.append(root);
       const view = {
         body,
         root,
         attachmentID: null,
+        agentId: "codex",
+        requestSerial: 0,
         state: null,
         transcriptRendered: false,
         setSectionSummary,
         elements: {
-          status, configuration, notices, messages, activity, activityText, draftContexts,
+          agent, status, configuration, notices, messages, activity, activityText, draftContexts,
           input, send, stop, screenshot,
           reload, workspace, copyLog, reset
         },
@@ -1733,8 +1779,8 @@
       };
       const inputChanged = () => {
         if (!view.attachmentID) return;
-        this._draftFor(view.attachmentID).question = input.value;
-        this._syncDraftViews(view.attachmentID);
+        this._draftFor(view.attachmentID, true, view.agentId).question = input.value;
+        this._syncDraftViews(view.attachmentID, view.agentId);
       };
       input.addEventListener("keydown", keydown);
       input.addEventListener("input", inputChanged);
@@ -1869,6 +1915,11 @@
     }
 
     _appendScreenshotGroups(container, screenshots, { view, draft = false } = {}) {
+      const attachmentID = view?.attachmentID;
+      const agentId = view?.agentId || "codex";
+      const service = this._agentService(attachmentID, agentId);
+      const serial = view?.requestSerial;
+      const currentView = () => view?.requestSerial === serial && view?.attachmentID === attachmentID && (view?.agentId || "codex") === agentId;
       const normalized = screenshots.map(PDFScreenshot.normalizeStoredScreenshot).filter(Boolean);
       const groups = new Map();
       for (const screenshot of normalized) {
@@ -1893,30 +1944,31 @@
             registerDeferredImageLoader: (loader) => loaders.push(loader),
             onRemove: draft ? async () => {
               try {
-                await this.service.deleteScreenshotDrafts(view.attachmentID, [screenshot]);
-                const current = this._draftFor(view.attachmentID, false);
+                if (!currentView()) return;
+                await service.deleteScreenshotDrafts(attachmentID, [screenshot]);
+                const current = this._draftFor(attachmentID, false, agentId);
                 if (!current) return;
                 current.screenshots = current.screenshots.filter(
                   (candidate) => candidate.id !== screenshot.id
                 );
-                this._syncDraftViews(view.attachmentID);
+                this._syncDraftViews(attachmentID, agentId);
               }
               catch (error) {
-                view.elements.notices.textContent = error?.message || "无法移除 PDF 截图";
+                if (currentView()) view.elements.notices.textContent = error?.message || "无法移除 PDF 截图";
               }
             } : null,
             onReselect: draft ? async () => {
-              if (view.screenshotPending) return;
+              if (!currentView() || view.screenshotPending) return;
               view.screenshotPending = true;
               this._updateComposerAvailability(view);
               try {
                 const result = await this._requestScreenshot(view, screenshot.id);
-                view.elements.notices.textContent = result?.cancelled
+                if (currentView()) view.elements.notices.textContent = result?.cancelled
                   ? "已取消重新框选，原截图仍保留"
                   : `已用 ${Number(result?.added) || 0} 张新截图替换原截图`;
               }
               catch (error) {
-                view.elements.notices.textContent = error?.message || "重新框选失败，原截图仍保留";
+                if (currentView()) view.elements.notices.textContent = error?.message || "重新框选失败，原截图仍保留";
               }
               finally {
                 view.screenshotPending = false;
@@ -1941,7 +1993,7 @@
       const container = view?.elements?.draftContexts;
       if (!container) return;
       container.replaceChildren();
-      const draft = this._draftFor(view.attachmentID, false);
+      const draft = this._draftFor(view.attachmentID, false, view.agentId);
       const selections = draft?.selections || [];
       const screenshots = draft?.screenshots || [];
       container.hidden = !selections.length && !screenshots.length;
@@ -1949,12 +2001,12 @@
         const key = CodexChat.selectionContextKey(selection);
         this._appendSelectionContextCard(container, selection, {
           onRemove: () => {
-            const current = this._draftFor(view.attachmentID, false);
+            const current = this._draftFor(view.attachmentID, false, view.agentId);
             if (!current) return;
             current.selections = current.selections.filter(
               (candidate) => CodexChat.selectionContextKey(candidate) !== key
             );
-            this._syncDraftViews(view.attachmentID);
+            this._syncDraftViews(view.attachmentID, view.agentId);
           }
         });
       }
@@ -1968,11 +2020,13 @@
       const state = view.state;
       const busy = ["connecting", "generating", "cancelling"].includes(state?.status);
       const waiting = state?.status === "waiting-approval";
+      if (view.elements.agent) view.elements.agent.disabled = Boolean(!view.attachmentID || busy || waiting ||
+        view.screenshotPending || this.isScreenshotPending?.(view.attachmentID));
       const blocked = !view.attachmentID || !state || busy || waiting ||
         state.sourceChanged || state.historyReadOnly;
-      const question = this._draftFor(view.attachmentID, false)?.question ||
+      const question = this._draftFor(view.attachmentID, false, view.agentId)?.question ||
         view.elements.input.value || "";
-      const screenshots = this._draftFor(view.attachmentID, false)?.screenshots || [];
+      const screenshots = this._draftFor(view.attachmentID, false, view.agentId)?.screenshots || [];
       view.elements.input.disabled = Boolean(blocked);
       view.elements.send.disabled = Boolean(blocked || (!question.trim() && !screenshots.length));
       if (view.elements.screenshot) {
@@ -1983,47 +2037,101 @@
       }
     }
 
+    refreshAvailability() {
+      for (const view of this.views.values()) this._updateComposerAvailability(view);
+    }
+
+    async _switchAgent(body, agentId) {
+      const view = this.views.get(body);
+      if (!view?.attachmentID || !this.service.setActiveAgent) return;
+      const previous = view.agentId;
+      if (["connecting", "generating", "cancelling", "waiting-approval"].includes(view.state?.status) ||
+        view.screenshotPending || this.isScreenshotPending?.(view.attachmentID)) {
+        view.elements.agent.value = previous;
+        return;
+      }
+      view.elements.agent.disabled = true;
+      try {
+        await this.service.setActiveAgent(view.attachmentID, agentId);
+        if (this.views.get(body) === view) await this._loadView({ body });
+      }
+      catch (error) {
+        if (this.views.get(body) === view) {
+          view.elements.agent.value = previous;
+          view.elements.notices.textContent = error.message;
+        }
+      }
+      finally { this._updateComposerAvailability(view); }
+    }
+
     async _loadView({ body, setSectionSummary }) {
-      let view = this.views.get(body);
+      const view = this.views.get(body);
       if (!view) return;
+      const serial = ++view.requestSerial;
       view.setSectionSummary = setSectionSummary || view.setSectionSummary;
       const attachmentID = resolveReaderAttachmentID(body);
+      const current = () => this.views.get(body) === view && view.requestSerial === serial &&
+        resolveReaderAttachmentID(body) === attachmentID;
+      view.elements.input.disabled = true;
+      view.elements.send.disabled = true;
+      if (view.elements.agent) view.elements.agent.disabled = true;
       if (!attachmentID) {
-        view.elements.notices.textContent = "无法从当前 Reader tab 精确取得 PDF 附件，Codex 对话已禁用。";
-        view.elements.input.disabled = true;
-        view.elements.send.disabled = true;
+        view.unsubscribe?.();
+        this.service.release?.(view.agentId, view.attachmentID);
+        view.attachmentID = null;
+        view.state = null;
+        view.elements.notices.textContent = "无法从当前 Reader tab 精确取得 PDF 附件，Agents 对话已禁用。";
         view.setSectionSummary?.("无法识别 PDF");
         return;
       }
-      if (view.attachmentID !== attachmentID) {
-        view.unsubscribe?.();
-        view.attachmentID = attachmentID;
-        view.transcriptRendered = false;
-        view.unsubscribe = this.service.subscribe(attachmentID, (state) => this._updateView(view, state));
-      }
-      const draft = this._draftFor(attachmentID, false);
-      view.elements.input.value = draft?.question || "";
-      this._renderDraftContexts(view);
       try {
-        const state = await this.service.load(attachmentID);
-        this._restoreScreenshotDrafts(attachmentID, state);
+        const agentId = await this.service?.getActiveAgent?.(attachmentID) || "codex";
+        if (!current()) return;
+        const service = this._agentService(attachmentID, agentId);
+        view.unsubscribe?.();
+        if (view.attachmentID !== attachmentID || view.agentId !== agentId) {
+          this.service.release?.(view.agentId, view.attachmentID);
+          this.service.retain?.(agentId, attachmentID);
+          view.closeImageLightbox?.();
+          view.state = null;
+          view.transcriptRendered = false;
+        }
+        view.attachmentID = attachmentID;
+        view.agentId = agentId;
+        view.unsubscribe = service.subscribe(attachmentID, (state) => {
+          if (current()) this._updateView(view, state);
+        });
+        if (view.elements.agent) view.elements.agent.value = agentId;
+        const draft = this._draftFor(attachmentID, false, agentId);
+        view.elements.input.value = draft?.question || "";
+        this._renderDraftContexts(view);
+        const state = await service.load(attachmentID);
+        if (!current()) return;
+        this._restoreScreenshotDrafts(attachmentID, state, agentId);
         this._updateView(view, state);
         this._focusDraftInput(view);
       }
       catch (error) {
+        if (!current()) return;
         view.elements.notices.textContent = error.message || "无法加载论文对话";
         view.elements.input.disabled = true;
         view.elements.send.disabled = true;
+        if (view.elements.agent) view.elements.agent.disabled = false;
       }
     }
 
     async _run(body, action) {
       const view = this.views.get(body);
       if (!view?.attachmentID) return;
+      const attachmentID = view.attachmentID;
+      const agentId = view.agentId || "codex";
+      const service = this._agentService(attachmentID, agentId);
+      const serial = view.requestSerial;
+      const current = () => this.views.get(body) === view && view.requestSerial === serial && view.attachmentID === attachmentID && (view.agentId || "codex") === agentId;
       let pendingDraft = null;
       try {
         if (action === "send") {
-          const draft = this._draftFor(view.attachmentID);
+          const draft = this._draftFor(attachmentID, true, agentId);
           draft.question = view.elements.input.value;
           const question = draft.question.trim();
           const screenshots = CodexChat.normalizeStoredScreenshots(draft.screenshots);
@@ -2033,13 +2141,13 @@
             selections: CodexChat.normalizeSelectionContexts(draft.selections),
             screenshots
           };
-          this.drafts.set(view.attachmentID, {
+          this.drafts.set(this._draftKey(attachmentID, agentId), {
             question: "",
             selections: [],
             screenshots: []
           });
-          this._syncDraftViews(view.attachmentID);
-          await this.service.send(view.attachmentID, question, {
+          this._syncDraftViews(attachmentID, agentId);
+          await service.send(attachmentID, question, {
             selections: pendingDraft.selections,
             screenshots: pendingDraft.screenshots
           });
@@ -2050,7 +2158,7 @@
           this._updateComposerAvailability(view);
           try {
             const result = await this._requestScreenshot(view);
-            view.elements.notices.textContent = result?.cancelled
+            if (current()) view.elements.notices.textContent = result?.cancelled
               ? "已取消截图"
               : `已加入 ${Number(result?.added) || 0} 张 PDF 截图草稿`;
           }
@@ -2059,33 +2167,35 @@
             this._updateComposerAvailability(view);
           }
         }
-        else if (action === "reload") await this.service.reload(view.attachmentID);
-        else if (action === "cancel") await this.service.cancel(view.attachmentID);
-        else if (action === "workspace") await this.service.openWorkspace(view.attachmentID);
+        else if (action === "reload") await service.reload(attachmentID);
+        else if (action === "cancel") await service.cancel(attachmentID);
+        else if (action === "workspace") await service.openWorkspace(attachmentID);
         else if (action === "copy-log") {
-          const report = await this.service.getDiagnosticReport(view.attachmentID);
+          const report = await service.getDiagnosticReport(attachmentID);
           await copyTextToClipboard(
             body.ownerDocument,
             JSON.stringify(report, null, 2)
           );
-          view.elements.copyLog.dataset.copiedCount = String(report.eventCount);
-          view.elements.copyLog.textContent = `已复制 ${report.eventCount} 条`;
+          if (current()) {
+            view.elements.copyLog.dataset.copiedCount = String(report.eventCount);
+            view.elements.copyLog.textContent = `已复制 ${report.eventCount} 条`;
+          }
         }
         else if (action === "reset") {
           const confirmed = body.ownerDocument.defaultView.confirm(
-            "新建会话会归档当前映射和旧工作区，并删除旧会话的工具图片与 PDF 截图副本；不会删除 Codex thread。继续吗？"
+            "新建会话会归档当前映射和旧工作区，并删除旧会话的工具图片与 PDF 截图副本；不会删除 Agent 远端会话。继续吗？"
           );
           if (confirmed) {
-            await this.service.rebuild(view.attachmentID);
-            const draft = this._draftFor(view.attachmentID, false);
+            await service.rebuild(attachmentID);
+            const draft = this._draftFor(attachmentID, false, agentId);
             if (draft) draft.screenshots = [];
-            this._syncDraftViews(view.attachmentID);
+            this._syncDraftViews(attachmentID, agentId);
           }
         }
       }
       catch (error) {
         if (action === "send" && pendingDraft) {
-          const current = this._draftFor(view.attachmentID);
+          const current = this._draftFor(attachmentID, true, agentId);
           const restored = [];
           const seen = new Set();
           for (const selection of [...pendingDraft.selections, ...current.selections]) {
@@ -2105,16 +2215,57 @@
             restoredScreenshots.push(normalized);
           }
           current.screenshots = restoredScreenshots;
-          this._syncDraftViews(view.attachmentID);
+          this._syncDraftViews(attachmentID, agentId);
         }
-        view.elements.notices.textContent = error.message || "操作失败";
+        if (current()) view.elements.notices.textContent = error.message || "操作失败";
       }
     }
 
     _renderConfig(view, state) {
+      const attachmentID = view.attachmentID;
+      const agentId = view.agentId || "codex";
+      const service = this._agentService(attachmentID, agentId);
+      const serial = view.requestSerial;
+      const current = () => view.requestSerial === serial && view.attachmentID === attachmentID && (view.agentId || "codex") === agentId;
       const doc = view.body.ownerDocument;
       const container = view.elements.configuration;
       container.replaceChildren();
+      const access = doc.createElement("label");
+      access.className = "spt-agents-access";
+      if (agentId === "codex") {
+        const label = doc.createElement("span");
+        setLocalizedText(label, "smart-paper-translator-agents-access", "权限");
+        const select = doc.createElement("select");
+        select.setAttribute("aria-label", "Codex access mode");
+        for (const [value, key, fallback] of [["agent", "approval", "审批模式"], ["agent-full-access", "full", "Full Access"]]) {
+          const choice = doc.createElement("option");
+          choice.value = value;
+          setLocalizedText(choice, `smart-paper-translator-agents-${key}`, fallback);
+          select.append(choice);
+        }
+        select.value = state.record.session.config.mode || "agent";
+        select.disabled = ["connecting", "generating", "cancelling", "waiting-approval"].includes(state.status);
+        select.addEventListener("change", async () => {
+          const previous = state.record.session.config.mode || "agent";
+          select.disabled = true;
+          try { await service.setSessionConfig(attachmentID, "mode", select.value); }
+          catch (error) {
+            select.value = previous;
+            select.disabled = false;
+            if (current()) view.elements.notices.textContent = error.message;
+          }
+        });
+        access.append(label, select);
+        const hint = doc.createElement("p");
+        hint.className = "spt-codex-config-hint";
+        setLocalizedText(hint, "smart-paper-translator-agents-full-hint", "Full Access 允许操作工作区外的文件和联网，仅作用于当前 Codex 会话。");
+        access.append(hint);
+      }
+      else {
+        access.classList?.add("spt-agents-access-pi");
+        setLocalizedText(access, "smart-paper-translator-agents-pi-access", "Pi 按本机配置直接执行工具；这里不提供 Codex 的审批模式。扩展发出的交互请求仍需回应。");
+      }
+      container.append(access);
       if (!state.configOptions.length) {
         const unavailable = doc.createElement("p");
         unavailable.className = "spt-codex-config-hint";
@@ -2138,8 +2289,17 @@
         ).filter((entry) => entry?.value);
         if (!option || !values.length) continue;
         const labelElement = doc.createElement("label");
-        labelElement.textContent = label;
+        labelElement.className = "spt-codex-config-field";
+        const labelText = doc.createElement("span");
+        setLocalizedText(labelText, `smart-paper-translator-agents-${id === "model" ? "model" : "thinking-label"}`, label);
+        labelElement.append(labelText);
+        const picker = doc.createElement("span");
+        picker.className = "spt-codex-config-picker";
+        const selectedText = doc.createElement("span");
+        selectedText.className = "spt-codex-config-value";
+        selectedText.setAttribute("aria-hidden", "true");
         const select = doc.createElement("select");
+        select.className = "spt-codex-config-native";
         for (const entry of values) {
           const choice = doc.createElement("option");
           choice.value = entry.value;
@@ -2149,24 +2309,42 @@
         select.value = state.record.session.config[recordKey] || option.currentValue || "";
         select.disabled = ["connecting", "generating", "cancelling", "waiting-approval"]
           .includes(state.status);
+        // A closed native select cannot wrap its selected label. Keep the
+        // native control for its menu/keyboard semantics and paint a wrapping
+        // label beneath it, synchronized on selection and failure rollback.
+        const syncPicker = () => {
+          const selected = values.find(entry => entry.value === select.value);
+          selectedText.textContent = selected?.name || selected?.label || select.value;
+          select.title = selectedText.textContent;
+          picker.setAttribute("data-disabled", String(select.disabled));
+        };
+        syncPicker();
         select.addEventListener("change", async () => {
           const previous = state.record.session.config[recordKey] || option.currentValue || "";
           select.disabled = true;
+          syncPicker();
           try {
-            await this.service.setSessionConfig(view.attachmentID, id, select.value);
+            await service.setSessionConfig(attachmentID, id, select.value);
           }
           catch (error) {
             select.value = previous;
-            view.elements.notices.textContent = error.message || "配置失败";
+            if (current()) view.elements.notices.textContent = error.message || "配置失败";
             select.disabled = false;
+            syncPicker();
           }
         });
-        labelElement.append(select);
+        picker.append(selectedText, select);
+        labelElement.append(picker);
         container.append(labelElement);
       }
     }
 
     _renderNotices(view, state) {
+      const attachmentID = view.attachmentID;
+      const agentId = view.agentId || "codex";
+      const service = this._agentService(attachmentID, agentId);
+      const serial = view.requestSerial;
+      const current = () => view.requestSerial === serial && view.attachmentID === attachmentID && (view.agentId || "codex") === agentId;
       const doc = view.body.ownerDocument;
       const container = view.elements.notices;
       container.replaceChildren();
@@ -2184,13 +2362,13 @@
         notice.append(
           text,
           makeButton(doc, "继续使用旧快照", () => {
-            this.service.acknowledgeSourceChange(view.attachmentID).catch((error) => {
-              container.textContent = error.message;
+            service.acknowledgeSourceChange(attachmentID).catch((error) => {
+              if (current()) container.textContent = error.message;
             });
           }),
           makeButton(doc, "为新 PDF 新建会话", async () => {
             if (doc.defaultView.confirm("归档旧映射、删除旧会话工具图片副本，并为新 PDF 建立会话？")) {
-              await this.service.rebuild(view.attachmentID, "source-changed");
+              await service.rebuild(attachmentID, "source-changed");
             }
           }, "spt-codex-danger-button")
         );
@@ -2199,7 +2377,8 @@
       if (!state.adapter.preparedVersion || state.adapter.preparedVersion !== state.adapter.requiredVersion) {
         const notice = doc.createElement("div");
         notice.className = "spt-codex-notice";
-        notice.textContent = `尚未准备 codex-acp ${state.adapter.requiredVersion}。请先到插件设置执行“准备并检测 ACP”。`;
+        setLocalizedText(notice, "smart-paper-translator-agents-not-prepared", `尚未准备 ${Agents.getProvider(agentId).command} ${state.adapter.requiredVersion}。请先到插件设置执行“准备并检测 ACP”。`,
+          { adapter: Agents.getProvider(agentId).command, version: state.adapter.requiredVersion });
         container.append(notice);
       }
       for (const interaction of state.pendingInteractions) {
@@ -2208,6 +2387,11 @@
     }
 
     _renderInteraction(view, interaction) {
+      const attachmentID = view.attachmentID;
+      const agentId = view.agentId || "codex";
+      const service = this._agentService(attachmentID, agentId);
+      const serial = view.requestSerial;
+      const current = () => view.requestSerial === serial && view.attachmentID === attachmentID && (view.agentId || "codex") === agentId;
       const doc = view.body.ownerDocument;
       const card = doc.createElement("div");
       card.className = "spt-codex-interaction";
@@ -2231,8 +2415,8 @@
         actions.className = "spt-codex-interaction-actions";
         for (const option of interaction.options) {
           actions.append(makeButton(doc, option.name, () => {
-            this.service.respondPermission(view.attachmentID, interaction.id, option.optionId)
-              .catch((error) => { view.elements.notices.textContent = error.message; });
+            service.respondPermission(attachmentID, interaction.id, option.optionId)
+              .catch((error) => { if (current()) view.elements.notices.textContent = error.message; });
           }, /reject|deny|cancel|拒绝/iu.test(`${option.kind} ${option.name}`) ? "spt-codex-danger-button" : ""));
         }
         card.append(actions);
@@ -2274,13 +2458,13 @@
             if (property.type === "number" || property.type === "integer") value = Number(value);
             content[name] = value;
           }
-          this.service.respondElicitation(view.attachmentID, interaction.id, "accept", content)
-            .catch((error) => { view.elements.notices.textContent = error.message; });
+          service.respondElicitation(attachmentID, interaction.id, "accept", content)
+            .catch((error) => { if (current()) view.elements.notices.textContent = error.message; });
         });
         const decline = makeButton(doc, "拒绝", (event) => {
           event.preventDefault();
-          this.service.respondElicitation(view.attachmentID, interaction.id, "decline")
-            .catch((error) => { view.elements.notices.textContent = error.message; });
+          service.respondElicitation(attachmentID, interaction.id, "decline")
+            .catch((error) => { if (current()) view.elements.notices.textContent = error.message; });
         }, "spt-codex-danger-button");
         form.append(accept, decline);
         card.append(form);
@@ -2289,6 +2473,11 @@
     }
 
     _renderTranscript(view, state) {
+      const attachmentID = view.attachmentID;
+      const agentId = view.agentId || "codex";
+      const service = this._agentService(attachmentID, agentId);
+      const serial = view.requestSerial;
+      const current = () => view.requestSerial === serial && view.attachmentID === attachmentID && (view.agentId || "codex") === agentId;
       const doc = view.body.ownerDocument;
       const container = view.elements.messages;
       const renderedBefore = Boolean(view.transcriptRendered);
@@ -2314,10 +2503,10 @@
           header.className = "spt-codex-message-header";
           const avatar = doc.createElement("span");
           avatar.className = "spt-codex-message-avatar";
-          avatar.textContent = entry.role === "user" ? "你" : "C";
+          avatar.textContent = entry.role === "user" ? "你" : Agents.getProvider(agentId).label[0];
           avatar.setAttribute("aria-hidden", "true");
           const label = doc.createElement("strong");
-          label.textContent = entry.role === "user" ? "你" : "Codex";
+          label.textContent = entry.role === "user" ? "你" : Agents.getProvider(agentId).label;
           header.append(avatar, label);
           const content = doc.createElement("div");
           content.className = "spt-codex-markdown";
@@ -2326,8 +2515,8 @@
             mermaidRenderer: this.mermaidRenderer,
             onMermaidError: (error) => this.log("Mermaid rendering failed", error),
             onFileCitation: ({ path }) => {
-              this.service.revealCitation(view.attachmentID, path).catch((error) => {
-                view.elements.notices.textContent = error.message || "无法打开引用文件";
+              service.revealCitation(attachmentID, path).catch((error) => {
+                if (current()) view.elements.notices.textContent = error.message || "无法打开引用文件";
               });
             }
           });
@@ -2437,6 +2626,9 @@
     }
 
     _updateView(view, state) {
+      if (state.agentId && state.agentId !== (view.agentId || "codex")) return;
+      if (state.attachmentID && state.attachmentID !== view.attachmentID) return;
+      const label = Agents.getProvider(view.agentId || "codex").label;
       view.state = state;
       const busy = ["connecting", "generating", "cancelling"].includes(state.status);
       const waiting = state.status === "waiting-approval";
@@ -2444,7 +2636,7 @@
         idle: "本地历史",
         ready: "已连接",
         connecting: "正在连接…",
-        generating: "Codex 正在生成…",
+        generating: `${label} 正在生成…`,
         cancelling: "正在停止…",
         cancelled: "已停止",
         error: "连接异常",
@@ -2454,14 +2646,23 @@
       view.root.dataset.status = state.status;
       view.setSectionSummary?.(waiting ? "等待授权" : (state.record.session.id ? "已绑定会话" : "未创建会话"));
       const activityLabel = {
-        connecting: "正在连接本地 Codex…",
-        generating: state.activityText || "Codex 正在思考…",
+        connecting: `正在连接本地 ${label}…`,
+        generating: state.activityText || `${label} 正在思考…`,
         cancelling: "正在停止当前任务…",
         "waiting-approval": "等待你的授权…"
       }[state.status] || "";
+      view.elements.input.setAttribute("data-l10n-id", "smart-paper-translator-agents-input");
+      view.elements.input.setAttribute("data-l10n-args", JSON.stringify({ agent: label }));
+      view.elements.input.placeholder = `围绕当前 PDF 向本机 ${label} 提问…`;
       view.elements.activity.hidden = !activityLabel;
       view.elements.activity.dataset.status = state.status;
+      view.elements.activityText.removeAttribute?.("data-l10n-id");
       view.elements.activityText.textContent = activityLabel;
+      if (state.status === "connecting" || (state.status === "generating" && !state.activityText)) {
+        setLocalizedText(view.elements.activityText, `smart-paper-translator-agents-${state.status === "connecting" ? "connecting" : "thinking"}`, activityLabel, { agent: label });
+      }
+      view.elements.status.removeAttribute?.("data-l10n-id");
+      if (state.status === "generating") setLocalizedText(view.elements.status, "smart-paper-translator-agents-generating", `${label} 正在生成…`, { agent: label });
       view.elements.stop.hidden = state.status !== "generating" && !waiting;
       view.elements.reset.disabled = busy || waiting;
       if (view.elements.copyLog) {
@@ -2486,6 +2687,7 @@
       for (const body of Array.from(this.views.keys())) this._destroyView(body);
       if (this.paneID) global.Zotero.ItemPaneManager.unregisterSection(this.paneID);
       this.paneID = null;
+      this.selectionCleanup?.();
       this.drafts.clear();
       this.pendingDraftFocus.clear();
       this.mermaidRenderer?.shutdown?.();

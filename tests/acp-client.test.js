@@ -8,7 +8,11 @@ const {
   sanitizeDiagnostic,
   formatACPError,
   validateRuntimePaths,
-  createEnvironment
+  createEnvironment,
+  inspectSharedRuntime,
+  inspectLocalRuntime,
+  createSubprocess,
+  listRuntimePathCandidates
 } = require("../plugin/content/acp-client.js");
 
 class AsyncPipe {
@@ -329,4 +333,223 @@ test("runtime path and environment policy requires absolutes and forces offline 
   finally {
     global.PathUtils = previous;
   }
+});
+
+function piProcess(version = "0.0.33") {
+  const process = new FakeProcess((message, process) => {
+    if (message.method === "initialize") process.respond(message.id, {
+      protocolVersion: 1, agentInfo: { name: "pi-acp", version }, agentCapabilities: { loadSession: true }
+    });
+  });
+  process.stdin.close = async () => { process.stdinClosed = true; process.exit(); };
+  return process;
+}
+
+test("Pi preparation validates initialize and ordinary startup stays offline without auth methods", async () => {
+  const launched = [], processes = [];
+  let prepared = "";
+  const client = new ACPClient({ agentId: "pi", processFactory: async options => {
+    launched.push(options); const process = piProcess(); processes.push(process); return process;
+  }, getPreparedVersion: () => prepared, setPreparedVersion: value => { prepared = value; } });
+  await assert.rejects(client.start(), { code: "ACP_NOT_PREPARED" });
+  await client.prepare();
+  assert.equal(prepared, "0.0.33");
+  assert.deepEqual(launched, [{ purpose: "serve", allowDownload: true }]);
+  assert.equal(processes[0].stdinClosed, true);
+  await client.start();
+  await client.refreshAuthenticationStatus();
+  assert.deepEqual(launched[1], { purpose: "serve", allowDownload: false });
+  assert.ok(processes.every(process => process.messages.every(message => message.method === "initialize")));
+  await client.shutdown();
+  assert.ok(processes.every(process => process.exited));
+  assert.ok(processes.every(process => !process.killed), "graceful EOF lets the adapter dispose its Pi child");
+});
+
+test("Pi rejects mismatched adapter versions and cleans invalid protocol processes", async () => {
+  const wrong = piProcess("0.0.34");
+  const client = new ACPClient({ agentId: "pi", processFactory: async () => wrong, getPreparedVersion: () => "0.0.33" });
+  await assert.rejects(client.start(), { code: "ACP_VERSION_MISMATCH" });
+  assert.equal(wrong.exited, true);
+  await client.shutdown();
+  const process = piProcess();
+  const malformed = new ACPClient({ agentId: "pi", processFactory: async () => process, getPreparedVersion: () => "0.0.33" });
+  await malformed.start();
+  process.stdout.push("{invalid}\n");
+  await new Promise(resolve => setImmediate(resolve));
+  await malformed.shutdown();
+  assert.equal(process.exited, true);
+});
+
+test("shutdown reaps a Pi process that finishes spawning after cancellation", async () => {
+  let resolve;
+  const process = piProcess();
+  const client = new ACPClient({ agentId: "pi", processFactory: () => new Promise(done => { resolve = done; }), getPreparedVersion: () => "0.0.33" });
+  const started = assert.rejects(client.start(), { code: "ACP_STOPPED" });
+  const stopped = client.shutdown();
+  resolve(process);
+  await Promise.all([started, stopped]);
+  assert.equal(process.exited, true);
+  assert.equal(process.messages.length, 0);
+});
+
+test("Pi uses its selected executable and offline startup settings with cached npm serving", () => {
+  const old = global.PathUtils;
+  global.PathUtils = { parent: path => path.slice(0, path.lastIndexOf("/")) };
+  try {
+    const paths = { nodePath: "/node/bin/node", npxCliPath: "/node/npx.js", piPath: "/local/bin/pi" };
+    const environment = createEnvironment(paths, { allowDownload: false }, "pi");
+    assert.equal(environment.PI_ACP_PI_COMMAND, paths.piPath);
+    assert.equal(environment.PI_OFFLINE, "1");
+    assert.equal(environment.PI_SKIP_VERSION_CHECK, "1");
+    assert.equal(environment.npm_config_offline, "true");
+    assert.equal(environment.INITIAL_AGENT_MODE, undefined);
+    assert.equal(environment.PATH.split(":")[0], "/node/bin");
+    assert.equal(createEnvironment(paths, { allowDownload: true }, "pi").npm_config_offline, undefined);
+  } finally { global.PathUtils = old; }
+});
+
+test("only Pi launches the bundled compatibility code through pinned offline npm and the selected Node", async () => {
+  const old = { ChromeUtils: global.ChromeUtils, PathUtils: global.PathUtils };
+  const calls = [];
+  global.PathUtils = { parent: require("node:path").dirname };
+  global.ChromeUtils = { importESModule: () => ({ Subprocess: { call: options => { calls.push(options); return options; } } }) };
+  const shared = { nodePath: "/chosen node/bin/node", npxCliPath: "/chosen node/npm/npx-cli.js" };
+  try {
+    await createSubprocess({ ...shared, piPath: "/pi/bin/pi" }, { purpose: "serve", allowDownload: false }, "pi");
+    const pi = calls[0];
+    assert.equal(pi.command, shared.nodePath);
+    assert.deepEqual(pi.arguments.slice(0, -1), [shared.npxCliPath, "--yes", "--package", "pi-acp@0.0.33", "--", shared.nodePath, "--input-type=commonjs", "--eval"]);
+    assert.match(pi.arguments.at(-1), /get_available_thinking_levels/u);
+    assert.equal(pi.environment.npm_config_offline, "true");
+    await createSubprocess({ ...shared, codexPath: "/codex/bin/codex" }, { purpose: "serve", allowDownload: false }, "codex");
+    assert.deepEqual(calls[1].arguments, [shared.npxCliPath, "--yes", "--package", "@agentclientprotocol/codex-acp@1.6.2", "codex-acp"]);
+  } finally { Object.assign(global, old); }
+});
+
+async function withRuntimeProbe(results, callback) {
+  const saved = { PathUtils: global.PathUtils, IOUtils: global.IOUtils, ChromeUtils: global.ChromeUtils };
+  const calls = [];
+  global.PathUtils = { parent: require("node:path").dirname };
+  global.IOUtils = { exists: async () => true };
+  global.ChromeUtils = { importESModule: () => ({ Subprocess: { async call(options) {
+    calls.push(options);
+    const name = options.command.endsWith("/pi") ? "pi" : options.arguments.length > 1 ? "npx" : "node";
+    const result = { exitCode: 0, stdout: "", stderr: "", ...results[name] };
+    const pipe = (text) => ({ async readString() { const chunk = text; text = ""; return chunk; } });
+    return { wait: async () => ({ exitCode: result.exitCode }), stdout: pipe(result.stdout), stderr: pipe(result.stderr) };
+  } } }) };
+  try { await callback(calls); }
+  finally { Object.assign(global, saved); }
+}
+
+const runtimePaths = { nodePath: "/chosen/bin/node", npxCliPath: "/chosen/npm/npx-cli.js", piPath: "/other/bin/pi" };
+const supportedRuntime = { node: { stdout: "v24.14.0\n" }, npx: { stdout: "11.9.0\n" }, pi: { stdout: "0.85.1\n" } };
+
+test("shared runtime inspection only executes local Node and npm version commands", async () => {
+  await withRuntimeProbe(supportedRuntime, async (calls) => {
+    const result = await inspectSharedRuntime(runtimePaths);
+    assert.equal(result.healthy, true);
+    assert.deepEqual(result.versions, { node: "v24.14.0", npx: "11.9.0" });
+    assert.deepEqual(calls.map(({ command, arguments: args }) => [command, args]), [
+      [runtimePaths.nodePath, ["--version"]], [runtimePaths.nodePath, [runtimePaths.npxCliPath, "--version"]]
+    ]);
+    assert.ok(calls.every(call => call.environment.npm_config_offline === "true"));
+    assert.ok(calls.every(call => !Object.values(call.environment).includes(undefined)));
+  });
+});
+
+test("Pi version inspection uses the shared Node directory and accepts supported versions on either stream", async () => {
+  await withRuntimeProbe({ ...supportedRuntime, pi: { stderr: "0.85.1\n" } }, async (calls) => {
+    const result = await inspectLocalRuntime(runtimePaths, "pi");
+    assert.equal(result.healthy, true);
+    assert.equal(result.versions.pi, "0.85.1");
+    assert.equal(calls.length, 3);
+    assert.ok(calls.every(call => call.environment.PATH.startsWith("/chosen/bin:")));
+    assert.ok(calls.every(call => call.environment.PI_OFFLINE === "1"));
+    assert.ok(calls.every(call => call.arguments.at(-1) === "--version"));
+  });
+});
+
+test("Pi requirement failures report the selected paths and both detected versions", async () => {
+  for (const [nodeVersion, piVersion] of [["22.13.0", "0.85.1"], ["24.14.0", "0.85.0"]]) {
+    await withRuntimeProbe({ ...supportedRuntime, node: { stdout: `v${nodeVersion}` }, pi: { stdout: piVersion } }, async () => {
+      await assert.rejects(inspectLocalRuntime(runtimePaths, "pi"), error => {
+        assert.equal(error.code, "PI_RUNTIME_VERSION");
+        assert.match(error.details.detectedVersion, new RegExp(nodeVersion.replaceAll(".", "\\.")));
+        assert.equal(error.details.paths.nodePath, runtimePaths.nodePath);
+        assert.match(formatACPError(error), /22\.19\.0/u);
+        return true;
+      });
+    });
+  }
+});
+
+test("Pi command failure and unknown output are not reported as an old installed version", async () => {
+  await withRuntimeProbe({ ...supportedRuntime, pi: { exitCode: 1, stderr: "Pi failed: token=private-value" } }, async () => {
+    await assert.rejects(inspectLocalRuntime(runtimePaths, "pi"), error => {
+      assert.equal(error.code, "PI_RUNTIME_PROBE_FAILED");
+      assert.equal(error.details.exitCode, 1);
+      assert.match(error.details.stderr, /Pi failed/u);
+      assert.doesNotMatch(formatACPError(error), /private-value/u);
+      return true;
+    });
+  });
+  await withRuntimeProbe({ ...supportedRuntime, pi: { stdout: "See /installed/0.85.1/help" } }, async () => {
+    await assert.rejects(inspectLocalRuntime(runtimePaths, "pi"), { code: "PI_RUNTIME_VERSION_UNKNOWN" });
+  });
+});
+
+test("candidate discovery reads PATH, NVM and npm symlinks without executing programs", async () => {
+  const names = ["Services", "Ci", "Cc", "IOUtils", "PathUtils", "ChromeUtils"];
+  const saved = Object.fromEntries(names.map(name => [name, global[name]]));
+  const files = new Set([
+    "/usr/local/bin/node", "/home/test/.nvm/versions/node/v24.14.0/bin/node",
+    "/home/test/.nvm/versions/node/v9.11.0/bin/node", "/custom-nvm/versions/node/v25.1.0/bin/node",
+    "/home/test/.nvm/versions/node/v24.14.0/lib/node_modules/npm/bin/npx-cli.js",
+    "/custom-nvm/versions/node/v25.1.0/bin/pi", "/custom-nvm/versions/node/v25.1.0/bin/codex",
+    "/path with spaces/bin/pi", "/path with spaces/bin/codex", "/npm-location/bin/npx-cli.js"
+  ]);
+  const stats = [];
+  global.PathUtils = { join: require("node:path").join, parent: require("node:path").dirname };
+  global.Services = {
+    dirsvc: { get: () => ({ path: "/home/test" }) },
+    env: { get: name => ({ PATH: "/path with spaces/bin:/unreadable/bin:/usr/local/bin:relative/bin:/path with spaces/bin", NVM_DIR: "/custom-nvm" })[name] || "" }
+  };
+  global.Ci = { nsIFile: {} };
+  global.Cc = { "@mozilla.org/file/local;1": { createInstance: () => ({
+    initWithPath(path) { this.path = path; },
+    isSymlink() { return this.path === "/path with spaces/bin/npx"; },
+    get target() { return "/npm-location/bin/npx-cli.js"; }
+  }) } };
+  global.IOUtils = {
+    async getChildren(path) {
+      if (path === "/home/test/.nvm/versions/node") return ["/home/test/.nvm/versions/node/v9.11.0", "/home/test/.nvm/versions/node/v24.14.0", "/home/test/.nvm/versions/node/unrelated"];
+      if (path === "/custom-nvm/versions/node") return ["/custom-nvm/versions/node/v25.1.0"];
+      throw new Error("absent");
+    },
+    async stat(path, options) {
+      stats.push(path);
+      assert.equal(options.followSymlinks, true);
+      if (path === "/unreadable/bin/node") throw new Error("permission denied");
+      if (path === "/path with spaces/bin/node") return { type: "directory" };
+      if (files.has(path)) return { type: "regular" };
+      throw new Error("missing");
+    }
+  };
+  global.ChromeUtils = { importESModule() { throw new Error("discovery must not launch a process"); } };
+  try {
+    const candidates = await listRuntimePathCandidates({ nodePath: "/usr/local/bin/node", piPath: "/missing/pi" });
+    assert.equal(candidates.node[0].source, "configured");
+    assert.deepEqual(candidates.node.slice(1).map(entry => entry.version), ["v25.1.0", "v24.14.0", "v9.11.0"]);
+    for (const kind of ["pi", "codex"]) {
+      assert.ok(candidates[kind].some(entry => entry.path === `/path with spaces/bin/${kind}` && entry.source === "path"));
+      assert.ok(candidates[kind].some(entry => entry.source === "nvm"));
+    }
+    assert.ok(candidates.npx.some(entry => entry.path === "/npm-location/bin/npx-cli.js"));
+    assert.ok(candidates.npx.some(entry => entry.source === "nvm"));
+    assert.equal(candidates.pi.some(entry => entry.path === "/missing/pi"), false);
+    assert.equal(stats.filter(path => path === "/path with spaces/bin/pi").length, 1);
+    assert.equal(stats.some(path => !path.startsWith("/")), false);
+  }
+  finally { Object.assign(global, saved); }
 });

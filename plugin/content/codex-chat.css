@@ -156,7 +156,7 @@
 
 .spt-codex-config {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   padding: 9px 10px;
   border: 1px solid var(--spt-codex-border);
   border-radius: 10px;
@@ -185,6 +185,63 @@
   background: Canvas;
   color: CanvasText;
   font: inherit;
+}
+
+.spt-codex-config .spt-codex-config-field {
+  grid-template-columns: 4.5em minmax(0, 1fr);
+}
+
+.spt-codex-config-picker {
+  position: relative;
+  display: block;
+  min-width: 0;
+  border: 1px solid var(--spt-codex-border);
+  border-radius: 7px;
+  background: Canvas;
+  color: CanvasText;
+}
+
+.spt-codex-config-value {
+  display: block;
+  min-height: 29px;
+  padding: 6px 28px 6px 9px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.spt-codex-config-picker::after {
+  content: "";
+  position: absolute;
+  inset-inline-end: 11px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-inline-end: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
+.spt-codex-config select.spt-codex-config-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.spt-codex-config-picker:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--spt-codex-accent) 72%, transparent);
+  outline-offset: 1px;
+}
+
+.spt-codex-config-picker[data-disabled="true"] {
+  opacity: 0.55;
 }
 
 .spt-codex-config-hint {
@@ -1248,4 +1305,38 @@ button.spt-codex-file-citation:hover {
   .spt-codex-activity-spinner {
     animation: none;
   }
+}
+
+.spt-agents-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--spt-codex-border, #d7d7dc);
+  font-weight: 600;
+}
+.spt-agents-selector select {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 3px 7px;
+  border: 1px solid var(--spt-codex-border);
+  border-radius: 7px;
+  background: var(--spt-codex-surface-raised);
+  color: inherit;
+  font: inherit;
+}
+.spt-codex-config .spt-agents-access {
+  grid-column: 1 / -1;
+  order: 0;
+}
+.spt-codex-config .spt-agents-access-pi {
+  display: block;
+  font-weight: normal;
+}
+.spt-agents-access .spt-codex-config-hint {
+  grid-column: 1 / -1;
+  margin: 3px 0;
+  font-weight: normal;
 }

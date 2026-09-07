@@ -56,6 +56,8 @@ var SmartPaperTranslatorPlugin = {
         if (!this.codexChatUI) throw new Error("Codex 对话尚未初始化");
         return this.codexChatUI.addScreenshotContexts(context);
       },
+      getScreenshotAgent: (attachmentID) => this.agentsChatService?.getActiveAgent(attachmentID) || "codex",
+      onScreenshotStateChanged: () => this.codexChatUI?.refreshAvailability(),
       stylesheetText: readerStylesheet,
       log: (message, error) => this.log(message, error)
     });
@@ -83,8 +85,24 @@ var SmartPaperTranslatorPlugin = {
       log: (message, error) => this.log(message, error)
     });
     await this.codexChatService.initialize();
+    this.piChatCache = modules.ChatCache.createZoteroChatCache({
+      agentId: "pi", onError: (message, error) => this.log(message, error)
+    });
+    const createPiService = () => new modules.CodexChat.CodexChatService({
+      agentId: "pi", getPreference, paperRepository: this.paperRepository,
+      cache: this.piChatCache,
+      acpClient: modules.ACP.createZoteroACPClient({ agentId: "pi", getPreference, setPreference, log: (message, error) => this.log(message, error) }),
+      fileSystem: modules.CodexChat.createZoteroFileSystem(), log: (message, error) => this.log(message, error)
+    });
+    this.piProbeService = createPiService();
+    await this.piProbeService.initialize();
+    this.agentsChatService = new modules.AgentsChat.AgentsChatService({
+      codexService: this.codexChatService, piProbeService: this.piProbeService, createPiService,
+      paperRepository: this.paperRepository, getPreference, setPreference
+    });
     this.codexChatUI = new modules.CodexChatUI.CodexChatUI({
-      service: this.codexChatService,
+      service: this.agentsChatService,
+      isScreenshotPending: (attachmentID) => this.readerUI.isScreenshotPending(attachmentID),
       stylesheetText: codexChatStylesheet,
       rootURI,
       canStartScreenshotCapture: (context) =>
@@ -152,6 +170,22 @@ var SmartPaperTranslatorPlugin = {
         return true;
       },
       formatCodexError: (error, fallback) => modules.ACP.formatACPError(error, fallback),
+      getACPPaths: () => this._sharedACPPaths(),
+      listACPPathCandidates: () => runCodexAction("Local path discovery failed", () =>
+        modules.ACP.listRuntimePathCandidates({ ...this._codexPaths(), piPath: this._piPaths().piPath })),
+      setACPPaths: (paths) => {
+        const prefs = modules.Constants.PREFS;
+        this._setPreference(prefs.codexNodePath, String(paths?.nodePath || "").trim());
+        this._setPreference(prefs.codexNpxCliPath, String(paths?.npxCliPath || "").trim());
+        return this._sharedACPPaths();
+      },
+      detectACPPaths: () => runCodexAction("Node / npx path detection failed", async () => {
+        const paths = await modules.ACP.detectSharedPaths(this._sharedACPPaths());
+        this.bridge.setACPPaths(paths);
+        return { paths };
+      }),
+      inspectACPRuntime: () => runCodexAction("Node / npx inspection failed", () =>
+        modules.ACP.inspectSharedRuntime(this._sharedACPPaths())),
       setCodexPaths: (paths) => {
         const prefs = modules.Constants.PREFS;
         const normalized = {
@@ -171,8 +205,8 @@ var SmartPaperTranslatorPlugin = {
           npxCliPath: this._getPreference(prefs.codexNpxCliPath),
           codexPath: this._getPreference(prefs.codexExecutablePath)
         });
-        this.bridge.setCodexPaths(paths);
-        return this._inspectCodex(paths);
+        this._setPreference(prefs.codexExecutablePath, paths.codexPath);
+        return this.bridge.getCodexStatus();
       }),
       inspectCodexRuntime: () => runCodexAction("检测本地 Codex 失败", async () => {
         const paths = this._codexPaths();
@@ -216,7 +250,22 @@ var SmartPaperTranslatorPlugin = {
         adapter: this._publicACPStatus(),
         ...this.codexChatService.getConfigurationCatalog()
       }),
-      pickCodexPath: (kind) => runCodexAction("选择文件失败", () => this._pickCodexPath(kind)),
+      pickCodexPath: (kind, parentWindow) => runCodexAction("选择文件失败", () => this._pickCodexPath(kind, parentWindow)),
+      getPiStatus: () => ({
+        paths: this._piPaths(), adapter: this._publicACPStatus(this.piProbeService.acp),
+        ...this.piProbeService.getConfigurationCatalog()
+      }),
+      setPiPaths: (paths) => {
+        this._setPreference(modules.Constants.PREFS.piExecutablePath, String(paths?.piPath || "").trim());
+        return this._piPaths();
+      },
+      detectPiPaths: () => runCodexAction("Pi path detection failed", async () => {
+        const paths = await modules.ACP.detectLocalPaths(this._piPaths(), "pi");
+        this._setPreference(modules.Constants.PREFS.piExecutablePath, paths.piPath);
+        return this.bridge.getPiStatus();
+      }),
+      inspectPiRuntime: () => runCodexAction("Pi inspection failed", () => this._inspectPi(false)),
+      preparePiACP: () => runCodexAction("Pi ACP preparation failed", () => this._inspectPi(true)),
       defaults: Object.freeze({
         deepseekBaseURL: modules.Constants.PROVIDERS.deepseek.baseURL,
         deepseekModel: modules.Constants.PROVIDERS.deepseek.model,
@@ -235,11 +284,18 @@ var SmartPaperTranslatorPlugin = {
     return Zotero.Prefs.set(name, value, true);
   },
 
-  _codexPaths() {
+  _sharedACPPaths() {
     const prefs = SmartPaperTranslatorModules.Constants.PREFS;
     return {
       nodePath: String(this._getPreference(prefs.codexNodePath) || "").trim(),
-      npxCliPath: String(this._getPreference(prefs.codexNpxCliPath) || "").trim(),
+      npxCliPath: String(this._getPreference(prefs.codexNpxCliPath) || "").trim()
+    };
+  },
+
+  _codexPaths() {
+    const prefs = SmartPaperTranslatorModules.Constants.PREFS;
+    return {
+      ...this._sharedACPPaths(),
       codexPath: String(this._getPreference(prefs.codexExecutablePath) || "").trim()
     };
   },
@@ -250,8 +306,26 @@ var SmartPaperTranslatorPlugin = {
     return runtime;
   },
 
-  _publicACPStatus() {
-    const status = this.acpClient.getStatus();
+  _piPaths() {
+    const prefs = SmartPaperTranslatorModules.Constants.PREFS;
+    return {
+      ...this._sharedACPPaths(),
+      piPath: String(this._getPreference(prefs.piExecutablePath) || "").trim()
+    };
+  },
+
+  async _inspectPi(prepare) {
+    const runtime = await SmartPaperTranslatorModules.ACP.inspectLocalRuntime(this._piPaths(), "pi");
+    if (!runtime.healthy) throw new Error(runtime.lastError || "Pi runtime is unavailable");
+    let catalog = this.piProbeService.getConfigurationCatalog();
+    if (prepare || this.piProbeService.acp.getStatus().preparedVersion) {
+      catalog = await this.agentsChatService.refreshPiCatalog({ prepare });
+    }
+    return { ...runtime, adapter: this._publicACPStatus(this.piProbeService.acp), ...catalog };
+  },
+
+  _publicACPStatus(client = this.acpClient) {
+    const status = client.getStatus();
     const sanitize = (value) => {
       if (Array.isArray(value)) return value.map(sanitize);
       if (!value || typeof value !== "object") return value;
@@ -265,22 +339,16 @@ var SmartPaperTranslatorPlugin = {
     return sanitize(status);
   },
 
-  async _pickCodexPath(kind) {
-    const mapping = {
-      node: { title: "选择 Node 可执行文件", pref: SmartPaperTranslatorModules.Constants.PREFS.codexNodePath },
-      npx: { title: "选择 npx-cli.js", pref: SmartPaperTranslatorModules.Constants.PREFS.codexNpxCliPath },
-      codex: { title: "选择 Codex 可执行文件", pref: SmartPaperTranslatorModules.Constants.PREFS.codexExecutablePath }
-    };
-    const choice = mapping[kind];
-    if (!choice) throw new Error("未知路径类型");
-    const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-    picker.init(Zotero.getMainWindow(), choice.title, Ci.nsIFilePicker.modeOpen);
-    picker.appendFilters(Ci.nsIFilePicker.filterAll);
-    const path = await new Promise((resolve) => {
-      picker.open((result) => resolve(result === Ci.nsIFilePicker.returnOK ? picker.file.path : ""));
-    });
-    if (path) Zotero.Prefs.set(choice.pref, path, true);
-    return path;
+  async _pickCodexPath(kind, parentWindow) {
+    const title = { node: "Node", npx: "npx-cli.js", codex: "Codex", pi: "Pi" }[kind];
+    if (!title) throw new Error("未知路径类型");
+    const { FilePicker } = ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
+    const picker = new FilePicker();
+    picker.init(parentWindow || Zotero.getMainWindow(), title, picker.modeOpen);
+    picker.appendFilters(picker.filterAll);
+    const result = await picker.show();
+    // The live preferences view commits the result after its own lifetime check.
+    return result === picker.returnOK ? picker.file : "";
   },
 
   _observePreferences() {
@@ -301,7 +369,10 @@ var SmartPaperTranslatorPlugin = {
       prefs.codexExecutablePath,
       prefs.codexDefaultModel,
       prefs.codexDefaultReasoningEffort,
-      prefs.codexDeveloperMode
+      prefs.codexDeveloperMode,
+      prefs.piExecutablePath,
+      prefs.piDefaultModel,
+      prefs.piDefaultReasoningEffort
     ];
     for (const name of names) {
       const symbol = Zotero.Prefs.registerObserver(
@@ -319,8 +390,8 @@ var SmartPaperTranslatorPlugin = {
       this.preferenceRefreshTimer = null;
       this.readerUI?.onPreferencesChanged();
       this.itemTreeUI?.onPreferencesChanged();
-      this.codexChatService?.notifyDeveloperModeChanged();
-      this.codexChatService?.notifyDefaultConfigurationChanged();
+      (this.agentsChatService || this.codexChatService)?.notifyDeveloperModeChanged();
+      (this.agentsChatService || this.codexChatService)?.notifyDefaultConfigurationChanged();
     }, 150);
   },
 
@@ -381,7 +452,7 @@ var SmartPaperTranslatorPlugin = {
     this.readerUI?.shutdown();
     this.itemTreeUI?.shutdown();
     await this.codexChatUI?.shutdown().catch((error) => this.log("Codex UI shutdown failed", error));
-    await this.codexChatService?.shutdown().catch((error) => this.log("Codex shutdown failed", error));
+    await (this.agentsChatService || this.codexChatService)?.shutdown().catch((error) => this.log("Codex shutdown failed", error));
     this.service?.shutdown();
     if (this.notifierID != null) Zotero.Notifier.unregisterObserver(this.notifierID);
     this.notifierID = null;
