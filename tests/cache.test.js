@@ -125,6 +125,57 @@ test("corrupt JSON is backed up before a clean record is created", async () => {
   });
 });
 
+test("deleting a glossary term removes every configuration variant only in its paper", async () => {
+  const { cache, io } = makeCache();
+  const paper = makePaper();
+  const otherPaper = makePaper({ storageKey: "1--OTHERKEY", itemKey: "OTHERKEY" });
+  await cache.append(paper, entry());
+  await cache.append(paper, entry({ configSignature: "signature-b" }));
+  const policy = await cache.append(paper, entry({ source: "policy", normalizedSource: "policy" }));
+  const abstract = await cache.append(paper, entry({ kind: "abstract", isTerm: false }));
+  const tags = await cache.append(paper, entry({ kind: "smart-tags", isTerm: false, tags: ["model"] }));
+  const other = await cache.append(otherPaper, entry());
+
+  assert.equal(await cache.deleteTerm(paper, "  model  "), 2);
+  const reloaded = makeCache({ io }).cache;
+  assert.deepEqual(await reloaded.getAllEntries(paper), [policy, abstract, tags]);
+  assert.deepEqual(await reloaded.getGlossary(paper), [policy]);
+  assert.deepEqual(await reloaded.getAllEntries(otherPaper), [other]);
+  assert.deepEqual(io.writeJSONCalls.at(-1).options, { tmpPath: "/records/1--ABCDEFGH.json.tmp" });
+  const writeCount = io.writeJSONCalls.length;
+  assert.equal(await cache.deleteTerm(paper, "model"), 0);
+  assert.equal(io.writeJSONCalls.length, writeCount);
+  await assert.rejects(cache.deleteTerm(paper, " "), { code: "SOURCE_EMPTY" });
+});
+
+test("term deletion serializes with writes and a late cache touch cannot restore it", async () => {
+  const { cache } = makeCache();
+  const paper = makePaper();
+  const first = await cache.append(paper, entry());
+  const [, count, touched] = await Promise.all([
+    cache.replaceMatching(paper, entry({ translation: "新模型" })),
+    cache.deleteTerm(paper, "model"),
+    cache.touch(paper, first.id),
+    cache.append(paper, entry({ source: "policy", normalizedSource: "policy" }))
+  ]);
+  assert.equal(count, 1);
+  assert.equal(touched, null);
+  assert.deepEqual((await cache.getGlossary(paper)).map((term) => term.source), ["policy"]);
+});
+
+test("failed term deletion preserves the saved entry and permits a retry", async () => {
+  const { cache, io } = makeCache();
+  const paper = makePaper();
+  const original = await cache.append(paper, entry());
+  const writeJSON = io.writeJSON.bind(io);
+  io.writeJSON = async () => { throw new Error("disk full"); };
+  await assert.rejects(cache.deleteTerm(paper, "model"), /disk full/u);
+  assert.deepEqual(await cache.getAllEntries(paper), [original]);
+  io.writeJSON = writeJSON;
+  assert.equal(await cache.deleteTerm(paper, "model"), 1);
+  assert.deepEqual(await cache.getGlossary(paper), []);
+});
+
 test("homepage smart-tag probes are exact and never mutate cache files", async () => {
   const { cache, io } = makeCache();
   const paper = makePaper();

@@ -180,6 +180,25 @@
       });
     }
 
+    async deleteTerm(paper, source) {
+      const normalizedSource = Logic.normalizeText(source);
+      if (!normalizedSource) {
+        throw new Logic.SmartTranslatorError("SOURCE_EMPTY", "没有可删除的术语");
+      }
+      return this._enqueue(paper.storageKey, async () => {
+        const record = await this._loadUnsafe(paper);
+        const remaining = record.entries.filter((entry) =>
+          entry.kind !== "selection" || entry.normalizedSource !== normalizedSource
+        );
+        const removedCount = record.entries.length - remaining.length;
+        if (removedCount) {
+          record.entries = remaining;
+          await this._writeUnsafe(paper, record);
+        }
+        return removedCount;
+      });
+    }
+
     async getGlossary(paper) {
       const record = await this._loadUnsafe(paper);
       const latest = new Map();

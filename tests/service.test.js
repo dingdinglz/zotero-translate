@@ -251,6 +251,129 @@ test("terms enter glossary while sentences remain cached but hidden", async () =
   assert.equal(glossary.entries[0].source, "representation learning");
 });
 
+test("glossary deletion clears cached model variants locally and reports the saved change", async () => {
+  const { service, prefs, getAPICalls } = createService();
+  const events = [];
+  await service.translateSelection(10, "model", 1);
+  prefs.set(Constants.PREFS.deepseekModel, "deepseek-v4-pro");
+  await service.translateSelection(10, "model", 1);
+  service.subscribe((event) => events.push(event));
+  const deleted = await service.deleteGlossaryTerm(10, {
+    paperStorageKey: makePaper().storageKey, source: "model"
+  });
+  assert.equal(deleted.removedCount, 2);
+  assert.equal(await service.getCachedSelection(10, "model", 1), null);
+  prefs.set(Constants.PREFS.deepseekModel, "deepseek-v4-flash");
+  assert.equal(await service.getCachedSelection(10, "model", 1), null);
+  assert.deepEqual((await service.getGlossaryForItem(10)).entries, []);
+  assert.equal(getAPICalls(), 2);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "glossary-deleted");
+  assert.equal(events[0].normalizedSource, "model");
+  assert.equal(events[0].paper.storageKey, makePaper().storageKey);
+});
+
+test("glossary deletion rejects stale paper identity and emits nothing after a failed write", async () => {
+  const { service, cache } = createService();
+  await service.translateSelection(10, "model", 1);
+  const events = [];
+  service.subscribe((event) => events.push(event));
+  await assert.rejects(service.deleteGlossaryTerm(10, {
+    paperStorageKey: "1--OTHERKEY", source: "model"
+  }), { code: "PAPER_CHANGED" });
+  cache.deleteTerm = async () => { throw new Error("disk full"); };
+  await assert.rejects(service.deleteGlossaryTerm(10, {
+    paperStorageKey: makePaper().storageKey, source: "model"
+  }), /disk full/u);
+  assert.equal((await service.getGlossaryForItem(10)).entries.length, 1);
+  assert.deepEqual(events, []);
+  service.shutdown();
+  await assert.rejects(service.deleteGlossaryTerm(10, {
+    paperStorageKey: makePaper().storageKey, source: "model"
+  }), { code: "PLUGIN_STOPPED" });
+});
+
+test("deletion discards late translations across configurations while allowing a fresh request", async () => {
+  const finishes = [];
+  let delay = false;
+  const { service, cache, prefs, getAPICalls } = createService({
+    apiComplete: () => delay
+      ? new Promise((resolve) => finishes.push(resolve))
+      : "有效译文"
+  });
+  await service.translateSelection(10, "model", 1);
+  delay = true;
+  const oldFirst = service.translateSelection(10, "model", 1, { forceRefresh: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  prefs.set(Constants.PREFS.deepseekModel, "deepseek-v4-pro");
+  const oldSecond = service.translateSelection(10, "model", 1);
+  const otherTerm = service.translateSelection(10, "policy", 1);
+  const settled = Promise.allSettled([oldFirst, oldSecond, otherTerm]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await service.deleteGlossaryTerm(10, { paperStorageKey: makePaper().storageKey, source: "model" });
+  const events = [];
+  service.subscribe((event) => events.push(event));
+  delay = false;
+  const fresh = await service.translateSelection(10, "model", 1);
+  assert.equal(fresh.translation, "有效译文");
+  assert.equal(getAPICalls(), 5);
+  finishes.forEach((finish) => finish("旧的晚到译文"));
+  const results = await settled;
+  assert.equal(results[0].reason.code, "TERM_DELETED");
+  assert.equal(results[1].reason.code, "TERM_DELETED");
+  assert.equal(results[2].status, "fulfilled");
+  assert.equal(events.filter((event) => event.entry?.source === "model").length, 1);
+  const stored = await cache.getGlossary(makePaper());
+  assert.equal(stored.find((term) => term.source === "model").translation, "有效译文");
+  assert.equal(stored.find((term) => term.source === "policy").translation, "旧的晚到译文");
+  assert.equal(service.selectionRequests.size, 0);
+  assert.equal(service.inFlight.size, 0);
+});
+
+test("deleting during a cache probe cannot return a stale cached term", async () => {
+  const { service, cache, getAPICalls } = createService();
+  await service.translateSelection(10, "model", 1);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const getCached = cache.getCached.bind(cache);
+  cache.getCached = async (...args) => {
+    const cached = await getCached(...args);
+    await gate;
+    return cached;
+  };
+  const pending = service.getCachedSelection(10, "model", 1);
+  const rejected = assert.rejects(pending, { code: "TERM_DELETED" });
+  await new Promise((resolve) => setImmediate(resolve));
+  await service.deleteGlossaryTerm(10, { paperStorageKey: makePaper().storageKey, source: "model" });
+  release();
+  await rejected;
+  assert.equal(getAPICalls(), 1);
+  assert.equal(service.selectionRequests.size, 0);
+});
+
+test("deletion covers pending sibling-attachment metadata without cancelling another paper", async () => {
+  const { service, getAPICalls } = createService();
+  await service.translateSelection(10, "model", 1);
+  const lookups = new Map();
+  service.paperRepository.get = (itemID) => itemID === 10
+    ? Promise.resolve({ paper: makePaper(), abstract: "An abstract." })
+    : new Promise((resolve) => lookups.set(itemID, resolve));
+  const sibling = service.translateSelection(11, "model", 1);
+  const otherPaper = service.translateSelection(99, "model", 1);
+  const outcomes = Promise.allSettled([sibling, otherPaper]);
+  await service.deleteGlossaryTerm(10, { paperStorageKey: makePaper().storageKey, source: "model" });
+  lookups.get(11)({ paper: makePaper({ attachmentID: 11 }), abstract: "An abstract." });
+  lookups.get(99)({
+    paper: makePaper({ storageKey: "1--OTHERKEY", itemKey: "OTHERKEY", attachmentID: 99 }),
+    abstract: "Another paper."
+  });
+  const [discarded, retained] = await outcomes;
+  assert.equal(discarded.reason.code, "TERM_DELETED");
+  assert.equal(retained.status, "fulfilled");
+  assert.equal(getAPICalls(), 2);
+  assert.deepEqual((await service.getGlossaryForItem(10)).entries, []);
+});
+
 test("concurrent duplicate translations share one API request", async () => {
   let resolveAPI;
   const apiPromise = new Promise((resolve) => { resolveAPI = resolve; });

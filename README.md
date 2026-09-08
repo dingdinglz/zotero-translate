@@ -1,6 +1,6 @@
 # Smart Paper Translator
 
-Smart Paper Translator 0.1.34 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个可切换本机 Codex / Pi 的原生 **Agents** 右侧栏。对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
+Smart Paper Translator 0.1.35 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个可切换本机 Codex / Pi 的原生 **Agents** 右侧栏。对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
 
 ## 功能
 
@@ -11,7 +11,7 @@ Smart Paper Translator 0.1.34 是面向 macOS Zotero 9 内置 PDF Reader 的学�
 - 打开 PDF 时自动翻译尚未缓存的摘要；划线缓存命中时直接显示并提供“重新翻译”，未命中时默认等待点击“翻译”，也可在设置中开启自动翻译。
 - Reader 工具栏可单独禁用当前 PDF 的划线翻译；禁用开关默认关闭并按 PDF 持久化，禁用后不显示插件的划线翻译入口、不查询划线缓存，也不调用翻译 API。
 - 根据标题与 Zotero 摘要生成 3–5 个英文智能标签，在主页独立列中显示，但不写入 Zotero 原生 Tags。
-- Reader 工具栏保留论文智译悬浮窗；摘要译文和术语分 Tab 展示，窗口支持拖动、缩放与持久化。
+- Reader 工具栏保留论文智译悬浮窗；摘要译文和术语分 Tab 展示，窗口支持拖动、缩放与持久化。术语行在鼠标悬停或键盘聚焦时显示小号“删除”按钮，点击后清除当前论文中该术语的所有配置版本缓存，并更新术语计数；删除失败保留原项，可重试。此前在途的翻译结果不能将已删除术语恢复，之后可重新划选翻译。
 - 每篇论文独立缓存；模型、目标语言、摘要或提示词变化后生成新的缓存版本。
 
 ### Agents ACP 论文对话
@@ -124,12 +124,16 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.34.xpi
+unzip -t dist/smart-paper-translator-0.1.35.xpi
 ```
 
 真实 npx 下载、Codex/Pi 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
 
-0.1.34 已通过 231 项自动测试、JavaScript/静态检查、构建、SHA-256、XPI 根目录与 `unzip -t` 检查，归档内 38 个运行时文件与源码逐字节一致。用实际侧栏模块与样式、合成消息制作独立浏览器预览，验证了文字及代码拖选、⌘C 复制与粘贴，以及流式更新期间保持选区、取消选择后恢复更新。回归测试覆盖最终回复补绘、不同论文/Agent/会话/加载请求的隔离和销毁后的监听器清理。
+0.1.35 已通过 245 项自动测试、JavaScript/静态检查、构建、SHA-256、XPI 根目录与 `unzip -t` 检查，归档内 38 个运行时文件与源码逐字节一致。新增回归覆盖按论文删除全部术语配置变体、原子写入失败后重试、在途翻译/缓存探测/附件元数据查询失效，以及多 Reader 按钮同步和陈旧列表隔离。独立浏览器预览使用实际面板模块与样式和合成术语，确认 390px / 280px 面板无横向溢出，28×22px 的小号删除按钮在悬停或键盘聚焦时出现，删除后行与计数同步更新。
+
+0.1.35 的修改已由用户确认无问题。开发端通过只读查询确认当前客户端为 macOS Zotero 9.0.6；最终 XPI 的独立 `AddonManager.getInstallForFile()` 非安装式解析因 Mac 锁定未取得结果，不列入自动验证通过项。开发过程中未安装插件、修改 Zotero profile 或调用真实模型。手动验收：在术语 Tab 悬停一行并点击“删除”，确认该行与计数更新；重新打开 PDF 后该术语不再出现，重新划选时无旧译文缓存，其他术语保持原样。
+
+此前 0.1.34 已通过 231 项自动测试、JavaScript/静态检查、构建、SHA-256、XPI 根目录与 `unzip -t` 检查，归档内 38 个运行时文件与源码逐字节一致。用实际侧栏模块与样式、合成消息制作独立浏览器预览，验证了文字及代码拖选、⌘C 复制与粘贴，以及流式更新期间保持选区、取消选择后恢复更新。回归测试覆盖最终回复补绘、不同论文/Agent/会话/加载请求的隔离和销毁后的监听器清理。
 
 0.1.34 的最终 XPI 已在 Zotero 9.0.6 中通过 `AddonManager.getInstallForFile()` 非安装式解析：插件 ID 为 `smart-paper-translator@zotero.local`，版本为 `0.1.34`，`error: 0`、`isCompatible: true`、`appDisabled: false`。本次未安装插件或进行真实模型/UI 冒烟测试。
 

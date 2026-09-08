@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { ReaderUI, normalizeCodexSelection } = require("../plugin/content/reader-ui.js");
 const Constants = require("../plugin/content/constants.js");
+const { makePaper } = require("./helpers.js");
 
 class FakeElement {
   constructor(tag, namespaceURI = "http://www.w3.org/1999/xhtml") {
@@ -57,6 +58,12 @@ class FakeElement {
   removeEventListener(name) { this.listeners.delete(name); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
+  querySelectorAll(selector) {
+    return this.children.flatMap((child) => [
+      ...(selector.startsWith(".") && String(child.className || "").split(/\s+/u).includes(selector.slice(1)) ? [child] : []),
+      ...child.querySelectorAll(selector)
+    ]);
+  }
   focus() { this.focused = true; }
   closest(selector) { return selector === "button" && this.tagName === "button" ? this : null; }
   setPointerCapture(pointerId) { this.capturedPointerId = pointerId; }
@@ -113,6 +120,167 @@ const readerStylesheet = fs.readFileSync(
   path.join(__dirname, "../plugin/content/reader.css"),
   "utf8"
 );
+
+function createGlossaryUI(service) {
+  const doc = new FakeDocument();
+  const ui = new ReaderUI({ service });
+  const state = {
+    doc,
+    reader: { itemID: 10 },
+    itemID: 10,
+    requestSerial: 1,
+    paperStorageKey: makePaper().storageKey,
+    destroyed: false
+  };
+  doc.body.append(ui._createPanel(doc, state));
+  ui.states.set(state.reader, state);
+  const terms = [
+    { source: "model", normalizedSource: "model", translation: "模型" },
+    { source: "policy", normalizedSource: "policy", translation: "策略" }
+  ];
+  ui._renderGlossary(state, terms);
+  return {
+    ui, state, terms,
+    deleteButton: (index = 0) => state.glossaryNode.children[0].children[index].children[0].children[0]
+  };
+}
+
+test("glossary delete is accessible, blocks repeated clicks, and updates the count and empty state", async () => {
+  let release;
+  let terms;
+  const calls = [];
+  const { state, deleteButton, terms: initial } = createGlossaryUI({
+    async deleteGlossaryTerm(itemID, target) {
+      calls.push({ itemID, ...target });
+      await new Promise((resolve) => { release = resolve; });
+      terms = terms.filter((term) => term.source !== target.source);
+    },
+    async getGlossaryForItem() { return { paper: makePaper(), entries: terms }; }
+  });
+  terms = initial;
+  const first = deleteButton();
+  assert.equal(first.textContent, "删除");
+  assert.equal(first.type, "button");
+  assert.equal(first.getAttribute("aria-label"), "删除术语“model”及其缓存");
+  const pending = first.dispatch("click");
+  assert.equal(first.disabled, true);
+  await first.dispatch("click");
+  assert.deepEqual(calls, [{ itemID: 10, paperStorageKey: makePaper().storageKey, source: "model" }]);
+  release();
+  await pending;
+  assert.equal(state.glossaryCountNode.textContent, "1");
+  assert.equal(state.glossaryEntries[0].source, "policy");
+  const last = deleteButton().dispatch("click");
+  release();
+  await last;
+  assert.equal(state.glossaryCountNode.textContent, "0");
+  assert.equal(state.glossaryNode.textContent, "尚无已翻译术语");
+});
+
+test("failed glossary deletion keeps the term visible and enables retry", async () => {
+  let failed = true;
+  const { state, deleteButton } = createGlossaryUI({
+    async deleteGlossaryTerm() { if (failed) throw new Error("disk full"); },
+    async getGlossaryForItem() { return { paper: makePaper(), entries: [] }; }
+  });
+  const button = deleteButton();
+  await button.dispatch("click");
+  assert.equal(state.glossaryCountNode.textContent, "2");
+  assert.equal(button.disabled, false);
+  assert.equal(state.glossaryStatusNode.hidden, false);
+  assert.equal(state.glossaryStatusNode.textContent, "删除失败，请重试。");
+  failed = false;
+  await button.dispatch("click");
+  assert.equal(state.glossaryStatusNode.hidden, true);
+  assert.equal(state.glossaryCountNode.textContent, "1");
+});
+
+test("stale glossary buttons cannot delete after a reader switch, refresh, or shutdown", async () => {
+  let calls = 0;
+  const service = { async deleteGlossaryTerm() { calls++; } };
+  const switched = createGlossaryUI(service);
+  switched.state.reader.itemID = 99;
+  await switched.deleteButton().dispatch("click");
+  const refreshed = createGlossaryUI(service);
+  const oldButton = refreshed.deleteButton();
+  refreshed.ui._renderGlossary(refreshed.state, []);
+  await oldButton.dispatch("click");
+  const disposed = createGlossaryUI(service);
+  const detachedButton = disposed.deleteButton();
+  disposed.ui.shutdown();
+  await detachedButton.dispatch("click");
+  assert.equal(calls, 0);
+});
+
+test("late deletion failures do not change a switched or destroyed panel", async () => {
+  for (const dispose of [false, true]) {
+    let reject;
+    const { ui, state, deleteButton } = createGlossaryUI({
+      deleteGlossaryTerm: () => new Promise((_resolve, failure) => { reject = failure; })
+    });
+    const statusNode = state.glossaryStatusNode;
+    const pending = deleteButton().dispatch("click");
+    if (dispose) ui.shutdown();
+    else {
+      state.itemID = 99;
+      state.reader.itemID = 99;
+      state.requestSerial++;
+      ui._renderGlossary(state, [{ source: "new paper", translation: "另一篇论文" }]);
+    }
+    reject(new Error("late disk failure"));
+    await pending;
+    assert.equal(statusNode.hidden, true);
+    assert.equal(ui.deletingTerms.size, 0);
+    if (!dispose) assert.equal(state.glossaryEntries[0].source, "new paper");
+  }
+});
+
+test("glossary deletion updates matching readers and rejects an earlier stale list", async () => {
+  let finishOld;
+  let calls = 0;
+  const { ui, state, terms } = createGlossaryUI({
+    async getGlossaryForItem() {
+      calls++;
+      if (calls === 1) return new Promise((resolve) => { finishOld = resolve; });
+      return { paper: makePaper(), entries: [] };
+    }
+  });
+  const other = createGlossaryUI({}).state;
+  Object.assign(other, { reader: { itemID: 99 }, itemID: 99, paperStorageKey: "1--OTHERKEY" });
+  ui.states.set(other.reader, other);
+  const sibling = createGlossaryUI({}).state;
+  sibling.reader.itemID = sibling.itemID = 11;
+  ui.states.set(sibling.reader, sibling);
+  const pending = ui._refreshGlossaryForState(state);
+  ui._handleServiceEvent({ type: "glossary-deleted", paper: makePaper(), normalizedSource: "model" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  assert.equal(state.glossaryCountNode.textContent, "1");
+  assert.equal(sibling.glossaryCountNode.textContent, "1");
+  assert.equal(other.glossaryCountNode.textContent, "2");
+  finishOld({ paper: makePaper(), entries: terms });
+  await pending;
+  assert.equal(state.glossaryCountNode.textContent, "1");
+  assert.equal(state.glossaryEntries[0].source, "policy");
+});
+
+test("a failed deletion re-enables matching buttons after a refresh in every reader", async () => {
+  let reject;
+  const { ui, state, terms, deleteButton } = createGlossaryUI({
+    deleteGlossaryTerm: () => new Promise((_resolve, failure) => { reject = failure; })
+  });
+  const sibling = createGlossaryUI({}).state;
+  ui.states.set(sibling.reader, sibling);
+  const pending = deleteButton().dispatch("click");
+  ui._renderGlossary(state, terms.slice());
+  ui._renderGlossary(sibling, terms.slice());
+  assert.equal(deleteButton().disabled, true);
+  assert.equal(sibling.glossaryNode.querySelectorAll(".spt-term-delete")[0].disabled, true);
+  reject(new Error("disk full"));
+  await pending;
+  assert.equal(deleteButton().disabled, false);
+  assert.equal(sibling.glossaryNode.querySelectorAll(".spt-term-delete")[0].disabled, false);
+});
 
 test("Codex selection normalization copies only text and precise PDF coordinates", () => {
   assert.deepEqual(normalizeCodexSelection({

@@ -49,6 +49,7 @@
       this.apiClient = apiClient;
       this.now = now || (() => new Date().toISOString());
       this.inFlight = new Map();
+      this.selectionRequests = new Set();
       this.cancelers = new Set();
       this.listeners = new Set();
       this.stopped = false;
@@ -131,11 +132,41 @@
       };
     }
 
-    async _readCachedResult(context, lookup) {
+    _assertSelectionCurrent(request) {
+      if (request && (request.deleted || request.deletedPaperKeys?.has(request.paperStorageKey))) {
+        throw new Logic.SmartTranslatorError("TERM_DELETED", "该术语已删除，请重新选择后翻译");
+      }
+    }
+
+    async _withSelectionRequest(itemID, text, action) {
+      const request = {
+        normalizedSource: Logic.normalizeText(text),
+        paperStorageKey: null,
+        deleted: false
+      };
+      this.selectionRequests.add(request);
+      try {
+        const context = await this.paperRepository.get(itemID);
+        request.paperStorageKey = context.paper.storageKey;
+        this._assertSelectionCurrent(request);
+        const result = await action(context, request);
+        this._assertSelectionCurrent(request);
+        return result;
+      }
+      finally {
+        this.selectionRequests.delete(request);
+      }
+    }
+
+    async _readCachedResult(context, lookup, selectionRequest) {
       const cached = await this.cache.getCached(context.paper, lookup.cacheQuery);
+      this._assertSelectionCurrent(selectionRequest);
       if (!cached) return null;
       const touched = await this.cache.touch(context.paper, cached.id);
-      const entry = touched || cached;
+      this._assertSelectionCurrent(selectionRequest);
+      // A deletion queued between the read and touch must remain a cache miss.
+      if (!touched) return null;
+      const entry = touched;
       return {
         status: "translated",
         fromCache: true,
@@ -145,10 +176,11 @@
       };
     }
 
-    async _translateWithCache({ kind, context, source, pageNumber, forceRefresh = false }) {
+    async _translateWithCache({ kind, context, source, pageNumber, forceRefresh = false, selectionRequest }) {
       const lookup = this._buildCacheLookup(kind, context, source, pageNumber);
       if (!forceRefresh) {
-        const cachedResult = await this._readCachedResult(context, lookup);
+        const cachedResult = await this._readCachedResult(context, lookup, selectionRequest);
+        this._assertSelectionCurrent(selectionRequest);
         if (cachedResult) return cachedResult;
       }
       const { normalizedSource, prepared } = lookup;
@@ -163,6 +195,7 @@
 
       const operation = (async () => {
         const apiKey = await this.credentials.get(prepared.config.provider);
+        this._assertSelectionCurrent(selectionRequest);
         const translation = await this.apiClient.complete({
           config: prepared.config,
           apiKey,
@@ -172,6 +205,7 @@
         if (this.stopped) {
           throw new Logic.SmartTranslatorError("PLUGIN_STOPPED", "插件已停止");
         }
+        this._assertSelectionCurrent(selectionRequest);
         const timestamp = this.now();
         const cacheEntry = {
           kind,
@@ -192,6 +226,7 @@
         const entry = forceRefresh
           ? await this.cache.replaceMatching(context.paper, cacheEntry)
           : await this.cache.append(context.paper, cacheEntry);
+        this._assertSelectionCurrent(selectionRequest);
         const result = {
           status: "translated",
           fromCache: false,
@@ -203,6 +238,7 @@
         return result;
       })();
       this.inFlight.set(flightKey, operation);
+      if (selectionRequest) Object.assign(selectionRequest, { flightKey, operation });
       const cleanup = () => {
         if (this.inFlight.get(flightKey) === operation) this.inFlight.delete(flightKey);
       };
@@ -211,25 +247,26 @@
     }
 
     async translateSelection(itemID, text, pageNumber, { forceRefresh = false } = {}) {
-      const context = await this.paperRepository.get(itemID);
-      return this._translateWithCache({
+      return this._withSelectionRequest(itemID, text, (context, selectionRequest) => this._translateWithCache({
         kind: "selection",
         context,
         source: String(text ?? ""),
         pageNumber,
-        forceRefresh: Boolean(forceRefresh)
-      });
+        forceRefresh: Boolean(forceRefresh),
+        selectionRequest
+      }));
     }
 
     async getCachedSelection(itemID, text, pageNumber) {
-      const context = await this.paperRepository.get(itemID);
-      const lookup = this._buildCacheLookup(
-        "selection",
-        context,
-        String(text ?? ""),
-        pageNumber
-      );
-      return this._readCachedResult(context, lookup);
+      return this._withSelectionRequest(itemID, text, (context, selectionRequest) => {
+        const lookup = this._buildCacheLookup(
+          "selection",
+          context,
+          String(text ?? ""),
+          pageNumber
+        );
+        return this._readCachedResult(context, lookup, selectionRequest);
+      });
     }
 
     async ensureAbstract(itemID) {
@@ -358,6 +395,36 @@
         paper: context.paper,
         entries: await this.cache.getGlossary(context.paper)
       };
+    }
+
+    async deleteGlossaryTerm(itemID, { paperStorageKey, source } = {}) {
+      const context = await this.paperRepository.get(itemID);
+      if (this.stopped) throw new Logic.SmartTranslatorError("PLUGIN_STOPPED", "插件已停止");
+      if (!paperStorageKey || context.paper.storageKey !== paperStorageKey) {
+        throw new Logic.SmartTranslatorError("PAPER_CHANGED", "论文已切换，请刷新术语列表后重试");
+      }
+      const normalizedSource = Logic.normalizeText(source);
+      if (!normalizedSource) throw new Logic.SmartTranslatorError("SOURCE_EMPTY", "没有可删除的术语");
+      // Invalidate every active configuration variant, including local cache probes.
+      // Requests made after this deletion may translate the term again normally.
+      for (const request of this.selectionRequests) {
+        if (request.normalizedSource !== normalizedSource) continue;
+        if (request.paperStorageKey === null) {
+          // Another PDF attachment can share this paper; defer the identity check
+          // until its metadata lookup completes instead of guessing from itemID.
+          request.deletedPaperKeys ||= new Set();
+          request.deletedPaperKeys.add(paperStorageKey);
+          continue;
+        }
+        if (request.paperStorageKey !== paperStorageKey) continue;
+        request.deleted = true;
+        if (request.operation && this.inFlight.get(request.flightKey) === request.operation) {
+          this.inFlight.delete(request.flightKey);
+        }
+      }
+      const removedCount = await this.cache.deleteTerm(context.paper, normalizedSource);
+      this._emit({ type: "glossary-deleted", paper: context.paper, normalizedSource, removedCount });
+      return { paper: context.paper, removedCount };
     }
 
     async testConnection() {

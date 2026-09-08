@@ -14,7 +14,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.34`
+- 当前版本：`0.1.35`
 - 目标平台：macOS Zotero 9.0.6
 - 清单兼容范围：Zotero `9.0`–`9.0.*`
 - 插件源码根目录：`plugin/`
@@ -41,6 +41,7 @@
 - Codex 公式固定使用 XPI 内置 KaTeX `0.18.4` 生成 MathML；必须保持 `trust: false`、宏展开/尺寸上限、每公式独立宏环境和 MathML 外部元素/资源属性过滤。不得使用 `innerHTML`、远程公式服务、运行时 CDN、KaTeX HTML 输出或可加载资源的可信命令。
 - Codex Mermaid 固定使用 XPI 内置 Mermaid `11.16.1`，只在出现 `mermaid` fenced code block 时按窗口延迟加载，不得使用 CDN 或运行时下载。由于 Zotero Item Pane 属于无 `body` 的 XUL 文档，运行时必须留在同窗口的本地 `about:blank` HTML iframe 与专用 Gecko sandbox 中；sandbox 必须以该 HTML 窗口为原型继承只读的 `window`/`document`，不得再次赋值，关闭插件时移除 iframe 并丢弃 sandbox 引用；不得在 Zotero 9.0.6 调用 `Cu.nukeSandbox()`。必须保持 `securityLevel: strict`、`htmlLabels: false`、安全配置锁定、源文本/边数/超时/SVG 大小与节点数上限。返回 SVG 只允许 Mermaid flowchart 生成的本地 `feDropShadow` 滤镜，不得放行其他滤镜原语，并继续拒绝活动元素、HTML、链接和非本地资源引用；结果需写入最长边不超过 4096 像素的固有尺寸并序列化为隔离的数据图片，宽图在侧栏横向滚动，不得作为活动 SVG 注入 Item Pane。解析、超限或安全校验失败时必须保留原始源码。
 - Codex 开发者模式必须默认关闭；关闭时不得采集或保留额外的可复制诊断日志，也不得显示复制入口。开启后仅允许在内存中有界记录当前实时 turn 的工具与思考诊断事件，脱敏常见密钥和用户主目录，不得自动落盘或上传；关闭模式、重建会话和插件退出必须清空。
+- 悬浮面板术语删除仅清理当前论文中同一规范化原文的全部 selection 缓存配置变体；原子写入成功后更新列表与计数，不改摘要、智能标签或其他论文。删除必须使此前在途的对应划线请求及缓存探测失效，防止旧结果恢复缓存；异步列表刷新和删除回调复核 Reader、论文与请求序号，失败保留术语并允许重试。
 - 当前 PDF 的划线翻译禁用开关默认关闭，禁用附件 ID 列表仅持久化在本机 Zotero 偏好中；命中禁用状态时不得追加插件划线翻译 UI、查询划线缓存或发起翻译请求，且不得影响其他 PDF 或独立的“添加到 Agents”入口。
 
 上述 PDF/媒体/Markdown/外链/公式/Mermaid/开发者日志边界同样适用于 Pi；Codex View Image 的形状识别只作用于 Codex 工具事件，不得猜测 Pi 输出文件路径。
@@ -68,11 +69,11 @@ zotero-translate/
 │       ├── agent-providers.js        # Codex/Pi 固定注册表、配置映射、默认权限与 Reader 双语入口
 │       ├── logic.js                  # 模板、术语与智能标签解析、URL 和签名逻辑
 │       ├── credentials.js            # Mozilla Login Manager 密钥存储
-│       ├── cache.js                  # 译文与智能标签持久化、原子新增/替换和损坏恢复
+│       ├── cache.js                  # 译文与智能标签持久化、原子新增/替换/术语删除和损坏恢复
 │       ├── chat-cache.js             # 按 Agent 隔离的 session/镜像、旧 Codex 兼容及工作区/媒体生命周期
 │       ├── pdf-screenshot.js         # Zotero 9.0.6 原页框选/跨页拆图、PDF 坐标映射、PNG 渲染校验与资源保护
 │       ├── api.js                    # OpenAI Chat Completions 客户端与安全错误映射
-│       ├── service.js                # 翻译、摘要、智能标签、缓存探测/强制刷新及并发协调
+│       ├── service.js                # 翻译、摘要、智能标签、缓存探测/强制刷新、术语删除及在途失效
 │       ├── pi-acp-compat.js          # 固定 Pi 适配器哈希校验、Node 内存补丁、按模型读取档位与确认 max
 │       ├── acp-client.js             # 双适配器准备/离线启动、Pi 补丁入口、版本检查、stdio 与进程清理
 │       ├── codex-chat.js             # 共用聊天核心、每 PDF/Agent session、按模型配置目录、权限确认与媒体边界
@@ -94,8 +95,8 @@ zotero-translate/
 │       │       └── README.md         # 版本、来源、哈希与安全集成边界
 │       ├── item-tree-ui.js           # 主页智能标签列、本地懒加载索引与列刷新
 │       ├── item-tree.css             # 智能标签列、主题色胶囊与无障碍模式样式
-│       ├── reader-ui.js              # Agents 选区/截图入口、划线缓存/重译、禁用开关、工具栏与可拖拽缩放悬浮面板
-│       ├── reader.css                # Reader 工具栏/截图状态、Agents 选区、悬浮面板、缩放和划线弹窗样式
+│       ├── reader-ui.js              # Agents 选区/截图、划线缓存/重译/禁用、工具栏及悬浮面板术语删除/拖拽缩放
+│       ├── reader.css                # Reader 工具栏/截图、Agents 选区、悬浮面板/悬停删除、缩放和划线弹窗样式
 │       ├── main.js                   # 翻译/双 Agent 组装、热更新、只读路径枚举与 Zotero FilePicker 桥接
 │       ├── preferences.xhtml         # 翻译/公共 ACP 环境、路径候选/编辑/浏览、Codex/Pi Tab 与开发者模式
 │       ├── preferences.js            # 设置页路径发现、Tab、按模型思考默认项、互斥检测/准备和迟到回调隔离
@@ -104,7 +105,7 @@ zotero-translate/
 │   ├── helpers.js                    # Zotero、缓存和偏好 mock
 │   ├── logic.test.js                 # 模板、术语、URL、签名和论文标识
 │   ├── credentials.test.js           # API Key 隔离测试
-│   ├── cache.test.js                 # 缓存新增/替换、并发、原子写入和损坏恢复
+│   ├── cache.test.js                 # 缓存新增/替换/术语删除、配置与论文隔离、原子写入和损坏恢复
 │   ├── chat-cache.test.js            # 旧 Codex 兼容与 Pi 镜像/配置/媒体目录隔离、损坏备份、并发和归档清理
 │   ├── pdf-screenshot.test.js         # 原页截图坐标、跨页拆分、跨上下文桥、PNG/缩放、渲染和版本关闭
 │   ├── api.test.js                   # 请求结构、隐私和错误映射
@@ -117,16 +118,17 @@ zotero-translate/
 │   ├── mermaid-renderer.test.js      # Mermaid 上限、固定安全配置、SVG 过滤、延迟加载/串行/缓存与回退
 │   ├── main.test.js                  # ACP/Agent 设置桥接、只读发现、FilePicker 选取/取消与偏好作用域
 │   ├── preferences.test.js           # 路径下拉/编辑/刷新/迟到结果、Tab/表单保留、忙碌锁与版本错误
-│   ├── service.test.js               # 摘要、缓存探测/强制刷新、缓存失效、并发与取消
+│   ├── service.test.js               # 摘要、缓存探测/强制刷新、术语删除/在途失效、并发与取消
 │   ├── item-tree-ui.test.js          # 智能标签列、异步刷新、渲染安全与清理
-│   └── reader-ui.test.js             # 选区/截图 Agents 入口、划线翻译/禁用、工具栏、Tabs、拖拽缩放和陈旧 UI 防护
+│   └── reader-ui.test.js             # 选区/截图 Agents 入口、划线翻译/禁用、术语删除/重试、Tabs、拖拽缩放和陈旧 UI 防护
 ├── scripts/
 │   ├── build.sh                      # 完整 XPI 构建与归档检查入口
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.34.xpi
-    ├── smart-paper-translator-0.1.33.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.35.xpi
+    ├── smart-paper-translator-0.1.34.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.33.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.32.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.31.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.30.xpi         # 历史版本归档

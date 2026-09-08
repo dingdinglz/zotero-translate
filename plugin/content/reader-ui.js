@@ -225,6 +225,7 @@
       this.stylesheetText = stylesheetText || "";
       this.states = new Map();
       this.stylesheets = new Set();
+      this.deletingTerms = new Set();
       this.unsubscribeService = null;
       this.toolbarHandler = (event) => this.handleToolbar(event);
       this.selectionHandler = (event) => this.handleSelectionPopup(event);
@@ -317,7 +318,10 @@
       glossarySection.setAttribute("aria-labelledby", glossaryTab.id);
       glossarySection.tabIndex = 0;
       const glossaryBody = createElement(doc, "div", "spt-glossary spt-muted", "尚无已翻译术语");
-      glossarySection.append(glossaryBody);
+      const glossaryStatus = createElement(doc, "div", "spt-glossary-status spt-error");
+      glossaryStatus.setAttribute("role", "status");
+      glossaryStatus.hidden = true;
+      glossarySection.append(glossaryBody, glossaryStatus);
 
       tabContent.append(abstractSection, glossarySection);
       panelBody.append(paperMeta, tabList, tabContent);
@@ -335,6 +339,7 @@
       state.summaryCacheTag = summaryCacheTag;
       state.glossaryNode = glossaryBody;
       state.glossaryCountNode = glossaryCount;
+      state.glossaryStatusNode = glossaryStatus;
       state.tabButtons = { summary: summaryTab, glossary: glossaryTab };
       state.tabPanels = { summary: abstractSection, glossary: glossarySection };
       this._setActiveTab(state, state.activeTab || "summary");
@@ -967,6 +972,7 @@
 
     _renderGlossary(state, entries) {
       if (!state.glossaryNode) return;
+      state.glossaryEntries = entries;
       state.glossaryCountNode.textContent = String(entries.length);
       state.glossaryNode.replaceChildren();
       state.glossaryNode.classList.toggle("spt-muted", entries.length === 0);
@@ -975,14 +981,73 @@
         return;
       }
       const list = createElement(state.doc, "dl", "spt-term-list");
+      const itemID = state.itemID;
+      const paperStorageKey = state.paperStorageKey;
+      const serial = state.requestSerial;
       for (const entry of entries) {
         const row = createElement(state.doc, "div", "spt-term-row");
         const term = createElement(state.doc, "dt", "spt-term-source", entry.source);
         const translation = createElement(state.doc, "dd", "spt-term-translation", entry.translation);
+        const remove = createElement(state.doc, "button", "spt-term-delete", "删除");
+        remove.type = "button";
+        remove.title = "删除术语及其本地翻译缓存";
+        remove.setAttribute("aria-label", `删除术语“${entry.source}”及其缓存`);
+        const source = entry.normalizedSource || entry.source;
+        const deletionKey = JSON.stringify([paperStorageKey, source]);
+        remove.disabled = this.deletingTerms.has(deletionKey);
+        const isCurrent = () => Logic.isRenderCurrent(state, serial, itemID) &&
+          state.reader.itemID === itemID && state.paperStorageKey === paperStorageKey;
+        remove.addEventListener("click", async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!isCurrent() || state.glossaryEntries !== entries || this.deletingTerms.has(deletionKey)) return;
+          this.deletingTerms.add(deletionKey);
+          remove.disabled = true;
+          this._updateTermDeleteButtons(paperStorageKey);
+          state.glossaryStatusNode.hidden = true;
+          try {
+            await this.service.deleteGlossaryTerm(itemID, { paperStorageKey, source });
+            if (isCurrent()) this._removeGlossaryTerm(state, source);
+          }
+          catch (error) {
+            this.log("删除术语缓存失败", error);
+            if (isCurrent()) {
+              state.glossaryStatusNode.textContent = "删除失败，请重试。";
+              state.glossaryStatusNode.hidden = false;
+            }
+          }
+          finally {
+            this.deletingTerms.delete(deletionKey);
+            remove.disabled = false;
+            this._updateTermDeleteButtons(paperStorageKey);
+          }
+        });
+        remove.dataset.deletionKey = deletionKey;
+        term.append(remove);
         row.append(term, translation);
         list.append(row);
       }
       state.glossaryNode.append(list);
+    }
+
+    _updateTermDeleteButtons(paperStorageKey) {
+      // A refresh or another Reader can display the same pending deletion.
+      for (const state of this.states.values()) {
+        if (state.destroyed || state.reader?.itemID !== state.itemID ||
+          state.paperStorageKey !== paperStorageKey) continue;
+        for (const button of state.glossaryNode?.querySelectorAll(".spt-term-delete") || []) {
+          button.disabled = this.deletingTerms.has(button.dataset.deletionKey);
+        }
+      }
+    }
+
+    _removeGlossaryTerm(state, source) {
+      // Commit the saved deletion without depending on another disk read, and
+      // invalidate any list snapshot that began before it.
+      state.glossarySerial = (state.glossarySerial || 0) + 1;
+      this._renderGlossary(state, (state.glossaryEntries || []).filter((entry) =>
+        (entry.normalizedSource || entry.source) !== source
+      ));
     }
 
     refreshState(state) {
@@ -990,6 +1055,9 @@
       const itemID = state.reader.itemID;
       state.itemID = itemID;
       const serial = ++state.requestSerial;
+      state.paperStorageKey = null;
+      state.glossaryStatusNode.hidden = true;
+      this._renderGlossary(state, []);
       state.titleNode.textContent = "正在读取论文…";
       this._setSummary(state, "正在翻译或读取摘要缓存…", "muted");
 
@@ -1000,18 +1068,7 @@
         });
       }
 
-      this.service.getGlossaryForItem(itemID).then(({ paper, entries }) => {
-        if (!Logic.isRenderCurrent(state, serial, itemID)) return;
-        state.paperStorageKey = paper.storageKey;
-        state.attachmentID = paper.attachmentID;
-        state.parentItemID = paper.parentItemID;
-        state.titleNode.textContent = paper.title;
-        this._renderGlossary(state, entries);
-      }).catch((error) => {
-        if (!Logic.isRenderCurrent(state, serial, itemID)) return;
-        this.log("读取术语缓存失败", error);
-        this._renderGlossary(state, []);
-      });
+      void this._refreshGlossaryForState(state);
 
       this.service.ensureAbstract(itemID).then((result) => {
         if (!Logic.isRenderCurrent(state, serial, itemID)) return;
@@ -1037,10 +1094,15 @@
     async _refreshGlossaryForState(state) {
       const itemID = state.itemID;
       const serial = state.requestSerial;
+      const glossarySerial = state.glossarySerial = (state.glossarySerial || 0) + 1;
       try {
         const { paper, entries } = await this.service.getGlossaryForItem(itemID);
-        if (!Logic.isRenderCurrent(state, serial, itemID)) return;
+        if (!Logic.isRenderCurrent(state, serial, itemID) ||
+          state.reader.itemID !== itemID || state.glossarySerial !== glossarySerial) return;
         state.paperStorageKey = paper.storageKey;
+        state.attachmentID = paper.attachmentID;
+        state.parentItemID = paper.parentItemID;
+        state.titleNode.textContent = paper.title;
         this._renderGlossary(state, entries);
       }
       catch (error) {
@@ -1049,14 +1111,17 @@
     }
 
     _handleServiceEvent(event) {
-      if (event.type !== "translation") return;
+      if (event.type !== "translation" && event.type !== "glossary-deleted") return;
       for (const state of this.states.values()) {
         const samePaper = state.paperStorageKey === event.paper.storageKey ||
           state.itemID === event.paper.attachmentID;
-        if (state.destroyed || !samePaper) continue;
+        if (state.destroyed || state.reader?.itemID !== state.itemID || !samePaper) continue;
         // Abstract rendering is owned by refreshState's request serial guard. Handling
         // abstract events here would let an older request bypass that guard.
-        if (event.entry.kind === "selection" && event.entry.isTerm) {
+        if (event.type === "glossary-deleted") {
+          this._removeGlossaryTerm(state, event.normalizedSource);
+        }
+        else if (event.entry.kind === "selection" && event.entry.isTerm) {
           this._refreshGlossaryForState(state);
         }
       }
@@ -1349,6 +1414,9 @@
       state.closeButton = null;
       state.resizeHandle = null;
       state.summaryCacheTag = null;
+      state.glossaryEntries = null;
+      state.glossaryNode = null;
+      state.glossaryStatusNode = null;
       state.tabButtons = null;
       state.tabPanels = null;
       state.panel = null;
@@ -1367,6 +1435,7 @@
         this._disposeDOM(state);
       }
       this.states.clear();
+      this.deletingTerms.clear();
       for (const stylesheet of this.stylesheets) stylesheet.remove();
       this.stylesheets.clear();
       this.screenshotBridge?.shutdown?.();
