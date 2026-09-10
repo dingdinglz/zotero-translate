@@ -7,6 +7,7 @@ const {
   JSONLineDecoder,
   sanitizeDiagnostic,
   formatACPError,
+  isAbsolutePath,
   validateRuntimePaths,
   createEnvironment,
   inspectSharedRuntime,
@@ -335,6 +336,38 @@ test("runtime path and environment policy requires absolutes and forces offline 
   }
 });
 
+test("Windows drive and UNC paths are absolute and use a semicolon PATH", () => {
+  assert.equal(isAbsolutePath("C:\\Program Files\\nodejs\\node.exe"), true);
+  assert.equal(isAbsolutePath("C:/Program Files/nodejs/node.exe"), true);
+  assert.equal(isAbsolutePath("\\\\server\\share\\node.exe"), true);
+  assert.equal(isAbsolutePath("C:node.exe"), false);
+  assert.equal(isAbsolutePath("\\node.exe"), false);
+  assert.doesNotThrow(() => validateRuntimePaths({
+    nodePath: "C:\\Program Files\\nodejs\\node.exe",
+    npxCliPath: "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js",
+    codexPath: "C:\\Users\\test\\codex.exe"
+  }));
+
+  const saved = { PathUtils: global.PathUtils, Services: global.Services };
+  global.PathUtils = { parent: require("node:path").win32.dirname };
+  global.Services = {
+    appinfo: { OS: "WINNT" },
+    env: { get: name => name === "PATH" ? "C:\\Windows\\System32;D:\\Tools" : "" }
+  };
+  try {
+    const environment = createEnvironment({
+      nodePath: "C:\\Program Files\\nodejs\\node.exe",
+      npxCliPath: "C:\\Program Files\\nodejs\\npx-cli.js",
+      codexPath: "C:\\Users\\test\\AppData\\Roaming\\npm\\codex.exe"
+    }, { allowDownload: false });
+    assert.equal(environment.PATH.split(";")[0], "C:\\Program Files\\nodejs");
+    assert.equal(environment.PATH.split(";")[1], "C:\\Users\\test\\AppData\\Roaming\\npm");
+    assert.match(environment.PATH, /C:\\Windows\\System32;D:\\Tools/u);
+    assert.equal(environment.PATH.split(";").every(isAbsolutePath), true);
+  }
+  finally { Object.assign(global, saved); }
+});
+
 function piProcess(version = "0.0.33") {
   const process = new FakeProcess((message, process) => {
     if (message.method === "initialize") process.respond(message.id, {
@@ -510,7 +543,7 @@ test("candidate discovery reads PATH, NVM and npm symlinks without executing pro
     "/path with spaces/bin/pi", "/path with spaces/bin/codex", "/npm-location/bin/npx-cli.js"
   ]);
   const stats = [];
-  global.PathUtils = { join: require("node:path").join, parent: require("node:path").dirname };
+  global.PathUtils = { join: require("node:path").posix.join, parent: require("node:path").posix.dirname };
   global.Services = {
     dirsvc: { get: () => ({ path: "/home/test" }) },
     env: { get: name => ({ PATH: "/path with spaces/bin:/unreadable/bin:/usr/local/bin:relative/bin:/path with spaces/bin", NVM_DIR: "/custom-nvm" })[name] || "" }
@@ -550,6 +583,59 @@ test("candidate discovery reads PATH, NVM and npm symlinks without executing pro
     assert.equal(candidates.pi.some(entry => entry.path === "/missing/pi"), false);
     assert.equal(stats.filter(path => path === "/path with spaces/bin/pi").length, 1);
     assert.equal(stats.some(path => !path.startsWith("/")), false);
+  }
+  finally { Object.assign(global, saved); }
+});
+
+test("candidate discovery preserves Windows drive letters and finds Node plus npx-cli.js", async () => {
+  const names = ["Services", "Ci", "Cc", "IOUtils", "PathUtils", "Zotero"];
+  const saved = Object.fromEntries(names.map(name => [name, global[name]]));
+  const path = require("node:path").win32;
+  const files = new Set([
+    "C:\\Program Files\\nodejs\\node.exe",
+    "C:\\Program Files\\nodejs\\npx-cli.js",
+    "C:\\Users\\test\\AppData\\Roaming\\npm\\codex.exe",
+    "D:\\nvm\\v24.14.0\\node.exe",
+    "D:\\nvm\\v24.14.0\\node_modules\\npm\\bin\\npx-cli.js"
+  ]);
+  const stats = [];
+  global.PathUtils = { join: path.join, parent: path.dirname };
+  global.Zotero = { isWin: true };
+  global.Services = {
+    appinfo: { OS: "WINNT" },
+    dirsvc: { get: () => ({ path: "C:\\Users\\test" }) },
+    env: { get: name => ({
+      PATH: "C:\\Program Files\\nodejs;C:\\Users\\test\\AppData\\Roaming\\npm;relative",
+      ProgramFiles: "C:\\Program Files",
+      APPDATA: "C:\\Users\\test\\AppData\\Roaming",
+      NVM_HOME: "D:\\nvm"
+    })[name] || "" }
+  };
+  global.Ci = { nsIFile: {} };
+  global.Cc = { "@mozilla.org/file/local;1": { createInstance: () => ({
+    initWithPath(value) { this.path = value; },
+    isSymlink() { return false; }
+  }) } };
+  global.IOUtils = {
+    async getChildren(value) {
+      if (value === "D:\\nvm") return ["D:\\nvm\\v24.14.0", "D:\\nvm\\settings.txt"];
+      throw new Error("absent");
+    },
+    async stat(value) {
+      stats.push(value);
+      if (files.has(value)) return { type: "regular" };
+      throw new Error("missing");
+    }
+  };
+  try {
+    const candidates = await listRuntimePathCandidates();
+    assert.ok(candidates.node.some(entry => entry.path === "C:\\Program Files\\nodejs\\node.exe"));
+    assert.ok(candidates.node.some(entry => entry.path === "D:\\nvm\\v24.14.0\\node.exe" && entry.version === "v24.14.0"));
+    assert.ok(candidates.npx.some(entry => entry.path === "C:\\Program Files\\nodejs\\npx-cli.js"));
+    assert.ok(candidates.npx.some(entry => entry.path === "D:\\nvm\\v24.14.0\\node_modules\\npm\\bin\\npx-cli.js"));
+    assert.ok(candidates.codex.some(entry => entry.path === "C:\\Users\\test\\AppData\\Roaming\\npm\\codex.exe"));
+    assert.equal(stats.includes("C"), false);
+    assert.equal(stats.some(value => value === "relative" || value.startsWith("relative\\")), false);
   }
   finally { Object.assign(global, saved); }
 });

@@ -18,8 +18,28 @@
     }
   }
 
+  function isWindowsAbsolutePath(path) {
+    if (typeof path !== "string") return false;
+    return /^[A-Za-z]:[\\/]/u.test(path)
+      || /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/u.test(path);
+  }
+
   function isAbsolutePath(path) {
-    return typeof path === "string" && path.startsWith("/") && !path.includes("\0");
+    return typeof path === "string"
+      && !path.includes("\0")
+      && (path.startsWith("/") || isWindowsAbsolutePath(path));
+  }
+
+  function usesWindowsPaths(paths = {}) {
+    try {
+      if (global.Zotero?.isWin || global.Services?.appinfo?.OS === "WINNT") return true;
+    }
+    catch (_error) {}
+    return Object.values(paths).some(isWindowsAbsolutePath);
+  }
+
+  function pathName(path) {
+    return String(path || "").split(/[\\/]/u).at(-1) || "";
   }
 
   function sanitizeDiagnostic(value, maxLength = Constants.ACP_MAX_STDERR_CHARS) {
@@ -664,18 +684,24 @@
     catch (_error) { return ""; }
   }
 
-  async function listNVMVersions(homePath) {
+  async function listNVMVersions(homePath, windows = usesWindowsPaths()) {
     const roots = [...new Set([
       environmentValue("NVM_DIR"), global.PathUtils.join(homePath, ".nvm"),
-      environmentValue("XDG_CONFIG_HOME") && global.PathUtils.join(environmentValue("XDG_CONFIG_HOME"), "nvm")
+      environmentValue("XDG_CONFIG_HOME") && global.PathUtils.join(environmentValue("XDG_CONFIG_HOME"), "nvm"),
+      windows && environmentValue("NVM_HOME")
     ].filter(isAbsolutePath))];
     const children = [];
     for (const root of roots) {
-      try { children.push(...await global.IOUtils.getChildren(global.PathUtils.join(root, "versions", "node"))); }
-      catch (_error) { /* An absent NVM install does not block PATH discovery. */ }
+      const versionRoots = windows
+        ? [root, global.PathUtils.join(root, "versions", "node")]
+        : [global.PathUtils.join(root, "versions", "node")];
+      for (const versionRoot of versionRoots) {
+        try { children.push(...await global.IOUtils.getChildren(versionRoot)); }
+        catch (_error) { /* An absent NVM install does not block PATH discovery. */ }
+      }
     }
-    return [...new Set(children)].filter(path => /\/v\d+\.\d+\.\d+$/u.test(path))
-      .sort((a, b) => b.slice(b.lastIndexOf("/") + 1).localeCompare(a.slice(a.lastIndexOf("/") + 1), "en", { numeric: true }))
+    return [...new Set(children)].filter(path => /^v\d+\.\d+\.\d+$/u.test(pathName(path)))
+      .sort((a, b) => pathName(b).localeCompare(pathName(a), "en", { numeric: true }))
       .slice(0, 128);
   }
 
@@ -689,7 +715,7 @@
     try {
       const file = global.Cc["@mozilla.org/file/local;1"].createInstance(global.Ci.nsIFile);
       file.initWithPath(path);
-      if (file.isSymlink() && file.target.endsWith("/npx-cli.js")) return file.target;
+      if (file.isSymlink() && /[\\/]npx-cli\.js$/iu.test(file.target)) return file.target;
     }
     catch (_error) { /* Only resolve existing npm links; never execute shell shims. */ }
     return "";
@@ -697,6 +723,7 @@
 
   // Enumeration reads file metadata only: no shell startup files, executables, or downloads.
   async function listRuntimePathCandidates(configured = {}) {
+    const windows = usesWindowsPaths(configured);
     const candidates = { node: [], npx: [], codex: [], pi: [] };
     const seen = Object.fromEntries(Object.keys(candidates).map(kind => [kind, new Set()]));
     const add = async (kind, path, source, version = "") => {
@@ -709,19 +736,30 @@
     }
     const directories = [];
     if (isAbsolutePath(configured.nodePath)) directories.push({ path: global.PathUtils.parent(configured.nodePath), source: "node" });
-    for (const root of await listNVMVersions(getHomePath())) {
-      directories.push({ path: global.PathUtils.join(root, "bin"), source: "nvm", version: root.slice(root.lastIndexOf("/") + 1) });
+    for (const root of await listNVMVersions(getHomePath(), windows)) {
+      directories.push({ path: windows ? root : global.PathUtils.join(root, "bin"), source: "nvm", version: pathName(root) });
     }
-    const pathDirectories = environmentValue("PATH").split(":").filter(path => isAbsolutePath(path) && path.length <= 4096);
+    const pathSeparator = windows ? ";" : ":";
+    const pathDirectories = environmentValue("PATH").split(pathSeparator)
+      .filter(path => isAbsolutePath(path) && path.length <= 4096);
     for (const path of [...new Set(pathDirectories)].slice(0, 128)) directories.push({ path, source: "path" });
-    for (const path of ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]) directories.push({ path, source: "standard" });
+    const standardDirectories = windows ? [
+      environmentValue("NVM_SYMLINK"),
+      environmentValue("ProgramFiles") && global.PathUtils.join(environmentValue("ProgramFiles"), "nodejs"),
+      environmentValue("APPDATA") && global.PathUtils.join(environmentValue("APPDATA"), "npm")
+    ] : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
+    for (const path of standardDirectories.filter(isAbsolutePath)) directories.push({ path, source: "standard" });
     const searched = new Set();
     for (const { path: directory, source, version } of directories) {
       if (searched.has(directory)) continue;
       searched.add(directory);
-      await Promise.all(["node", "codex", "pi"].map(kind => add(kind, global.PathUtils.join(directory, kind), source, version)));
+      await Promise.all(["node", "codex", "pi"].flatMap(kind =>
+        (windows ? [`${kind}.exe`, kind] : [kind])
+          .map(name => add(kind, global.PathUtils.join(directory, name), source, version))
+      ));
       const prefix = global.PathUtils.parent(directory);
       await add("npx", global.PathUtils.join(prefix, "lib", "node_modules", "npm", "bin", "npx-cli.js"), source, version);
+      await add("npx", global.PathUtils.join(directory, "node_modules", "npm", "bin", "npx-cli.js"), source, version);
       await add("npx", global.PathUtils.join(directory, "npx-cli.js"), source, version);
       await add("npx", npxLinkTarget(global.PathUtils.join(directory, "npx")), source, version);
     }
@@ -745,20 +783,23 @@
   function validateRuntimePaths(paths) {
     for (const [name, path] of Object.entries(paths)) {
       if (!isAbsolutePath(path)) {
-        throw new ACPError("ACP_PATH_INVALID", `${name} 必须是已选择的绝对路径`);
+        throw new ACPError("ACP_PATH_INVALID", `${name} 必须是绝对文件路径`);
       }
     }
   }
 
   function createEnvironment(paths, { allowDownload }, agentId = "codex") {
     const provider = Agents.getProvider(agentId);
+    const windows = usesWindowsPaths(paths);
+    const pathSeparator = windows ? ";" : ":";
+    const inheritedDirectories = environmentValue("PATH").split(pathSeparator)
+      .filter(path => isAbsolutePath(path) && path.length <= 4096)
+      .slice(0, 128);
     const directories = [
       global.PathUtils.parent(paths.nodePath),
       ...(paths[`${provider.id}Path`] ? [global.PathUtils.parent(paths[`${provider.id}Path`])] : []),
-      "/opt/homebrew/bin",
-      "/usr/local/bin",
-      "/usr/bin",
-      "/bin"
+      ...inheritedDirectories,
+      ...(windows ? [] : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])
     ];
     return {
       ...(paths[`${provider.id}Path`] ? (agentId === "codex" ? {
@@ -771,7 +812,7 @@
         PI_SKIP_VERSION_CHECK: "1"
       }) : {}),
       NO_BROWSER: "1",
-      PATH: [...new Set(directories)].join(":"),
+      PATH: [...new Set(directories)].join(pathSeparator),
       npm_config_loglevel: "error",
       ...(allowDownload ? {} : { npm_config_offline: "true" })
     };

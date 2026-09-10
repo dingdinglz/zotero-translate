@@ -1,6 +1,6 @@
 # Smart Paper Translator
 
-Smart Paper Translator 0.1.35 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个可切换本机 Codex / Pi 的原生 **Agents** 右侧栏。对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
+Smart Paper Translator 0.1.36 是面向 macOS / Windows Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个可切换本机 Codex / Pi 的原生 **Agents** 右侧栏。对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
 
 ## 功能
 
@@ -43,9 +43,11 @@ Smart Paper Translator 0.1.35 是面向 macOS Zotero 9 内置 PDF Reader 的学�
 
 ## 公共 ACP 运行环境
 
-在 Zotero 设置中打开 “Smart Paper Translator → Agents（ACP）”。顶部“公共运行环境”配置 Node、`npx-cli.js`，两者由 Codex / Pi 共用。Node、npx、Codex、Pi 路径均提供候选下拉、可编辑文本框及“选择…”文件浏览。打开设置即只读扫描 Zotero 进程的 PATH、默认 `~/.nvm`、`NVM_DIR` / `XDG_CONFIG_HOME` 下的 NVM 与常见安装位置；候选显示来源及 NVM 目录版本，识别 npm 的 npx 软链接。选择下拉项后填入绝对路径，也可直接修改文本；“刷新路径列表”保留当前及手动选择，不执行 shell 配置或候选程序。点击“检测 Node / npx”才读取本机版本，不启动 Agent、不下载、不发送提示词。已保存路径在升级后保留。
+在 Zotero 设置中打开 “Smart Paper Translator → Agents（ACP）”。顶部“公共运行环境”配置 Node、`npx-cli.js`，两者由 Codex / Pi 共用。Node、npx、Codex、Pi 路径均提供候选下拉、可编辑文本框及“选择…”文件浏览。打开设置即只读扫描 Zotero 进程的 PATH、默认 `~/.nvm`、`NVM_DIR` / `XDG_CONFIG_HOME`（Windows 另含 `NVM_HOME` / `NVM_SYMLINK`）下的 NVM 与常见安装位置；候选显示来源及 NVM 目录版本，识别 npm 的 npx 软链接。选择下拉项后填入绝对路径，也可直接修改文本；Windows 支持 `C:\...` 盘符路径和 `\\server\share\...` UNC 路径，并按分号解析 PATH。“刷新路径列表”保留当前及手动选择，不执行 shell 配置或候选程序。点击“检测 Node / npx”才读取本机版本，不启动 Agent、不下载、不发送提示词。已保存路径在升级后保留。
 
 以这里检测到的 Node 版本为准，终端的 `node --version` 可能来自另一套安装。例如，终端 NVM 是 Node 24.14.0，而设置仍指向 `/usr/local/bin/node` 的 22.13.0，仍然不满足 Pi 的最低要求。应选择 NVM 下的 `bin/node` 和对应 `lib/node_modules/npm/bin/npx-cli.js`，然后重新检测。所选 Node 目录会排在子进程 PATH 首位，供两个 Agent 使用。
+
+Windows 标准 Node 安装可填写 `C:\Program Files\nodejs\node.exe` 与 `C:\Program Files\nodejs\node_modules\npm\bin\npx-cli.js`；不要把 `npx`、`npx.cmd` 或 `npx.ps1` 当作 `npx-cli.js`。Codex 应选择本机 npm 包内实际的 `codex.exe`，而不是 PowerShell shim。
 
 下方圆角分段式 Codex / Pi Tab 分别保存各自的可执行路径、默认模型和思考强度，并显示独立的准备状态。Tab 切换只显示本地设置，不启动 ACP；检测或准备期间锁住配置以防路径混用。路径刷新不修改公共 Node / npx。文件选择使用 [Zotero 推荐的 FilePicker 模块](https://www.zotero.org/support/dev/zotero_8_for_developers)，由它处理新版 BrowsingContext 参数；取消或关闭设置窗口后不提交结果。
 
@@ -124,12 +126,14 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.35.xpi
+unzip -t dist/smart-paper-translator-0.1.36.xpi
 ```
 
 真实 npx 下载、Codex/Pi 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
 
-0.1.35 已通过 245 项自动测试、JavaScript/静态检查、构建、SHA-256、XPI 根目录与 `unzip -t` 检查，归档内 38 个运行时文件与源码逐字节一致。新增回归覆盖按论文删除全部术语配置变体、原子写入失败后重试、在途翻译/缓存探测/附件元数据查询失效，以及多 Reader 按钮同步和陈旧列表隔离。独立浏览器预览使用实际面板模块与样式和合成术语，确认 390px / 280px 面板无横向溢出，28×22px 的小号删除按钮在悬停或键盘聚焦时出现，删除后行与计数同步更新。
+0.1.36 已在 Windows 上通过 247 项自动测试、全部 JavaScript 语法检查、静态安全检查、可复现构建、SHA-256、XPI 根目录与 `unzip -t` 检查；归档内只有 38 个运行时文件，且与 `plugin/` 源文件逐字节一致。新增回归覆盖 Windows 盘符/UNC 绝对路径、拒绝盘符相对路径、分号 PATH、`node.exe`、标准 npm `npx-cli.js` 和 nvm-windows 目录发现。最终 XPI 已在 Windows Zotero 9.0.6 中通过 `AddonManager.getInstallForFile()` 非安装式解析：插件 ID 为 `smart-paper-translator@zotero.local`，版本为 `0.1.36`，`error: 0`、`isCompatible: true`、`appDisabled: false`。安装并由用户在设置页准备后，只读核对确认 Node 24.13.1、npx 11.8.0、Codex CLI 0.153.0 与固定 `codex-acp 1.6.2` 均使用所选 Windows 绝对路径；准备版本及路径指纹已持久化且相互匹配，固定适配器可在 npm 离线模式下启动。Zotero 设置页实测显示 ACP 握手成功、ChatGPT 登录正常、健康状态正常、能力与模型选项目录已读取；检测未发送提示词或调用模型。
+
+此前 0.1.35 已通过 245 项自动测试、JavaScript/静态检查、构建、SHA-256、XPI 根目录与 `unzip -t` 检查，归档内 38 个运行时文件与源码逐字节一致。新增回归覆盖按论文删除全部术语配置变体、原子写入失败后重试、在途翻译/缓存探测/附件元数据查询失效，以及多 Reader 按钮同步和陈旧列表隔离。独立浏览器预览使用实际面板模块与样式和合成术语，确认 390px / 280px 面板无横向溢出，28×22px 的小号删除按钮在悬停或键盘聚焦时出现，删除后行与计数同步更新。
 
 0.1.35 的修改已由用户确认无问题。开发端通过只读查询确认当前客户端为 macOS Zotero 9.0.6；最终 XPI 的独立 `AddonManager.getInstallForFile()` 非安装式解析因 Mac 锁定未取得结果，不列入自动验证通过项。开发过程中未安装插件、修改 Zotero profile 或调用真实模型。手动验收：在术语 Tab 悬停一行并点击“删除”，确认该行与计数更新；重新打开 PDF 后该术语不再出现，重新划选时无旧译文缓存，其他术语保持原样。
 

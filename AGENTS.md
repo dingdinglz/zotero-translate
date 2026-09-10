@@ -14,8 +14,8 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.35`
-- 目标平台：macOS Zotero 9.0.6
+- 当前版本：`0.1.36`
+- 目标平台：macOS / Windows Zotero 9.0.6
 - 清单兼容范围：Zotero `9.0`–`9.0.*`
 - 插件源码根目录：`plugin/`
 - 最终 XPI 中只能包含 `plugin/` 下的运行时文件，不得包含 `.agents/`、测试、文档或构建工具。
@@ -24,7 +24,7 @@
 - Codex 动态模型选项检测使用不发送提示词的临时空 session，并以 `session/close` 释放；不得为清理该空 session 调用会归档 thread 的 `session/delete`。Pi 必须用独立连接检测，无提示词，结束后关闭进程；不得套用 Codex 的 `--version`、`authentication/status`、`session/close`。
 - Codex 新会话默认受审批的 `agent`，用户可在当前论文的 Codex 会话中选择 `agent-full-access`。Full Access 明示允许工作区外文件操作与联网；已有会话恢复保存的模式，切换收到成功响应后才持久化，失败必须阻止使用未确认权限。不得把会话权限升级为插件全局授权。
 - ACP 设置共用一个 Node / npx 运行环境，Codex 与 Pi 用 Tab 分开配置自身路径、模型和准备状态；公共路径继续使用旧 `codexNodePath` / `codexNpxCliPath` 偏好键以保留升级配置。选择的 Node 目录必须排在子进程 PATH 首位，Agent 路径探测不得覆盖公共路径；公共版本检测只运行本机 `--version`，不启动 ACP 或下载。检测期间锁住公共及 Agent 配置，Tab 切换只显示本地面板；窗口销毁后丢弃迟到结果。版本不满足、进程失败及无法读取版本必须区分并保留具体诊断。
-- 路径控件必须同时提供本地候选下拉、手动输入及浏览文件，打开设置自动只读枚举当前进程 PATH、默认/自定义 NVM（含 `NVM_DIR` / `XDG_CONFIG_HOME`）和常见位置；NVM 目录按版本数字排序，每个来源最多 128 个目录，去重并过滤非常规文件。只读解析 npm 的 `npx → npx-cli.js` 软链接，不运行 shell 启动脚本或候选程序。刷新不得覆盖现有/手动路径。文件选择必须使用 Zotero `chrome://zotero/content/modules/filePicker.mjs`，传入当前设置窗口；由仍存活的设置视图提交选择结果，取消或关闭后不写偏好。
+- 路径控件必须同时提供本地候选下拉、手动输入及浏览文件，打开设置自动只读枚举当前进程 PATH、默认/自定义 NVM（含 `NVM_DIR` / `XDG_CONFIG_HOME`，Windows 另含 `NVM_HOME` / `NVM_SYMLINK`）和常见位置；NVM 目录按版本数字排序，每个来源最多 128 个目录，去重并过滤非常规文件。Windows 必须接受盘符根路径及 UNC 绝对路径、拒绝盘符相对路径，并以分号拆分/拼接子进程 PATH；Unix 使用冒号。只读解析 npm 的 `npx → npx-cli.js` 软链接，不运行 shell 启动脚本或候选程序。刷新不得覆盖现有/手动路径。文件选择必须使用 Zotero `chrome://zotero/content/modules/filePicker.mjs`，传入当前设置窗口；由仍存活的设置视图提交选择结果，取消或关闭后不写偏好。
 - Pi 首版验证目标为本机 Pi `0.85.1`，离线启动要求 Pi >= 0.85.1 / Node >= 22.19.0；使用 `PI_ACP_PI_COMMAND` 选择本机 Pi，设置 `PI_OFFLINE=1`、`PI_TELEMETRY=0`、`PI_SKIP_VERSION_CHECK=1`。用初始化响应校验 pi-acp 版本；`model` / `thought_level` 分别映射模型与思考强度，Pi `mode` 不作为权限。扩展交互请求必须保留。
 - Pi `max` 兼容补丁只在插件启动的 Node 进程中生效：`pi-acp-compat.js` 用 Node `module.registerHooks()` 对固定 `pi-acp@0.0.33` 入口做内存转换，先检查包名、版本及 SHA-256；源码不符必须失败，不得修改 npm 缓存、全局 Pi 或静默下载。`get_available_thinking_levels` 是当前模型档位的唯一来源，设置后必须回读 `get_state` 确认；不支持的档位和无效响应必须拒绝，不得补造 `max` 或回退成 `medium`。独立配置探测按模型读取档位，不发送提示词；兼容修订变更只失效 Pi 的选项目录，保留会话与已准备状态。恢复先应用保存的模型再校验思考档位，配置中的中间通知不得覆盖尚未确认的选择。
 - Agents 每篇论文记住当前 Agent（默认 Codex）；历史、模型、思考、文字/选区/截图草稿均按论文和 Agent 隔离。切换只加载本地历史，连接、生成、授权和停止期间禁用 Agent/权限切换；截图捕获绑定启动时的 Agent。异步视图回调必须复核附件、Agent 与请求序号。
@@ -75,7 +75,7 @@ zotero-translate/
 │       ├── api.js                    # OpenAI Chat Completions 客户端与安全错误映射
 │       ├── service.js                # 翻译、摘要、智能标签、缓存探测/强制刷新、术语删除及在途失效
 │       ├── pi-acp-compat.js          # 固定 Pi 适配器哈希校验、Node 内存补丁、按模型读取档位与确认 max
-│       ├── acp-client.js             # 双适配器准备/离线启动、Pi 补丁入口、版本检查、stdio 与进程清理
+│       ├── acp-client.js             # 跨平台路径发现/校验、双适配器准备/离线启动、Pi 补丁入口、版本检查、stdio 与进程清理
 │       ├── codex-chat.js             # 共用聊天核心、每 PDF/Agent session、按模型配置目录、权限确认与媒体边界
 │       ├── agents-chat.js            # 当前 Agent 偏好、服务路由、Pi 每论文连接/引用与独立探测生命周期
 │       ├── math-renderer.js          # KaTeX→MathML、有界不可信输入与安全导入/原始 TeX 回退
@@ -110,7 +110,7 @@ zotero-translate/
 │   ├── pdf-screenshot.test.js         # 原页截图坐标、跨页拆分、跨上下文桥、PNG/缩放、渲染和版本关闭
 │   ├── api.test.js                   # 请求结构、隐私和错误映射
 │   ├── pi-acp-compat.test.js          # max/能力/确认失败/哈希拒绝；可选现成适配器无提示词验证
-│   ├── acp-client.test.js            # PATH/NVM/软链接发现、JSONL、双适配器准备/版本与进程清理
+│   ├── acp-client.test.js            # Windows/Unix PATH、NVM/软链接发现、JSONL、双适配器准备/版本与进程清理
 │   ├── agents-chat.test.js           # Agent 切换/偏好、忙碌锁、Pi 每论文连接隔离与探测生命周期
 │   ├── codex-chat.test.js            # Codex 权限切换/失败、Pi 模型/思考/回放及 PDF/媒体/日志边界
 │   ├── codex-chat-ui.test.js         # Agent 快速切换/迟到回调、隔离草稿、选择期间流式更新与安全渲染、工具图、Web Search/外链/引用边界
@@ -126,8 +126,9 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.35.xpi
-    ├── smart-paper-translator-0.1.34.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.36.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.35.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.34.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.33.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.32.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.31.xpi         # 历史版本归档
