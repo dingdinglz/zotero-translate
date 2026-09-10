@@ -990,6 +990,23 @@ test("file citations can reveal only paths inside the current paper workspace", 
   );
 });
 
+test("visualization HTML reads are local, agent scoped and reject stale sessions before and after IO", async () => {
+  for (const agentId of ["codex", "pi"]) {
+    const { service, fileSystem, acp } = makeHarness({ agentId });
+    const state = await service.load(10);
+    const localID = state.record.session.localID;
+    const bytes = new TextEncoder().encode('<div>chart</div>');
+    fileSystem.inspectPath = async path => ({ type: path.endsWith('.html') ? 'regular' : 'directory', symlink: false, size: bytes.length, lastModified: 1 });
+    fileSystem.read = async path => { assert.ok(path.startsWith(state.record.session.workspacePath + '/')); return bytes; };
+    assert.equal((await service.readVisualization(10, 'output/a.html', localID)).html, '<div>chart</div>');
+    await assert.rejects(service.readVisualization(10, '../a.html', localID));
+    await assert.rejects(service.readVisualization(10, 'a.html', 'old-local'), /会话已切换/);
+    fileSystem.read = async () => { const current = service.states.get(state.paper.storageKey); current.record = structuredClone(current.record); return bytes; };
+    await assert.rejects(service.readVisualization(10, 'a.html', localID), /会话已切换/);
+    assert.equal(acp.requests.length, 0);
+  }
+});
+
 test("first send after a Zotero restart loads the persisted thread before prompting", async () => {
   const io = new MemoryIO();
   const firstHarness = makeHarness({ io });

@@ -1,6 +1,6 @@
 # Smart Paper Translator
 
-Smart Paper Translator 0.1.35 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个可切换本机 Codex / Pi 的原生 **Agents** 右侧栏。对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
+Smart Paper Translator 0.1.37 是面向 macOS Zotero 9 内置 PDF Reader 的学术翻译插件。它保留原有翻译、摘要和智能标签功能，并提供一个可切换本机 Codex / Pi 的原生 **Agents** 右侧栏。对话走 [Agent Client Protocol](https://agentclientprotocol.com/) stdio，不使用插件内置翻译 LLM，也不与翻译 API Key 共用配置。
 
 ## 功能
 
@@ -25,6 +25,7 @@ Smart Paper Translator 0.1.35 是面向 macOS Zotero 9 内置 PDF Reader 的学�
 - Codex 支持“审批模式 / Full Access”：新会话默认审批，已有会话恢复保存的权限。Full Access 允许工作区外文件操作和联网，只作用于当前 Codex 会话；切换成功后保存，失败保留原选择并在发送前重新确认。Pi 直接使用本机工具执行机制，界面不把它的思考 mode 当作权限；适配器扩展发出的交互请求仍然显示。
 - 第一条真实消息会把源 PDF 原子复制为专用工作区中的 `source.pdf`，再以 `application/pdf` 的 ACP `resource_link` 引用；后续 turn 不重复附加 PDF，只发送文本以及用户本轮明确添加的截图图片块。
 - Zotero 重启后，在用户重新加载或首次发送前通过 `session/load` 恢复同一 Agent session，并用 thread 回放对账本地镜像。交付状态不确定时必须先对账，避免重复发送。
+- 支持 Codex/Pi 消息中的 `visualize` HTML 图表标记。回复完成后自动预览当前论文、当前 Agent 和本地会话工作区中的 HTML，提供图例/鼠标交互、展开查看、重试和原标记。已有历史中的标记也可渲染；无需重新向模型提问。固定 D3 7.9.0 与基础明暗主题随插件内置，支持 `https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js` 的离线替换；其他外部依赖会明确报错。文件须为无软链接的 UTF-8 常规 HTML，单文件上限 1 MiB；消息区同时预览上限 4 个，展开层增加 1 个。
 - 支持流式文本、安全 Markdown（标题、强调、列表、引用、表格、代码）、完整的 KaTeX 0.18.4 → Firefox MathML 公式，以及 fenced `mermaid` 图表。Mermaid 11.16.1 随 XPI 离线内置并按窗口延迟加载；图表以严格模式、禁用 HTML 标签和交互的方式渲染，经本地资源与 SVG 白名单复核后作为隔离数据图片显示，宽图可横向滚动，源码可折叠查看和复制，解析失败或超限时自动展开源码。公式支持分式、求和上下标、集合运算、重音、根式、矩阵、对齐环境及上下花括号；解析失败时保留原始 TeX，不再输出命令粘连的伪公式。Codex 的 `:codex-file-citation{...}` 与兼容的 `::codex-file-citation{...}` 文件引用会显示为引用胶囊，并且只允许在当前论文工作区内定位。工具和计划卡片在长对话中保持固定高度；流式更新会保留已展开卡片与阅读位置，只有用户原本就在底部时才继续跟随新内容。
 - Codex / Pi 的对话消息、代码、表格及展开的工具内容支持鼠标选择文字，并使用原生 ⌘C（Windows/Linux 为 Ctrl+C）或“编辑 → 复制”。选中文字时暂停消息区重绘，取消选择后立即显示最新回复；生成、停止及授权状态仍正常更新。
 - 超宽工具输出、路径和表格被限制在 Item Pane 内，不再把用户消息推到侧栏可视区域之外。
@@ -111,25 +112,38 @@ smart-paper-translator/
 - `tool-images/<论文标识>/<本地会话标识>/` 位于 ACP 工作区之外，不会作为 cwd、资源、附加目录或软链接交给 Codex；普通界面不显示源文件绝对路径，只渲染完成校验的受控副本。
 - `screenshots/<论文标识>/<本地会话标识>/` 同样位于 ACP 工作区之外，路径不写入图片载荷或位置 JSON；发送时插件重新校验常规文件类型、PNG 签名、字节数、像素尺寸与位置元数据，再以内嵌图片块传输。
 - 本机 Codex 的 Skills/MCP 与 Pi 的扩展可能访问论文之外的数据或服务；Codex 审批模式仍受其沙箱和审批机制约束，Full Access 与 Pi 不提供该工作区沙箱限制。
-- 原始 HTML 不会渲染，远程图片不会自动加载；普通 Markdown、公式、Codex 指令、工具输出和权限详情均通过受限 DOM/MathML 节点显示，不把不可信内容交给 `innerHTML`。公式由 XPI 内置 KaTeX 离线转换，使用 `trust: false`、有限宏展开与尺寸上限，只导入不含外部元素、链接或资源属性的 MathML。Mermaid 固定版本运行时在同一 Zotero 窗口的本地 `about:blank` HTML iframe 与专用 Gecko sandbox 中延迟加载，以适配 Item Pane 的无 `body` XUL 文档；sandbox 通过该 HTML 窗口原型继承只读的全局 `window`/`document` 绑定。它锁定严格安全配置并限制源文本、边数、渲染时间、SVG 大小和节点数。返回 SVG 只额外接受 Mermaid flowchart 自动生成、且只引用本地片段的 `feDropShadow` 投影，仍拒绝活动元素、HTML、链接和非本地资源引用，最终只作为 `data:image/svg+xml` 图片显示，不把活动 SVG 注入 Item Pane。HTTP/HTTPS 链接只在明确点击后交给系统浏览器，网页访问不发生在插件渲染过程中。
+- `visualize` 的 HTML/JavaScript 只在双层不透明源 `sandbox="allow-scripts"` iframe 中运行；不授予同源、弹窗、表单、下载或 Zotero 接口权限。固定外层 CSP 的 `frame-src` 阻断图表自行导航，内层 CSP 阻断联网、远程资源、嵌套 URL、字体与 Worker；仅允许内嵌数据图片。消息桥只校验和转发有界尺寸、状态与 Escape 关闭通知，不提供工具、文件、外链或文库操作。Zotero 原生侧仅观察插件固定外层文档的状态属性，并校验当前 iframe、文档与随机标识；无需允许内容页访问特权窗口。切换论文、Agent、本地会话和关闭视图时清理预览。HTML 不注入 Zotero 文档或特权 Gecko sandbox。实现依据 [MDN srcdoc 隔离说明](https://developer.mozilla.org/en-US/docs/Web/API/HTMLIFrameElement/srcdoc) 和 [CSP frame-src](https://www.w3.org/TR/CSP/#directive-frame-src)，双层隔离/导航阻断已在 Zotero 9.0.6 / Gecko 140.12.0 用临时合成内容探测。
+- 普通消息中的原始 HTML 不会渲染，远程图片不会自动加载；普通 Markdown、公式、Codex 指令、工具输出和权限详情均通过受限 DOM/MathML 节点显示，不把不可信内容交给 `innerHTML`。公式由 XPI 内置 KaTeX 离线转换，使用 `trust: false`、有限宏展开与尺寸上限，只导入不含外部元素、链接或资源属性的 MathML。Mermaid 固定版本运行时在同一 Zotero 窗口的本地 `about:blank` HTML iframe 与专用 Gecko sandbox 中延迟加载，以适配 Item Pane 的无 `body` XUL 文档；sandbox 通过该 HTML 窗口原型继承只读的全局 `window`/`document` 绑定。它锁定严格安全配置并限制源文本、边数、渲染时间、SVG 大小和节点数。返回 SVG 只额外接受 Mermaid flowchart 自动生成、且只引用本地片段的 `feDropShadow` 投影，仍拒绝活动元素、HTML、链接和非本地资源引用，最终只作为 `data:image/svg+xml` 图片显示，不把活动 SVG 注入 Item Pane。HTTP/HTTPS 链接只在明确点击后交给系统浏览器，网页访问不发生在插件渲染过程中。
 - 开发者模式默认关闭。开启时只收集当前实时 turn 的工具与思考事件，不收集用户消息或最终回答；内存日志采用有界环形缓冲并做密钥和用户目录脱敏，关闭模式、重建会话或退出插件时清空。
 - 翻译请求继续使用匿名 Cookie 容器、60 秒超时和 `logBodyLength: 0`，不把论文正文写入 Zotero HTTP 调试日志。
 - 已禁用划线翻译的 PDF 附件 ID 列表只保存在本机 Zotero 偏好中，不写入条目或 Zotero 原生 Tags。
 
 ## 开发与验证
 
-插件 XPI 不捆绑 Node、Pi、npm 缓存或 ACP 适配器包；它额外内置 MIT 许可的 KaTeX 0.18.4 与 Mermaid 11.16.1 单文件运行时，不含运行时 CDN、字体或网络下载。开发检查需要 Node.js 22、Python 3 和 Info-ZIP：
+插件 XPI 不捆绑 Node、Pi、npm 缓存或 ACP 适配器包；它额外内置 MIT 许可的 KaTeX 0.18.4、Mermaid 11.16.1 和 ISC 许可的 D3 7.9.0 单文件运行时，不含运行时 CDN、字体或网络下载。开发检查需要 Node.js 22、Python 3 和 Info-ZIP：
 
 ```bash
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.35.xpi
+unzip -t dist/smart-paper-translator-0.1.37.xpi
 ```
 
 真实 npx 下载、Codex/Pi 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
 
-0.1.35 已通过 245 项自动测试、JavaScript/静态检查、构建、SHA-256、XPI 根目录与 `unzip -t` 检查，归档内 38 个运行时文件与源码逐字节一致。新增回归覆盖按论文删除全部术语配置变体、原子写入失败后重试、在途翻译/缓存探测/附件元数据查询失效，以及多 Reader 按钮同步和陈旧列表隔离。独立浏览器预览使用实际面板模块与样式和合成术语，确认 390px / 280px 面板无横向溢出，28×22px 的小号删除按钮在悬停或键盘聚焦时出现，删除后行与计数同步更新。
+0.1.37 修复图表“加载超时”：XPI 内脚本和主题改用 `Zotero.File.getResourceAsync()` 读取 UTF-8 字符串，拒绝非文本返回值；图表状态改由原生侧观察隔离外层的固定属性，解决 Gecko 拒绝内容页向特权窗口发送 `postMessage` 的问题。外层监听在子页面开始解析前注册，启动错误也能及时回报。
+
+0.1.37 已通过 261 项自动测试、JavaScript/静态检查、可复现构建、SHA-256、XPI 根目录与 `unzip -t` 检查；归档内 43 个运行时文件与源码逐字节一致。新增回归覆盖真实 Unicode 标记、流式期间延迟加载、Codex/Pi 会话路由、越界/软链接/文件大小/UTF-8 检查、读取期间切换、外部脚本拒绝、消息来源和 token 校验、重绘与销毁清理，以及安装包资源读取契约、无效资源重试、早期脚本错误和原生状态观察隔离。
+
+此前独立浏览器使用实际渲染模块和本次图表 HTML 验证了两张曲线图、图例开关、窄侧栏无横向溢出、放大查看和图表焦点下的 Escape 关闭；外部图片、脚本导航及父文档访问样本均被隔离并显示失败。Zotero 9.0.6 / Gecko 140.12.0 中的临时合成探测确认双层 iframe 均为不透明源、图表看不到 Zotero 接口、父文档访问抛出 SecurityError、导航被外层 CSP 阻止。
+
+Zotero 9.0.6 / Gecko 140.12.0 原生临时验证使用修复后的隔离文档和原图表 HTML：已产生 3 条曲线、3 个图例按钮，状态观察器收到 `ready`；启动异常样本收到 `error`。两层 iframe 均保持不透明源，临时 iframe、监听器和观察器均在完成后清理。此验证不安装新插件，也不替代完整安装后 UI 冒烟。
+
+最终 0.1.37 XPI 已在 Zotero 9.0.6 中通过 `AddonManager.getInstallForFile()` 非安装式解析：ID `smart-paper-translator@zotero.local`、`error: 0`、`isCompatible: true`、`appDisabled: false`。开发过程中未安装 0.1.37、修改 Zotero profile 或发起真实模型请求。
+
+手动验收：安装后重新打开原论文，确认历史 `visualize` 标记变为图表；切换图例、展开查看并按 Escape 关闭；切换论文/Agent 后不残留旧图；文件缺失时显示错误并可重试。
+
+此前 0.1.35 已通过 245 项自动测试、JavaScript/静态检查、构建、SHA-256、XPI 根目录与 `unzip -t` 检查，归档内 38 个运行时文件与源码逐字节一致。新增回归覆盖按论文删除全部术语配置变体、原子写入失败后重试、在途翻译/缓存探测/附件元数据查询失效，以及多 Reader 按钮同步和陈旧列表隔离。独立浏览器预览使用实际面板模块与样式和合成术语，确认 390px / 280px 面板无横向溢出，28×22px 的小号删除按钮在悬停或键盘聚焦时出现，删除后行与计数同步更新。
 
 0.1.35 的修改已由用户确认无问题。开发端通过只读查询确认当前客户端为 macOS Zotero 9.0.6；最终 XPI 的独立 `AddonManager.getInstallForFile()` 非安装式解析因 Mac 锁定未取得结果，不列入自动验证通过项。开发过程中未安装插件、修改 Zotero profile 或调用真实模型。手动验收：在术语 Tab 悬停一行并点击“删除”，确认该行与计数更新；重新打开 PDF 后该术语不再出现，重新划选时无旧译文缓存，其他术语保持原样。
 

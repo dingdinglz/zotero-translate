@@ -14,7 +14,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.35`
+- 当前版本：`0.1.37`
 - 目标平台：macOS Zotero 9.0.6
 - 清单兼容范围：Zotero `9.0`–`9.0.*`
 - 插件源码根目录：`plugin/`
@@ -36,6 +36,7 @@
 - PDF 选区加入 Codex 必须再次用 `tabID → Zotero.Reader.getByTabID() → itemID` 精确复核附件，只复制白名单文本与有限数值 PDF 坐标；未发送草稿仅驻留内存并按附件隔离，精确坐标只在用户发送时交给本机 Codex。侧栏自动展开只能操作同一 tab 的 `item-details`，能力缺失时保留草稿并失败关闭。
 - PDF 截图只能通过同一 `tabID → Zotero.Reader.getByTabID() → itemID` 映射加入对应 Codex 草稿。Zotero 9.0.6 的私有 PDF.js 原页渲染桥必须隔离在 `pdf-screenshot.js`、精确版本检查并失败关闭；不得退回屏幕抓图或携带界面/批注。桥接代码不得把特权回调直接传入 PDF.js 内容域数组方法，PDFPageProxy 只能受控解包，`getViewport()`/`render()` 参数必须在目标 iframe 域内创建。跨页框选按页面拆图，图片和可复现 PDF 位置在用户发送时分别作为 ACP 图片块与受边界保护的 JSON 交给 Codex。截图副本只能保存在 ACP 工作区外的 `screenshots/论文标识/本地会话标识`；未发送草稿需可恢复，移除即清理，已发送副本随会话保留，重建会话统一删除。单图和单轮资源上限不得绕过，模型不支持图片时必须原子保留草稿并阻止发送。
 - Codex 消息中的文件引用只能在当前 PDF 的专用工作区内定位；不得让模型输出的路径越过工作区边界。首轮安全前缀和资源链接不得作为用户问题显示。
+- Agents 的 `visualize` 标记只可读取当前论文、当前 Agent、当前本地会话工作区内不超过 1 MiB 的 UTF-8 HTML 常规文件，逐级拒绝软链接；切换论文、Agent、会话、重绘和销毁后丢弃迟到结果并清理预览。HTML 只能交给双层 `sandbox="allow-scripts"` 的不透明源 iframe；外层只运行插件固定桥接代码，以 `frame-src 'none'` 阻止内层导航，内层 CSP 禁止网络、外部资源、表单、弹窗和子资源。不得开放同源权限或把模型 HTML/JS 注入 Zotero 文档或特权 sandbox。固定 D3 7.9.0 随 XPI 内置，脚本和主题必须用 `Zotero.File.getResourceAsync()` 读取 UTF-8 文本并校验返回类型，不得把 `getContentsAsync(jarURI)` 返回的请求对象字符串化。只替换明确支持的固定 CDN 引用，不在运行时联网；其他外部脚本报错并保留原标记。外层在内层开始解析前注册消息监听，只接收精确 child/source 与随机 token 匹配的有界状态/尺寸和关闭通知；Gecko 禁止内容页调用特权窗口的 `postMessage`，原生侧须捕获所属 iframe 的内容 load 事件，再读取并观察外层固定状态属性，复核当前 frame/document/token，限制 JSON 长度并在清理时断开观察器。不得读取内层模型 DOM 作为状态源、向内容域暴露特权回调，或接受工具、文件及链接操作。生成、连接、等待授权和停止期间不创建预览或读取 HTML，回复结束后渲染，避免流式重绘反复启动脚本。当前消息区最多同时预览 4 个图表，放大层最多增加 1 个；加载超时后移除 iframe，关闭支持按钮、背景点击和 Escape（含图表焦点）。
 - Codex 文本与 Web Search 卡片中的外部链接只能接受 HTTP/HTTPS，必须在用户点击后通过 `Zotero.launchURL()` 交给系统默认浏览器；不得在 Item Pane 内导航、自动打开链接或加载远程图片。Codex 文件引用需兼容单冒号 `:codex-file-citation{...}` 与双冒号格式，并继续执行工作区边界检查。
 - 完成态 View Image 只能在状态、read 语义、标题、输入路径、位置和资源链接相互印证后处理；源文件必须是 25 MiB 以内且扩展名与签名一致的 PNG/JPEG/GIF/WebP/AVIF 常规文件，拒绝 SVG。副本只能写入 ACP 工作区外的 `tool-images/论文标识/本地会话标识`，不得作为 cwd、资源、附加目录或软链接交给 Codex；界面不得回退渲染源路径。卡片默认折叠并在展开后才解码，放大层必须支持关闭按钮、背景点击、Escape 以及适应窗口/1:1 切换。重建会话必须删除旧会话图片目录。
 - Codex 公式固定使用 XPI 内置 KaTeX `0.18.4` 生成 MathML；必须保持 `trust: false`、宏展开/尺寸上限、每公式独立宏环境和 MathML 外部元素/资源属性过滤。不得使用 `innerHTML`、远程公式服务、运行时 CDN、KaTeX HTML 输出或可加载资源的可信命令。
@@ -76,15 +77,21 @@ zotero-translate/
 │       ├── service.js                # 翻译、摘要、智能标签、缓存探测/强制刷新、术语删除及在途失效
 │       ├── pi-acp-compat.js          # 固定 Pi 适配器哈希校验、Node 内存补丁、按模型读取档位与确认 max
 │       ├── acp-client.js             # 双适配器准备/离线启动、Pi 补丁入口、版本检查、stdio 与进程清理
-│       ├── codex-chat.js             # 共用聊天核心、每 PDF/Agent session、按模型配置目录、权限确认与媒体边界
+│       ├── codex-chat.js             # 共用聊天核心、每 PDF/Agent session、模型/权限/媒体边界与会话绑定图表读取
 │       ├── agents-chat.js            # 当前 Agent 偏好、服务路由、Pi 每论文连接/引用与独立探测生命周期
 │       ├── math-renderer.js          # KaTeX→MathML、有界不可信输入与安全导入/原始 TeX 回退
 │       ├── mermaid-renderer.js       # Mermaid XUL/HTML sandbox、串行缓存、有界 SVG 校验与数据图片
-│       ├── codex-chat-ui.js          # Agents Item Pane、完整换行的模型/思考选项、Agent/权限切换、文本选择保持及安全渲染
-│       ├── codex-chat.css            # Agents 侧栏单列配置/完整选中值、Mermaid/媒体/模态、消息选择与权限样式
+│       ├── visualize-renderer.js     # visualize 标记、工作区 HTML 校验、双层无网络 iframe、UTF-8 资源、原生状态观察与预览清理
+│       ├── visualize-theme.css       # 隔离图表的本地明暗主题与基础控件样式
+│       ├── codex-chat-ui.js          # Agents Item Pane、配置/权限切换、文本选择保持、安全 Markdown 与 visualize 预览路由
+│       ├── codex-chat.css            # Agents 配置/权限、消息选择、Mermaid/媒体及图表预览和放大层样式
 │       ├── codex.svg                 # 旧 Codex 单色图标（保留历史资源）
 │       ├── agents.svg                # Agents Item Pane/Sidenav 中性对话图标
 │       ├── vendor/
+│       │   ├── d3/
+│       │   │   ├── d3.min.js         # D3 7.9.0 离线图表运行时，仅在隔离内容域运行
+│       │   │   ├── LICENSE.txt       # D3 ISC 许可证
+│       │   │   └── README.md         # 固定版本、npm 来源、哈希与网络隔离边界
 │       │   ├── katex/
 │       │   │   ├── katex.min.js      # KaTeX 0.18.4 离线单文件运行时
 │       │   │   ├── LICENSE.txt       # KaTeX MIT 许可证
@@ -112,10 +119,11 @@ zotero-translate/
 │   ├── pi-acp-compat.test.js          # max/能力/确认失败/哈希拒绝；可选现成适配器无提示词验证
 │   ├── acp-client.test.js            # PATH/NVM/软链接发现、JSONL、双适配器准备/版本与进程清理
 │   ├── agents-chat.test.js           # Agent 切换/偏好、忙碌锁、Pi 每论文连接隔离与探测生命周期
-│   ├── codex-chat.test.js            # Codex 权限切换/失败、Pi 模型/思考/回放及 PDF/媒体/日志边界
-│   ├── codex-chat-ui.test.js         # Agent 快速切换/迟到回调、隔离草稿、选择期间流式更新与安全渲染、工具图、Web Search/外链/引用边界
+│   ├── codex-chat.test.js            # 权限/Pi 配置、PDF/媒体/日志边界与图表读取的 Agent/会话隔离
+│   ├── codex-chat-ui.test.js         # Agent/草稿/文本选择、安全渲染与工具/外链边界、图表标记路由和预览清理
 │   ├── math-renderer.test.js         # 公式回归样本、KaTeX 安全选项、MathML 导入过滤与回退
 │   ├── mermaid-renderer.test.js      # Mermaid 上限、固定安全配置、SVG 过滤、延迟加载/串行/缓存与回退
+│   ├── visualize-renderer.test.js    # 标记/路径/文件限制、离线脚本替换、双层隔离、资源返回类型、启动错误、原生状态与清理
 │   ├── main.test.js                  # ACP/Agent 设置桥接、只读发现、FilePicker 选取/取消与偏好作用域
 │   ├── preferences.test.js           # 路径下拉/编辑/刷新/迟到结果、Tab/表单保留、忙碌锁与版本错误
 │   ├── service.test.js               # 摘要、缓存探测/强制刷新、术语删除/在途失效、并发与取消
@@ -126,8 +134,10 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.35.xpi
-    ├── smart-paper-translator-0.1.34.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.37.xpi
+    ├── smart-paper-translator-0.1.36.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.35.xpi         # 历史版本归档
+    ├── smart-paper-translator-0.1.34.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.33.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.32.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.31.xpi         # 历史版本归档

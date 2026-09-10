@@ -874,6 +874,7 @@
 
   const Agents = modules.AgentProviders || (typeof require === "function" ? require("./agent-providers.js") : null);
   const PiCompat = modules.PiACPCompat || (typeof require === "function" ? require("./pi-acp-compat.js") : null);
+  const Visualize = modules.VisualizeRenderer || (typeof require === "function" ? require("./visualize-renderer.js") : null);
 
   class CodexChatService {
     constructor({
@@ -2170,6 +2171,19 @@
       await this.fileSystem.reveal(state.record.session.workspacePath);
     }
 
+    async readVisualization(attachmentID, citedPath, localID) {
+      const state = await this._stateForAttachment(attachmentID);
+      const record = state.record;
+      const current = () => !this.stopped && state.record === record && record.session.localID === localID;
+      if (!localID || !current()) throw new Error("图表所属会话已切换");
+      if (record.session.workspacePath !== this.cache._workspacePath(state.paper, localID)) {
+        throw new Error("图表所属工作区无效");
+      }
+      const result = await Visualize.readWorkspaceHTML(this.fileSystem, record.session.workspacePath, citedPath);
+      if (!current()) throw new Error("图表所属会话已切换");
+      return result;
+    }
+
     async revealCitation(attachmentID, citedPath) {
       const state = await this._stateForAttachment(attachmentID);
       const rawWorkspace = String(state.record.session.workspacePath || "");
@@ -2667,6 +2681,18 @@
         return path;
       },
       stat: (path) => global.IOUtils.stat(path),
+      async inspectPath(path) {
+        const file = global.Cc["@mozilla.org/file/local;1"].createInstance(global.Ci.nsIFile);
+        file.initWithPath(path);
+        if (file.isSymlink()) return { symlink: true };
+        if (!file.exists()) throw new Error("找不到图表文件");
+        return {
+          symlink: false,
+          type: file.isFile() ? "regular" : file.isDirectory() ? "directory" : "other",
+          size: file.isFile() ? file.fileSize : 0,
+          lastModified: file.lastModifiedTime
+        };
+      },
       read: (path, options) => global.IOUtils.read(path, options),
       remove: (path) => global.IOUtils.remove(path, { ignoreAbsent: true }),
       async copyAtomic(source, target, { noOverwrite = false } = {}) {

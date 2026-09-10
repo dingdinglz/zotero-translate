@@ -18,7 +18,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.35"
+    assert manifest["version"] == "0.1.37"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -46,6 +46,7 @@ def main() -> None:
     chat_ui = (PLUGIN / "content" / "codex-chat-ui.js").read_text(encoding="utf-8")
     math_renderer = (PLUGIN / "content" / "math-renderer.js").read_text(encoding="utf-8")
     mermaid_renderer = (PLUGIN / "content" / "mermaid-renderer.js").read_text(encoding="utf-8")
+    visualize_renderer = (PLUGIN / "content" / "visualize-renderer.js").read_text(encoding="utf-8")
     bootstrap = (PLUGIN / "bootstrap.js").read_text(encoding="utf-8")
     assert 'ACP_PACKAGE_SPEC: "@agentclientprotocol/codex-acp@1.6.2"' in constants
     assert 'ACP_MODE: "agent"' in constants
@@ -93,6 +94,17 @@ def main() -> None:
     assert ".innerHTML =" not in chat_ui
     assert ".innerHTML =" not in math_renderer
     assert ".innerHTML =" not in mermaid_renderer
+    assert ".innerHTML =" not in visualize_renderer
+    assert '"sandbox", "allow-scripts"' in visualize_renderer
+    assert "allow-same-origin" not in visualize_renderer
+    assert "frame-src 'none'" in visualize_renderer
+    assert "connect-src 'none'" in visualize_renderer
+    assert "event.source !== frame?.contentWindow" in visualize_renderer
+    assert "inspectPath" in visualize_renderer
+    assert '"content/visualize-renderer.js"' in bootstrap
+    assert hashlib.sha256((PLUGIN / "content/vendor/d3/d3.min.js").read_bytes()).hexdigest() == (
+        "f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539"
+    )
     assert 'output: "mathml"' in math_renderer
     assert 'trust: false' in math_renderer
     assert 'maxExpand: 1000' in math_renderer
@@ -223,6 +235,8 @@ def main() -> None:
         "content/codex-chat.js",
         "content/math-renderer.js",
         "content/mermaid-renderer.js",
+        "content/visualize-renderer.js",
+        "content/visualize-theme.css",
         "content/codex-chat-ui.js",
         "content/codex-chat.css",
         "content/codex.svg",
@@ -232,6 +246,9 @@ def main() -> None:
         "content/vendor/mermaid/mermaid.min.js",
         "content/vendor/mermaid/LICENSE.txt",
         "content/vendor/mermaid/README.md",
+        "content/vendor/d3/d3.min.js",
+        "content/vendor/d3/LICENSE.txt",
+        "content/vendor/d3/README.md",
         "locale/en-US/smart-paper-translator-codex-chat.ftl",
         "locale/zh-CN/smart-paper-translator-codex-chat.ftl",
     }

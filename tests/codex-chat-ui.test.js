@@ -591,6 +591,56 @@ test("academic Markdown renders emphasis, lists, tables, formula containers, and
   assert.equal(nodes.some((node) => /:?codex-file-citation/u.test(node.textContent)), false);
 });
 
+test("visualize markers mount outside code, preserve source and enforce the per-view preview limit", () => {
+  const doc = new Document(), container = new Node("div"), calls = [];
+  const marker = '\uE200visualize\uE202{"path":"output/chart.html"}\uE201';
+  renderSafeMarkdown(doc, container, '前文 ' + marker + '\n\n`' + marker + '`\n\n```text\n' + marker + '\n```\n\n' + marker, {
+    visualizeRenderer: { mount: (_doc, _node, options) => calls.push(options.reference) },
+    visualizationBudget: { remaining: 1 }, loadVisualization: async () => ({ html: "<p>test</p>" })
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, "output/chart.html");
+  assert.equal(descendants(container).filter(x => x.className === "spt-visualize").length, 2);
+  assert.ok(descendants(container).some(x => x.textContent === marker));
+});
+
+test("streaming responses defer chart IO and runtime creation until the response finishes", () => {
+  const doc = new Document(), container = new Node("div");
+  const options = {
+    visualizeRenderer: { mount() { assert.fail("No iframe should be started during streaming"); } },
+    visualizationPending: true, visualizationBudget: { remaining: 4 },
+    loadVisualization() { assert.fail("No HTML should be read during streaming"); }
+  };
+  renderSafeMarkdown(doc, container, '\uE200visualize\uE202{"path":"output/chart.html"}\uE201', options);
+  assert.ok(descendants(container).some(node => node.textContent === "回复完成后显示图表…"));
+  assert.equal(options.visualizationBudget.remaining, 4);
+});
+
+test("Codex and Pi agent messages route visualization reads to their local session and dispose on switching", async () => {
+  for (const agentId of ["codex", "pi"]) {
+    const doc = new Document(), loads = []; let mounted, disposed = 0;
+    const ui = new CodexChatUI({
+      service: { forAgent: (agent, id) => { assert.equal(agent, agentId); assert.equal(id, 10); return {
+        readVisualization: async (...args) => { loads.push(args); return { html: "<p>test</p>" }; }
+      }; } },
+      visualizeRenderer: { mount: (_doc, _node, options) => { mounted = options; options.registerCleanup(() => disposed++); } }
+    });
+    ui._renderShell({ doc, body: doc.body });
+    const view = ui.views.get(doc.body); view.attachmentID = 10; view.agentId = agentId;
+    view.state = { status: "ready", record: { session: { localID: "local-test" }, transcript: [
+      { kind: "message", role: "agent", text: '\uE200visualize\uE202{"path":"output/chart.html"}\uE201' }
+    ] } };
+    ui._renderTranscript(view, view.state);
+    assert.ok(mounted.current());
+    await mounted.load("output/chart.html");
+    assert.deepEqual(loads, [[10, "output/chart.html", "local-test"]]);
+    view.agentId = agentId === "pi" ? "codex" : "pi";
+    assert.equal(mounted.current(), false);
+    ui._destroyView(doc.body);
+    assert.equal(disposed, 1);
+  }
+});
+
 test("Mermaid fenced blocks render as isolated diagrams and keep collapsible source", async () => {
   const doc = new Document();
   const container = new Node("div");

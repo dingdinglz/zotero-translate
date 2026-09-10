@@ -14,6 +14,9 @@
   const MermaidRenderer = modules.MermaidRenderer || (
     typeof require === "function" ? require("./mermaid-renderer.js") : null
   );
+  const Visualize = modules.VisualizeRenderer || (
+    typeof require === "function" ? require("./visualize-renderer.js") : null
+  );
   const PDFScreenshot = modules.PDFScreenshot || (
     typeof require === "function" ? require("./pdf-screenshot.js") : null
   );
@@ -260,6 +263,40 @@
           continue;
         }
       }
+      if (options.visualizeRenderer && text.startsWith(Visualize.MARKER_START, index)) {
+        const reference = Visualize.parseMarkerAt(text, index);
+        if (reference) {
+          const card = doc.createElement("span");
+          card.className = "spt-visualize";
+          parent.append(card);
+          if (options.visualizationPending) {
+            const notice = doc.createElement("span");
+            notice.className = "spt-visualize-status";
+            notice.textContent = "回复完成后显示图表…";
+            card.append(notice);
+          }
+          else if (options.visualizationBudget && options.visualizationBudget.remaining-- > 0 &&
+            typeof options.loadVisualization === "function") {
+            options.visualizeRenderer.mount(doc, card, {
+              reference, load: options.loadVisualization,
+              current: options.visualizationCurrent,
+              registerCleanup: options.registerVisualizationCleanup
+            });
+          }
+          else {
+            const notice = doc.createElement("span");
+            notice.textContent = "当前消息区最多同时预览 4 个图表。";
+            card.append(notice);
+          }
+          const source = doc.createElement("details");
+          source.className = "spt-visualize-source";
+          const summary = doc.createElement("summary"); summary.textContent = "查看原标记";
+          const code = doc.createElement("code"); code.textContent = reference.raw;
+          source.append(summary, code); card.append(source);
+          index += reference.length;
+          continue;
+        }
+      }
       if (text.startsWith("![", index)) {
         const image = text.slice(index).match(/^!\[([^\]]*)\]\(([^\s)]+)(?:\s+["'][^"']*["'])?\)/u);
         if (image) {
@@ -327,7 +364,7 @@
           continue;
         }
       }
-      const special = "\n\\`![:*_~<$";
+      const special = "\n\\`![:*_~<$\uE200";
       let end = index + 1;
       while (end < text.length && !special.includes(text[end])) end++;
       parent.append(doc.createTextNode(text.slice(index, end)));
@@ -1230,6 +1267,7 @@
       stylesheetText,
       rootURI,
       mermaidRenderer,
+      visualizeRenderer,
       requestScreenshotCapture,
       canStartScreenshotCapture,
       isScreenshotPending,
@@ -1241,6 +1279,7 @@
       this.mermaidRenderer = mermaidRenderer || MermaidRenderer?.createMermaidRenderer?.({
         runtimeURI: rootURI ? `${rootURI}content/vendor/mermaid/mermaid.min.js` : ""
       });
+      this.visualizeRenderer = visualizeRenderer || Visualize?.createRenderer?.({ rootURI });
       this.requestScreenshotCapture = requestScreenshotCapture;
       this.canStartScreenshotCapture = canStartScreenshotCapture;
       this.isScreenshotPending = isScreenshotPending;
@@ -1555,6 +1594,9 @@
       style.textContent = this.stylesheetText;
       win.document.documentElement.append(style);
       const cleanup = () => {
+        for (const view of [...this.views.values()]) {
+          if (view.body.ownerDocument?.defaultView === win) this._destroyView(view.body);
+        }
         style.remove();
         localizationLink?.remove();
       };
@@ -1577,6 +1619,8 @@
       const view = this.views.get(body);
       if (!view) return;
       ++view.requestSerial;
+      for (const cleanup of view.visualizationCleanups || []) cleanup();
+      view.visualizationCleanups = [];
       this.service?.release?.(view.agentId, view.attachmentID);
       view.closeImageLightbox?.();
       view.unsubscribe?.();
@@ -2088,6 +2132,8 @@
       const view = this.views.get(body);
       if (!view) return;
       const serial = ++view.requestSerial;
+      for (const cleanup of view.visualizationCleanups || []) cleanup();
+      view.visualizationCleanups = [];
       view.setSectionSummary = setSectionSummary || view.setSectionSummary;
       const attachmentID = resolveReaderAttachmentID(body);
       const current = () => this.views.get(body) === view && view.requestSerial === serial &&
@@ -2514,6 +2560,9 @@
       view.transcriptDeferred = false;
       view.renderedTranscriptKey = transcriptKey;
       const viewport = captureTranscriptViewport(container, renderedBefore);
+      for (const cleanup of view.visualizationCleanups || []) cleanup();
+      view.visualizationCleanups = [];
+      const visualizationBudget = { remaining: Visualize.MAX_PREVIEWS };
       container.replaceChildren();
       if (!state.record.transcript.length) {
         const empty = doc.createElement("p");
@@ -2546,6 +2595,13 @@
             ...this._externalLinkOptions(view),
             mermaidRenderer: this.mermaidRenderer,
             onMermaidError: (error) => this.log("Mermaid rendering failed", error),
+            visualizeRenderer: ["agent", "assistant"].includes(entry.role) ? this.visualizeRenderer : null,
+            visualizationBudget,
+            visualizationPending: ["connecting", "generating", "cancelling", "waiting-approval"].includes(state.status),
+            visualizationCurrent: () => current() && this.views.get(view.body) === view &&
+              view.state?.record?.session?.localID === state.record.session.localID,
+            registerVisualizationCleanup: (cleanup) => view.visualizationCleanups.push(cleanup),
+            loadVisualization: (path) => service.readVisualization(attachmentID, path, state.record.session.localID),
             onFileCitation: ({ path }) => {
               service.revealCitation(attachmentID, path).catch((error) => {
                 if (current()) view.elements.notices.textContent = error.message || "无法打开引用文件";
@@ -2723,6 +2779,7 @@
       this.drafts.clear();
       this.pendingDraftFocus.clear();
       this.mermaidRenderer?.shutdown?.();
+      this.visualizeRenderer?.shutdown?.();
       for (const cleanup of this.windowCleanups.values()) cleanup();
       this.windowCleanups.clear();
     }

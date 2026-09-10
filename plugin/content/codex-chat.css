@@ -1344,3 +1344,16 @@ button.spt-codex-file-citation:hover {
   margin: 3px 0;
   font-weight: normal;
 }
+.spt-visualize { display: block; margin: 12px 0; padding: 10px; border: 1px solid var(--fill-quinary, #d4dbe5); border-radius: 10px; min-width: 0; }
+.spt-visualize-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.spt-visualize-toolbar strong { margin-right: auto; font-size: 13px; }
+.spt-visualize-toolbar button, .spt-visualize-panel > button { font: inherit; color: inherit; background: var(--fill-quinary, #edf0f5); border: 0; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
+.spt-visualize-status { display: block; font-size: 12px; padding: 8px 0; }
+.spt-visualize-stage { display: block; min-width: 0; }
+.spt-visualize-frame { display: block; width: 100%; height: 480px; border: 0; background: transparent; }
+.spt-visualize-source { margin-top: 6px; font-size: 11px; opacity: .8; }
+.spt-visualize-source code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.spt-visualize-overlay { position: fixed; inset: 0; z-index: 2147483646; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,.55); }
+.spt-visualize-panel { width: min(1100px, 96vw); max-height: 92vh; overflow: auto; padding: 16px; border-radius: 12px; color: var(--fill-primary, #20252c); background: var(--material-background, #fff); box-shadow: 0 12px 60px rgba(0,0,0,.25); }
+.spt-visualize-panel > button { display: block; margin-left: auto; }
+.spt-visualize [hidden] { display: none !important; }
