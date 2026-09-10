@@ -11,7 +11,8 @@ const {
   parseVisibleUserMessage,
   resolveToolImageSource,
   detectToolImageFormat,
-  normalizeToolImageSnapshot
+  normalizeToolImageSnapshot,
+  createZoteroFileSystem
 } = require("../plugin/content/codex-chat.js");
 const { MemoryIO, makePaper, makePreferenceStore } = require("./helpers.js");
 
@@ -54,6 +55,121 @@ const selectionContext = {
     }
   }
 };
+
+test("Zotero file system accepts existing Windows and Unix PDF attachment paths", async () => {
+  const saved = { PathUtils: global.PathUtils, Zotero: global.Zotero, IOUtils: global.IOUtils };
+  const paths = new Map([
+    [156, "C:\\Users\\test\\Zotero\\storage\\ABCD1234\\paper.pdf"],
+    [157, "/Users/test/Zotero/storage/EFGH5678/paper.pdf"]
+  ]);
+  global.PathUtils = { join: require("node:path").win32.join };
+  global.Zotero = { Items: { getAsync: async id => ({
+    isPDFAttachment: () => true,
+    getFilePathAsync: async () => paths.get(id)
+  }) } };
+  global.IOUtils = { exists: async path => [...paths.values()].includes(path) };
+  try {
+    const fileSystem = createZoteroFileSystem();
+    assert.equal(await fileSystem.getAttachmentPath(156), paths.get(156));
+    assert.equal(await fileSystem.getAttachmentPath(157), paths.get(157));
+  }
+  finally { Object.assign(global, saved); }
+});
+
+test("Zotero file system distinguishes missing, relative, and non-PDF attachments", async () => {
+  const saved = { PathUtils: global.PathUtils, Zotero: global.Zotero, IOUtils: global.IOUtils };
+  let item = null;
+  global.PathUtils = { join: require("node:path").win32.join };
+  global.Zotero = { Items: { getAsync: async () => item } };
+  global.IOUtils = { exists: async () => false };
+  try {
+    const fileSystem = createZoteroFileSystem();
+    item = { isPDFAttachment: () => true, getFilePathAsync: async () => "C:\\missing\\paper.pdf" };
+    await assert.rejects(fileSystem.getAttachmentPath(1), { code: "PDF_FILE_MISSING" });
+
+    item = { isPDFAttachment: () => true, getFilePathAsync: async () => "relative\\paper.pdf" };
+    global.IOUtils.exists = async () => true;
+    await assert.rejects(fileSystem.getAttachmentPath(1), { code: "PDF_FILE_MISSING" });
+
+    item = { isPDFAttachment: () => false, getFilePathAsync: async () => { throw new Error("must not read"); } };
+    await assert.rejects(fileSystem.getAttachmentPath(1), { code: "PAPER_UNSUPPORTED" });
+  }
+  finally { Object.assign(global, saved); }
+});
+
+test("Windows pdftotext discovery uses PATH executables without probing macOS paths", async () => {
+  const saved = {
+    PathUtils: global.PathUtils, Zotero: global.Zotero,
+    IOUtils: global.IOUtils, Services: global.Services
+  };
+  const expected = "C:\\tools\\poppler\\bin\\pdftotext.exe";
+  const inspected = [];
+  global.PathUtils = { join: require("node:path").win32.join };
+  global.Zotero = { isWin: true };
+  global.Services = {
+    appinfo: { OS: "WINNT" },
+    env: { get: name => name === "PATH" ? "relative;C:\\tools\\poppler\\bin;D:\\other" : "" }
+  };
+  global.IOUtils = { exists: async path => {
+    inspected.push(path);
+    if (path.startsWith("/")) throw new Error("NS_ERROR_FILE_UNRECOGNIZED_PATH");
+    return path === expected;
+  } };
+  try {
+    assert.equal(await createZoteroFileSystem().hasPDFToText(), true);
+    assert.deepEqual(inspected, [expected]);
+  }
+  finally { Object.assign(global, saved); }
+});
+
+test("pdftotext discovery isolates path errors and falls back when unavailable", async () => {
+  const saved = {
+    PathUtils: global.PathUtils, Zotero: global.Zotero,
+    IOUtils: global.IOUtils, Services: global.Services
+  };
+  global.PathUtils = { join: require("node:path").win32.join };
+  global.Zotero = { isWin: true };
+  global.Services = {
+    appinfo: { OS: "WINNT" },
+    env: { get: name => name === "PATH" ? "C:\\unreadable;D:\\missing" : "" }
+  };
+  global.IOUtils = { exists: async path => {
+    if (path.startsWith("C:")) throw new Error("permission denied");
+    return false;
+  } };
+  try {
+    assert.equal(await createZoteroFileSystem().hasPDFToText(), false);
+  }
+  finally { Object.assign(global, saved); }
+});
+
+test("macOS pdftotext discovery retains standard paths and colon PATH entries", async () => {
+  const saved = {
+    PathUtils: global.PathUtils, Zotero: global.Zotero,
+    IOUtils: global.IOUtils, Services: global.Services
+  };
+  const inspected = [];
+  global.PathUtils = { join: require("node:path").posix.join };
+  global.Zotero = { isWin: false };
+  global.Services = {
+    appinfo: { OS: "Darwin" },
+    env: { get: name => name === "PATH" ? "/custom/bin:relative:/usr/local/bin" : "" }
+  };
+  global.IOUtils = { exists: async path => {
+    inspected.push(path);
+    return path === "/custom/bin/pdftotext";
+  } };
+  try {
+    assert.equal(await createZoteroFileSystem().hasPDFToText(), true);
+    assert.deepEqual(inspected, [
+      "/opt/homebrew/bin/pdftotext",
+      "/usr/local/bin/pdftotext",
+      "/usr/bin/pdftotext",
+      "/custom/bin/pdftotext"
+    ]);
+  }
+  finally { Object.assign(global, saved); }
+});
 
 function multiModelOptions(model = "model-a", reasoning) {
   const reasoningValues = model === "model-b"
@@ -317,6 +433,29 @@ test("View Image recognition requires matching completed read, title, location, 
   });
 });
 
+test("View Image preserves an absolute Windows source while comparing equivalent path forms", () => {
+  const sourcePath = "C:\\Users\\test\\Zotero\\workspaces\\paper\\session\\tmp\\page-01.png";
+  const fileURI = "file:///C:/Users/test/Zotero/workspaces/paper/session/tmp/page-01.png";
+  const entry = {
+    kind: "tool",
+    title: `View Image ${sourcePath}`,
+    toolKind: "read",
+    status: "completed",
+    rawInput: { path: sourcePath },
+    locations: [{ path: sourcePath.replaceAll("\\", "/") }],
+    content: [{ type: "resource_link", uri: fileURI }]
+  };
+  assert.deepEqual(resolveToolImageSource(
+    entry,
+    "C:\\Users\\test\\Zotero\\workspaces\\paper\\session",
+    () => { throw new Error("an absolute Windows path must not be joined again"); }
+  ), {
+    path: sourcePath,
+    originalName: "page-01.png",
+    extension: "png"
+  });
+});
+
 test("tool image signatures allow only supported raster formats and interrupted copies fail closed", () => {
   const cases = [
     [pngBytes(), "image/png"],
@@ -381,6 +520,27 @@ test("completed View Image creates a validated session copy outside the ACP work
 
   await harness.service.rebuild(10);
   assert.equal(await harness.io.exists(target), false);
+});
+
+test("completed View Image copies a validated Windows source path", async () => {
+  const sourcePath = "C:\\Users\\test\\Zotero\\workspaces\\paper\\session\\tmp\\page-01.png";
+  const acp = new FakeACP();
+  const harness = makeHarness({ acp });
+  harness.io.setBytes(sourcePath, pngBytes());
+  acp.promptHook = async (params, client) => {
+    client.emit("session/update", {
+      sessionId: params.sessionId,
+      update: viewImageUpdate(sourcePath)
+    });
+    return { stopReason: "end_turn" };
+  };
+
+  await harness.service.send(10, "查看 Windows 图片");
+  const state = await harness.service.load(10);
+  const tool = state.record.transcript.find((entry) => entry.remoteID === "view-image-1");
+  assert.equal(tool.imageSnapshot.status, "ready");
+  assert.equal(tool.imageSnapshot.originalName, "page-01.png");
+  assert.equal(harness.fileSystem.copies.some((copy) => copy.source === sourcePath), true);
 });
 
 test("View Image rejects mismatched signatures and oversized files without rendering the source", async () => {
