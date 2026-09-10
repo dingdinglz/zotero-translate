@@ -18,6 +18,9 @@
   const DIAGNOSTIC_STRING_LIMIT = 12000;
   const DIAGNOSTIC_COLLECTION_LIMIT = 48;
   const DIAGNOSTIC_DEPTH_LIMIT = 6;
+  const TOOL_RAW_OUTPUT_MAX_CHARS = 64 * 1024;
+  const STREAM_EMIT_INTERVAL_MS = 50;
+  const STREAM_SAVE_DEBOUNCE_MS = 500;
   const DIAGNOSTIC_UPDATE_KINDS = new Set([
     "agent_thought_chunk",
     "tool_call",
@@ -37,6 +40,44 @@
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
+  }
+
+  function boundedToolRawOutput(value) {
+    if (value === undefined || value === null) return value ?? null;
+    if (typeof value === "string") return value.slice(-TOOL_RAW_OUTPUT_MAX_CHARS);
+    if (typeof value !== "object") return value;
+    const output = clone(value);
+    const textKeys = ["formatted_output", "output", "text", "data"];
+    let preferredKey = null;
+    for (const key of textKeys) {
+      if (typeof output[key] !== "string") continue;
+      preferredKey ||= key;
+      output[key] = output[key].slice(-TOOL_RAW_OUTPUT_MAX_CHARS);
+    }
+    let encoded;
+    try { encoded = JSON.stringify(output); }
+    catch (_error) { return { formatted_output: String(value).slice(-TOOL_RAW_OUTPUT_MAX_CHARS), truncated: true }; }
+    if (encoded.length <= TOOL_RAW_OUTPUT_MAX_CHARS + 4096) return output;
+    const compact = {};
+    for (const [key, item] of Object.entries(output)) {
+      if (item === null || ["number", "boolean"].includes(typeof item)) compact[key] = item;
+    }
+    if (preferredKey) compact[preferredKey] = output[preferredKey];
+    else compact.formatted_output = encoded.slice(-TOOL_RAW_OUTPUT_MAX_CHARS);
+    compact.truncated = true;
+    return compact;
+  }
+
+  function normalizeTranscriptToolOutputs(transcript) {
+    let changed = false;
+    for (const entry of Array.isArray(transcript) ? transcript : []) {
+      if (entry?.kind !== "tool" || entry.rawOutput === undefined || entry.rawOutput === null) continue;
+      const bounded = boundedToolRawOutput(entry.rawOutput);
+      if (JSON.stringify(bounded) === JSON.stringify(entry.rawOutput)) continue;
+      entry.rawOutput = bounded;
+      changed = true;
+    }
+    return changed;
   }
 
   function sanitizeDiagnosticString(value) {
@@ -1107,6 +1148,7 @@
     }
 
     _emit(state) {
+      this._clearScheduledEmit(state);
       const snapshot = this._snapshot(state);
       for (const listener of this.listeners.get(Number(state.paper.attachmentID)) || []) {
         try { listener(snapshot); }
@@ -1173,22 +1215,22 @@
           };
         }
       }
-      return clone({
+      return {
         agentId: this.provider.id,
         attachmentID: state.paper.attachmentID,
-        paper: state.paper,
+        paper: clone(state.paper),
         record,
         status: state.status,
         error: state.error,
         sourceChanged: state.sourceChanged,
         historyReadOnly: state.historyReadOnly,
         configOptions: this._effectiveConfigurationOptions(state),
-        pendingInteractions: [...state.interactions.values()].map((entry) => entry.public),
+        pendingInteractions: clone([...state.interactions.values()].map((entry) => entry.public)),
         activityText: state.activityText,
         developerMode: this.developerModeEnabled,
         diagnosticEventCount: state.diagnosticLog?.events?.length || 0,
-        adapter: this.acp.getStatus()
-      });
+        adapter: clone(this.acp.getStatus())
+      };
     }
 
     async _stateForAttachment(attachmentID) {
@@ -1214,10 +1256,11 @@
         record.draft = { screenshots: storedDraftScreenshots };
         const userMessagesChanged = normalizeTranscriptUserMessages(record.transcript);
         const toolImagesChanged = normalizeTranscriptToolImages(record.transcript);
+        const toolOutputsChanged = normalizeTranscriptToolOutputs(record.transcript);
         const screenshotsChanged = normalizeTranscriptScreenshots(record.transcript);
         if (
           draftScreenshotsChanged || userMessagesChanged ||
-          toolImagesChanged || screenshotsChanged
+          toolImagesChanged || toolOutputsChanged || screenshotsChanged
         ) {
           await this.cache.save(context.paper, record);
         }
@@ -1236,6 +1279,7 @@
           modeInfo: null,
           permissionVerified: false,
           saveTimer: null,
+          emitTimer: null,
           imageCaptures: new Map(),
           activityText: null,
           diagnosticLog: emptyDiagnosticLog()
@@ -2359,7 +2403,21 @@
         state.saveTimer = null;
         this.cache.save(state.paper, state.record)
           .catch((error) => this.log("Chat mirror update failed", error));
-      }, 120);
+      }, STREAM_SAVE_DEBOUNCE_MS);
+    }
+
+    _clearScheduledEmit(state) {
+      if (!state.emitTimer) return;
+      global.clearTimeout(state.emitTimer);
+      state.emitTimer = null;
+    }
+
+    _scheduleEmit(state) {
+      if (state.emitTimer) return;
+      state.emitTimer = global.setTimeout(() => {
+        state.emitTimer = null;
+        this._emit(state);
+      }, STREAM_EMIT_INTERVAL_MS);
     }
 
     _currentToolImageEntry(state, localID, entryID) {
@@ -2588,19 +2646,23 @@
           entry = { id: this.randomID(), remoteID: id, kind: "tool", createdAt: this.now() };
           transcript.push(entry);
         }
-        Object.assign(entry, {
-          title: String(update.title || entry.title || "工具调用"),
-          toolKind: update.kind || entry.toolKind || "other",
-          status: update.status || entry.status || "pending",
-          content: clone(update.content || entry.content || []),
-          locations: clone(update.locations || entry.locations || []),
-          rawInput: clone(update.rawInput || entry.rawInput || null),
-          rawOutput: clone(update.rawOutput || entry.rawOutput || null)
-        });
+        entry.title = String(update.title || entry.title || "工具调用");
+        entry.toolKind = update.kind || entry.toolKind || "other";
+        entry.status = update.status || entry.status || "pending";
+        if (update.content !== undefined) entry.content = clone(update.content || []);
+        else entry.content ||= [];
+        if (update.locations !== undefined) entry.locations = clone(update.locations || []);
+        else entry.locations ||= [];
+        if (update.rawInput !== undefined) entry.rawInput = clone(update.rawInput);
+        else entry.rawInput ??= null;
+        if (update.rawOutput !== undefined) entry.rawOutput = boundedToolRawOutput(update.rawOutput);
+        else entry.rawOutput ??= null;
         if (this.provider.id === "pi") {
           const output = update._meta?.terminal_output;
           if (output?.terminal_id === id && typeof output.data === "string") {
-            entry.rawOutput = (String(entry.rawOutput || "") + output.data).slice(-65536);
+            entry.rawOutput = boundedToolRawOutput(
+              (typeof entry.rawOutput === "string" ? entry.rawOutput : "") + output.data
+            );
           }
           const exit = update._meta?.terminal_exit;
           if (exit?.terminal_id === id && Number.isFinite(exit.exit_code)) entry.exitCode = exit.exit_code;
@@ -2627,7 +2689,8 @@
       }
       if (!state.replay) {
         this._scheduleSave(state);
-        this._emit(state);
+        if (["agent_message_chunk", "agent_thought_chunk"].includes(kind)) this._scheduleEmit(state);
+        else this._emit(state);
       }
     }
 
@@ -2744,6 +2807,7 @@
       for (const state of this.states.values()) {
         if (state.turn) state.turn.cancelled = true;
         this._clearScheduledSave(state);
+        this._clearScheduledEmit(state);
         this._resetDiagnosticLog(state);
         for (const interaction of state.interactions.values()) interaction.cancel();
         state.interactions.clear();
@@ -2879,12 +2943,14 @@
     isImageUnsupportedError,
     normalizeTranscriptUserMessages,
     normalizeTranscriptToolImages,
+    normalizeTranscriptToolOutputs,
     latestThoughtStatus,
     isCompletedViewImageTool,
     resolveToolImageSource,
     detectToolImageFormat,
     validateToolImageBytes,
     normalizeToolImageSnapshot,
+    boundedToolRawOutput,
     toolImageFailureMessage,
     sanitizeDiagnosticString,
     sanitizeDiagnosticValue,
