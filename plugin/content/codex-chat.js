@@ -11,6 +11,9 @@
   const PDFScreenshot = modules.PDFScreenshot || (
     typeof require === "function" ? require("./pdf-screenshot.js") : null
   );
+  const ACP = modules.ACP || (
+    typeof require === "function" ? require("./acp-client.js") : null
+  );
   const DIAGNOSTIC_EVENT_LIMIT = 300;
   const DIAGNOSTIC_STRING_LIMIT = 12000;
   const DIAGNOSTIC_COLLECTION_LIMIT = 48;
@@ -574,7 +577,10 @@
       if (parsed.protocol !== "file:" || (parsed.hostname && parsed.hostname !== "localhost")) {
         return "";
       }
-      return decodeURIComponent(parsed.pathname);
+      const path = decodeURIComponent(parsed.pathname);
+      return /^\/[A-Za-z]:\//u.test(path)
+        ? path.slice(1).replace(/\//gu, "\\")
+        : path;
     }
     catch (_error) {
       return "";
@@ -583,9 +589,13 @@
 
   function normalizeToolImageSourcePath(value, workspacePath, joinPath) {
     const raw = fileURIToLocalPath(value);
-    if (!raw || raw.includes("\0")) return "";
-    const candidate = raw.startsWith("/") ? raw : joinPath(workspacePath, raw);
-    return normalizeLocalPath(candidate);
+    if (!raw || raw.includes("\0")) return null;
+    const candidate = ACP.isAbsolutePath(raw) ? raw : joinPath(workspacePath, raw);
+    if (!ACP.isAbsolutePath(candidate)) return null;
+    return {
+      path: candidate,
+      comparisonKey: normalizeLocalPath(candidate)
+    };
   }
 
   function collectToolImageContentPaths(content, target = []) {
@@ -618,19 +628,20 @@
     if (!titlePath || !inputPaths.length || !locationPaths.length || !contentPaths.length) {
       throw new CodexChatError("TOOL_IMAGE_PATH", toolImageFailureMessage("TOOL_IMAGE_PATH"));
     }
-    const paths = [titlePath, ...inputPaths, ...locationPaths, ...contentPaths].map((value) =>
+    const sources = [titlePath, ...inputPaths, ...locationPaths, ...contentPaths].map((value) =>
       normalizeToolImageSourcePath(value, workspacePath, joinPath)
     );
-    if (paths.some((path) => !path) || new Set(paths).size !== 1) {
+    if (sources.some((source) => !source) || new Set(sources.map((source) => source.comparisonKey)).size !== 1) {
       throw new CodexChatError("TOOL_IMAGE_PATH", toolImageFailureMessage("TOOL_IMAGE_PATH"));
     }
-    const extension = toolImageExtension(paths[0]);
+    const sourcePath = sources[0].path;
+    const extension = toolImageExtension(sourcePath);
     if (!TOOL_IMAGE_FORMATS[extension]) {
       throw new CodexChatError("TOOL_IMAGE_FORMAT", toolImageFailureMessage("TOOL_IMAGE_FORMAT"));
     }
     return {
-      path: paths[0],
-      originalName: safeToolImageDisplayName(paths[0]),
+      path: sourcePath,
+      originalName: safeToolImageDisplayName(sourcePath),
       extension
     };
   }
@@ -2762,7 +2773,7 @@
           throw new CodexChatError("PAPER_UNSUPPORTED", "当前 Reader 不是 PDF 附件");
         }
         const path = await item.getFilePathAsync();
-        if (!path || !String(path).startsWith("/") || !(await global.IOUtils.exists(path))) {
+        if (!ACP.isAbsolutePath(path) || !(await global.IOUtils.exists(path))) {
           throw new CodexChatError("PDF_FILE_MISSING", "找不到当前 PDF 源文件");
         }
         return path;
@@ -2808,12 +2819,27 @@
       },
       writeUTF8Atomic: (path, value) => global.IOUtils.writeUTF8(path, value, { tmpPath: `${path}.tmp` }),
       async hasPDFToText() {
-        for (const path of [
-          "/opt/homebrew/bin/pdftotext",
-          "/usr/local/bin/pdftotext",
-          "/usr/bin/pdftotext"
-        ]) {
-          if (await global.IOUtils.exists(path)) return true;
+        const windows = Boolean(global.Zotero?.isWin || global.Services?.appinfo?.OS === "WINNT");
+        let searchPath = "";
+        try { searchPath = String(global.Services?.env?.get("PATH") || ""); }
+        catch (_error) { /* An unavailable process PATH must fall back to PDFWorker. */ }
+        const executable = windows ? "pdftotext.exe" : "pdftotext";
+        const candidates = [
+          ...(windows ? [] : [
+            "/opt/homebrew/bin/pdftotext",
+            "/usr/local/bin/pdftotext",
+            "/usr/bin/pdftotext"
+          ]),
+          ...searchPath.split(windows ? ";" : ":")
+            .filter(path => ACP.isAbsolutePath(path) && path.length <= 4096)
+            .slice(0, 128)
+            .map(path => global.PathUtils.join(path, executable))
+        ];
+        for (const path of new Set(candidates)) {
+          try {
+            if (await global.IOUtils.exists(path)) return true;
+          }
+          catch (_error) { /* Invalid or unreadable candidates must not block PDFWorker. */ }
         }
         return false;
       },
