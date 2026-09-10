@@ -12,7 +12,9 @@ const {
   resolveToolImageSource,
   detectToolImageFormat,
   normalizeToolImageSnapshot,
-  createZoteroFileSystem
+  createZoteroFileSystem,
+  boundedToolRawOutput,
+  normalizeTranscriptToolOutputs
 } = require("../plugin/content/codex-chat.js");
 const { MemoryIO, makePaper, makePreferenceStore } = require("./helpers.js");
 
@@ -485,6 +487,58 @@ test("tool image signatures allow only supported raster formats and interrupted 
   });
 });
 
+test("Codex tool outputs use the same 64 KiB bound as Pi and legacy records normalize once", () => {
+  const oversized = "x".repeat(200000);
+  const bounded = boundedToolRawOutput({ formatted_output: oversized, exit_code: 0 });
+  assert.equal(bounded.formatted_output.length, 65536);
+  assert.equal(bounded.exit_code, 0);
+
+  const transcript = [{ kind: "tool", rawOutput: { formatted_output: oversized, exit_code: 0 } }];
+  assert.equal(normalizeTranscriptToolOutputs(transcript), true);
+  assert.equal(transcript[0].rawOutput.formatted_output.length, 65536);
+  assert.equal(normalizeTranscriptToolOutputs(transcript), false);
+});
+
+test("Codex ACP tool events persist only bounded raw output", async () => {
+  const oversized = "output-".repeat(30000);
+  const acp = new FakeACP();
+  const { service } = makeHarness({ acp });
+  acp.promptHook = async (params, client) => {
+    client.emit("session/update", {
+      sessionId: params.sessionId,
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "large-codex-tool",
+        title: "generate large output",
+        kind: "execute",
+        status: "completed",
+        rawInput: { command: "generate large output" },
+        rawOutput: { formatted_output: oversized, exit_code: 0 }
+      }
+    });
+    return { stopReason: "end_turn" };
+  };
+
+  await service.send(10, "run bounded tool");
+  const state = await service.load(10);
+  const tool = state.record.transcript.find((entry) => entry.remoteID === "large-codex-tool");
+  assert.equal(tool.rawOutput.formatted_output.length, 65536);
+  assert.equal(tool.rawOutput.exit_code, 0);
+});
+
+test("optimized snapshots remain isolated from listener mutations", async () => {
+  const { service } = makeHarness();
+  const snapshot = await service.load(10);
+  snapshot.paper.title = "mutated title";
+  snapshot.record.transcript.push({ kind: "message", role: "agent", text: "mutated" });
+  snapshot.pendingInteractions.push({ id: "mutated" });
+
+  const current = await service.load(10);
+  assert.notEqual(current.paper.title, "mutated title");
+  assert.equal(current.record.transcript.length, 0);
+  assert.equal(current.pendingInteractions.length, 0);
+});
+
 test("completed View Image creates a validated session copy outside the ACP workspace", async () => {
   const sourcePath = "/private/tmp/viewed-chart.png";
   const acp = new FakeACP();
@@ -938,6 +992,7 @@ test("thought chunks expose only the latest non-empty line as transient activity
       sessionId: params.sessionId,
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } }
     });
+    await new Promise((resolve) => setTimeout(resolve, 80));
     return { stopReason: "end_turn" };
   };
   const { service } = makeHarness({ acp });
@@ -947,7 +1002,7 @@ test("thought chunks expose only the latest non-empty line as transient activity
   });
   await service.send(10, "show activity");
 
-  assert.ok(activities.includes("Preparing to analyze AIM-based PDF source"));
+  assert.equal(activities.includes("Preparing to analyze AIM-based PDF source"), false);
   assert.ok(activities.includes("Planning text extraction from PDF"));
   assert.equal((await service.load(10)).activityText, null);
 });
@@ -1090,6 +1145,34 @@ test("same PDF views share one turn lock while different services remain indepen
   await first;
   assert.ok(updates.includes("generating"));
   assert.ok(updates.includes("second:generating"));
+});
+
+test("rapid agent text chunks coalesce subscriber snapshots without losing text", async () => {
+  const acp = new FakeACP();
+  const { service } = makeHarness({ acp });
+  const streamed = [];
+  service.subscribe(10, (state) => {
+    const agent = state.record.transcript.find((entry) => entry.kind === "message" && entry.role === "agent");
+    if (agent) streamed.push(agent.text);
+  });
+  acp.promptHook = async (params, client) => {
+    for (const text of ["A", "B", "C", "D", "E"]) {
+      client.emit("session/update", {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "agent-stream-1",
+          content: { type: "text", text }
+        }
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    return { stopReason: "end_turn" };
+  };
+
+  await service.send(10, "stream response");
+  assert.equal(streamed.at(-1), "ABCDE");
+  assert.ok(streamed.length <= 2, `expected one batched update plus final state, got ${streamed.length}`);
 });
 
 test("session/load replay replaces the local mirror and fixes uncertain first-prompt delivery", async () => {

@@ -2670,28 +2670,30 @@
           const eventContent = doc.createElement("div");
           eventContent.className = "spt-codex-event-content";
           if (entry.kind === "tool") {
-            let loadDeferredImage = null;
-            appendToolDetails(
-              doc,
-              eventContent,
-              entry,
-              state.record.session.workspacePath,
-              {
-                ...this._externalLinkOptions(view),
-                mermaidRenderer: this.mermaidRenderer,
-                onMermaidError: (error) => this.log("Mermaid rendering failed", error),
-                deferImageLoad: true,
-                registerDeferredImageLoader: (loader) => { loadDeferredImage = loader; },
-                onImagePreview: (image) => this._openImageLightbox(view, image)
-              }
-            );
-            if (loadDeferredImage) {
-              const loadWhenExpanded = () => {
-                if (details.open) loadDeferredImage();
-              };
-              details.addEventListener("toggle", loadWhenExpanded);
-              if (details.open) loadWhenExpanded();
-            }
+            let populated = false;
+            const populateWhenExpanded = () => {
+              if (!details.open || populated) return;
+              populated = true;
+              let loadDeferredImage = null;
+              appendToolDetails(
+                doc,
+                eventContent,
+                entry,
+                state.record.session.workspacePath,
+                {
+                  ...this._externalLinkOptions(view),
+                  mermaidRenderer: this.mermaidRenderer,
+                  onMermaidError: (error) => this.log("Mermaid rendering failed", error),
+                  deferImageLoad: true,
+                  registerDeferredImageLoader: (loader) => { loadDeferredImage = loader; },
+                  onImagePreview: (image) => this._openImageLightbox(view, image)
+                }
+              );
+              eventContent.scrollTop = viewport.innerScroll.get(entryKey) || 0;
+              loadDeferredImage?.();
+            };
+            details.addEventListener("toggle", populateWhenExpanded);
+            populateWhenExpanded();
           }
           else if (entry.kind === "plan" && Array.isArray(entry.entries)) {
             const list = doc.createElement("ol");
@@ -2711,7 +2713,9 @@
           }
           details.append(summary, eventContent);
           container.append(details);
-          eventContent.scrollTop = viewport.innerScroll.get(entryKey) || 0;
+          if (entry.kind !== "tool") {
+            eventContent.scrollTop = viewport.innerScroll.get(entryKey) || 0;
+          }
         }
       }
       view.transcriptRendered = true;

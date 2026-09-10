@@ -988,20 +988,20 @@ test("View Image stays collapsed and undecoded until opened, then previews and e
 
   ui._renderTranscript(view, state);
   const details = messages.children[0];
+  assert.equal(details.open, false);
+  assert.equal(descendants(details).some((node) => node.localName === "img"), false);
+  const renderedText = descendants(details).map((node) => node.textContent).join("\n");
+  assert.doesNotMatch(renderedText, /Users\/alice|private\//u);
+  assert.match(renderedText, /page-06\.png/u);
+
+  details.open = true;
+  details.dispatchEvent({ type: "toggle" });
   const image = descendants(details).find((node) => node.localName === "img");
   const preview = descendants(details).find(
     (node) => node.className === "spt-codex-tool-image-preview"
   );
-  const renderedText = descendants(details).map((node) => node.textContent).join("\n");
-  assert.equal(details.open, false);
-  assert.equal(image.src, undefined);
-  assert.equal(preview.disabled, true);
-  assert.doesNotMatch(renderedText, /Users\/alice|private\//u);
-  assert.match(renderedText, /page-06\.png|PNG|2\.0 KiB|Codex 不可见/u);
-
-  details.open = true;
-  details.dispatchEvent({ type: "toggle" });
   assert.equal(image.src, "file:///safe/session-media/tool-image-local-1.png");
+  assert.equal(preview.disabled, true);
   image.dispatchEvent({ type: "load" });
   assert.equal(preview.disabled, false);
   preview.dispatchEvent({ type: "click" });
@@ -1018,6 +1018,44 @@ test("View Image stays collapsed and undecoded until opened, then previews and e
   assert.equal(overlay.dataset.zoom, "actual");
   doc.dispatchEvent({ type: "keydown", key: "Escape", preventDefault() {} });
   assert.equal(descendants(doc.documentElement).includes(overlay), false);
+});
+
+test("collapsed tool cards defer large output DOM until expanded", () => {
+  const doc = new Document();
+  const messages = new Node("div");
+  const marker = "large-output-marker";
+  const state = {
+    record: {
+      session: { localID: "local-1", workspacePath: "/workspace" },
+      transcript: [{
+        id: "tool-large-1",
+        kind: "tool",
+        toolKind: "execute",
+        title: "generate report",
+        status: "completed",
+        rawInput: { command: "generate report", cwd: "/workspace" },
+        rawOutput: { formatted_output: marker.repeat(2000), exit_code: 0 }
+      }]
+    }
+  };
+  const view = {
+    body: { ownerDocument: doc },
+    attachmentID: 10,
+    agentId: "codex",
+    requestSerial: 1,
+    elements: { messages, notices: new Node("div") },
+    transcriptRendered: false
+  };
+  const ui = new CodexChatUI({ service: { revealCitation: async () => {} } });
+
+  ui._renderTranscript(view, state);
+  const details = messages.children[0];
+  assert.equal(details.open, false);
+  assert.equal(descendants(details).some((node) => String(node.textContent).includes(marker)), false);
+
+  details.open = true;
+  details.dispatchEvent({ type: "toggle" });
+  assert.equal(descendants(details).some((node) => String(node.textContent).includes(marker)), true);
 });
 
 test("tool image presentation refuses remote preview URLs and surfaces copy errors", () => {
