@@ -38,7 +38,7 @@ OpenCode also offers **Build**, **Plan**, and your local custom modes under **Ru
 
 ### Read the answer next to the source
 
-Replies support tables, code, and mathematical notation, along with Mermaid diagrams. Text is selectable and copyable, including while a reply is streaming. Tool calls appear in expandable cards.
+Replies support tables, code, and mathematical notation, along with Mermaid diagrams. Text is selectable and copyable, including while a reply is streaming. Tool calls appear in expandable cards, with content built only when opened and scroll positions preserved during updates. Each tool's saved raw output is capped at 64 KiB; oversized output keeps its tail, and older histories are trimmed to the same limit when loaded.
 
 When an agent writes a local HTML chart and includes a `visualize` marker in its answer, the sidebar previews it after the reply finishes. You can use the chart's controls or open a larger view. Charts run without network access, with D3 included in the plugin.
 
@@ -49,7 +49,9 @@ An interactive chart from the conversation, shown beside the passage it explains
 
 ## Get started
 
-The current version is **0.1.39**, targeting **macOS with Zotero 9.0.6**. The plugin declares compatibility with Zotero 9.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
+The current version is **0.1.40**, targeting **macOS with Zotero 9.0.6**. The plugin declares compatibility with Zotero 9.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
+
+Version 0.1.40 adds Windows drive/UNC path handling for shared runtime discovery and PDF attachments, plus native drive-path conversion for Codex View Image. Full Windows agent startup, especially Pi and OpenCode, has not been validated; the tested target remains macOS.
 
 ### Install the plugin
 
@@ -120,7 +122,7 @@ Read [AGENTS.md](AGENTS.md) before changing plugin code. Runtime files live in `
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.39.xpi
+unzip -t dist/smart-paper-translator-0.1.40.xpi
 ```
 
 Build output goes to `dist/`. Runtime changes also require non-installing XPI parsing in the target Zotero version. The [technical reference (Chinese)](docs/technical-reference.zh-CN.md) covers adapter behavior, storage, rendering limits, and historical validation results.

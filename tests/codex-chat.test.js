@@ -16,7 +16,7 @@ const {
   boundedToolRawOutput,
   normalizeTranscriptToolOutputs
 } = require("../plugin/content/codex-chat.js");
-const { MemoryIO, makePaper, makePreferenceStore } = require("./helpers.js");
+const { MemoryIO, makePaper, makePreferenceStore, assertNativeWindowsPath, windowsPathUtils } = require("./helpers.js");
 
 const configOptions = [
   {
@@ -74,6 +74,32 @@ test("Zotero file system accepts existing Windows and Unix PDF attachment paths"
     const fileSystem = createZoteroFileSystem();
     assert.equal(await fileSystem.getAttachmentPath(156), paths.get(156));
     assert.equal(await fileSystem.getAttachmentPath(157), paths.get(157));
+  }
+  finally { Object.assign(global, saved); }
+});
+
+test("Windows PDF and pdftotext paths are native before Gecko filesystem calls", async () => {
+  const names = ["PathUtils", "Zotero", "IOUtils", "Services"];
+  const saved = Object.fromEntries(names.map(name => [name, global[name]]));
+  const inspected = [];
+  global.PathUtils = windowsPathUtils();
+  global.Zotero = { isWin: true, Items: { getAsync: async () => ({
+    isPDFAttachment: () => true, getFilePathAsync: async () => "C:/papers/paper.pdf"
+  }) } };
+  global.Services = { env: { get: () => "/invalid;C:/tools;D:\\missing" } };
+  global.IOUtils = { exists: async path => {
+    assertNativeWindowsPath(path);
+    inspected.push(path);
+    return true;
+  } };
+  try {
+    const fileSystem = createZoteroFileSystem();
+    assert.equal(await fileSystem.getAttachmentPath(10), "C:\\papers\\paper.pdf");
+    assert.equal(await fileSystem.hasPDFToText(), true);
+    assert.deepEqual(inspected, ["C:\\papers\\paper.pdf", "C:\\tools\\pdftotext.exe"]);
+    // Construction errors, not only IOUtils.exists errors, must be isolated.
+    global.PathUtils.join = () => { throw new Error("unusable PATH entry"); };
+    assert.equal(await fileSystem.hasPDFToText(), false);
   }
   finally { Object.assign(global, saved); }
 });
@@ -458,6 +484,26 @@ test("View Image preserves an absolute Windows source while comparing equivalent
   });
 });
 
+test("View Image normalizes forward slashes for Gecko without weakening path agreement", () => {
+  const previous = global.Zotero;
+  global.Zotero = { isWin: true };
+  try {
+    for (const titlePath of ["C:/tmp/page.png", "C:\\tmp\\page.png", "file:///C:/tmp/page.png"]) {
+      const entry = {
+        kind: "tool", toolKind: "read", status: "completed", title: `View Image ${titlePath}`,
+        rawInput: { path: "C:/tmp/page.png" }, locations: [{ path: "C:\\tmp\\page.png" }],
+        content: [{ type: "resource_link", uri: "file:///C:/tmp/page.png" }]
+      };
+      const source = resolveToolImageSource(entry, "C:\\workspace", windowsPathUtils().join);
+      assertNativeWindowsPath(source.path);
+      assert.equal(source.path, "C:\\tmp\\page.png");
+      entry.rawInput.path = "C:/other/page.png";
+      assert.throws(() => resolveToolImageSource(entry, "C:\\workspace", windowsPathUtils().join), { code: "TOOL_IMAGE_PATH" });
+    }
+  }
+  finally { global.Zotero = previous; }
+});
+
 test("tool image signatures allow only supported raster formats and interrupted copies fail closed", () => {
   const cases = [
     [pngBytes(), "image/png"],
@@ -490,13 +536,70 @@ test("tool image signatures allow only supported raster formats and interrupted 
 test("Codex tool outputs use the same 64 KiB bound as Pi and legacy records normalize once", () => {
   const oversized = "x".repeat(200000);
   const bounded = boundedToolRawOutput({ formatted_output: oversized, exit_code: 0 });
-  assert.equal(bounded.formatted_output.length, 65536);
+  assert.ok(bounded.formatted_output.length > 65000);
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= 65536);
   assert.equal(bounded.exit_code, 0);
 
   const transcript = [{ kind: "tool", rawOutput: { formatted_output: oversized, exit_code: 0 } }];
   assert.equal(normalizeTranscriptToolOutputs(transcript), true);
-  assert.equal(transcript[0].rawOutput.formatted_output.length, 65536);
+  assert.ok(Buffer.byteLength(JSON.stringify(transcript[0].rawOutput)) <= 65536);
   assert.equal(normalizeTranscriptToolOutputs(transcript), false);
+});
+
+test("tool output bounds include arrays, keys, JSON escaping and UTF-8 and normalize idempotently", () => {
+  const samples = [
+    Array.from({ length: 100000 }, (_, n) => n),
+    Object.fromEntries(Array.from({ length: 10000 }, (_, n) => [`field-${n}`, true])),
+    { ["key".repeat(70000)]: null, exit_code: 2 },
+    { formatted_output: '"\\\n中文😀'.repeat(30000), exit_code: 0 },
+    { results: [{ text: "中文😀".repeat(40000) }], exit_code: 0 },
+    '"\\\n中文😀'.repeat(30000)
+  ];
+  for (const rawOutput of samples) {
+    const before = JSON.stringify(rawOutput);
+    const bounded = boundedToolRawOutput(rawOutput);
+    const encoded = JSON.stringify(bounded);
+    assert.ok(Buffer.byteLength(encoded) <= 65536, `oversized compact result: ${Buffer.byteLength(encoded)}`);
+    assert.ok(Buffer.byteLength(encoded) <= Buffer.byteLength(before));
+    if (rawOutput.exit_code !== undefined) assert.equal(bounded.exit_code, rawOutput.exit_code);
+    assert.equal(JSON.stringify(rawOutput), before, "must not mutate the ACP event");
+    const transcript = [{ kind: "tool", rawOutput }];
+    assert.equal(normalizeTranscriptToolOutputs(transcript), true);
+    assert.equal(normalizeTranscriptToolOutputs(transcript), false);
+    assert.equal(JSON.stringify(boundedToolRawOutput(bounded)), encoded);
+    const text = typeof bounded === "string" ? bounded : bounded.formatted_output;
+    if (text) assert.equal(text.isWellFormed(), true);
+  }
+  const small = { results: [{ title: "paper", url: "https://example.org/" }], exit_code: 0 };
+  assert.deepEqual(boundedToolRawOutput(small), small);
+  assert.notEqual(boundedToolRawOutput(small).results, small.results);
+});
+
+test("all agents atomically bound legacy mirrors once and retain the bound on live updates", async () => {
+  for (const agentId of ["codex", "pi", "opencode"]) {
+    const h = makeHarness({ agentId });
+    const record = await h.cache.load(h.paper);
+    record.transcript.push({ id: "legacy", kind: "tool", rawOutput: Array.from({ length: 100000 }, (_, n) => n) });
+    await h.cache.save(h.paper, record);
+    const writes = h.io.writeJSONCalls.length;
+    const loaded = await h.service.load(10);
+    assert.equal(h.io.writeJSONCalls.length, writes + 1);
+    assert.ok(h.io.writeJSONCalls.at(-1).options.tmpPath);
+    assert.ok(Buffer.byteLength(JSON.stringify(loaded.record.transcript[0].rawOutput)) <= 65536);
+    await h.service.load(10);
+    assert.equal(h.io.writeJSONCalls.length, writes + 1);
+    const state = await h.service._stateForAttachment(10);
+    h.service.sessionStates.set("synthetic", state);
+    const update = { sessionUpdate: "tool_call", toolCallId: "live", rawOutput: { text: "中文😀".repeat(40000), exit_code: 0 } };
+    h.service._handleSessionUpdate({ sessionId: "synthetic", update });
+    if (agentId === "pi") {
+      h.service._handleSessionUpdate({ sessionId: "synthetic", update: { sessionUpdate: "tool_call_update", toolCallId: "terminal", _meta: { terminal_output: { terminal_id: "terminal", data: "中文😀".repeat(40000) } } } });
+    }
+    await h.service.shutdown();
+    const saved = await h.cache.load(h.paper);
+    assert.ok(saved.transcript.length >= 2);
+    for (const entry of saved.transcript) assert.ok(Buffer.byteLength(JSON.stringify(entry.rawOutput)) <= 65536);
+  }
 });
 
 test("Codex ACP tool events persist only bounded raw output", async () => {
@@ -522,7 +625,8 @@ test("Codex ACP tool events persist only bounded raw output", async () => {
   await service.send(10, "run bounded tool");
   const state = await service.load(10);
   const tool = state.record.transcript.find((entry) => entry.remoteID === "large-codex-tool");
-  assert.equal(tool.rawOutput.formatted_output.length, 65536);
+  assert.ok(tool.rawOutput.formatted_output.endsWith("output-"));
+  assert.ok(Buffer.byteLength(JSON.stringify(tool.rawOutput)) <= 65536);
   assert.equal(tool.rawOutput.exit_code, 0);
 });
 

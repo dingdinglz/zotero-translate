@@ -2669,10 +2669,11 @@
           }
           const eventContent = doc.createElement("div");
           eventContent.className = "spt-codex-event-content";
+          let populateWhenExpanded = null;
           if (entry.kind === "tool") {
             let populated = false;
-            const populateWhenExpanded = () => {
-              if (!details.open || populated) return;
+            populateWhenExpanded = () => {
+              if (!current() || details.parentNode !== container || !details.open || populated) return;
               populated = true;
               let loadDeferredImage = null;
               appendToolDetails(
@@ -2693,7 +2694,6 @@
               loadDeferredImage?.();
             };
             details.addEventListener("toggle", populateWhenExpanded);
-            populateWhenExpanded();
           }
           else if (entry.kind === "plan" && Array.isArray(entry.entries)) {
             const list = doc.createElement("ol");
@@ -2713,9 +2713,10 @@
           }
           details.append(summary, eventContent);
           container.append(details);
-          if (entry.kind !== "tool") {
-            eventContent.scrollTop = viewport.innerScroll.get(entryKey) || 0;
-          }
+          // An expanded card needs a mounted, populated CSS box before its
+          // inner scroll position can be restored. Collapsed tools stay lazy.
+          if (populateWhenExpanded) populateWhenExpanded();
+          else eventContent.scrollTop = viewport.innerScroll.get(entryKey) || 0;
         }
       }
       view.transcriptRendered = true;

@@ -38,7 +38,7 @@ OpenCode 还可以在「运行模式」中选择 **Build、Plan 和本机自定�
 
 ### 回答就在原文旁边
 
-回答支持表格、代码、数学公式和 Mermaid 图表。文字可以直接选择和复制，回复生成过程中也能复制已经读到的内容。工具调用会显示为可展开的卡片。
+回答支持表格、代码、数学公式和 Mermaid 图表。文字可以直接选择和复制，回复生成过程中也能复制已经读到的内容。工具调用会显示为可展开的卡片，展开时才构建内容，更新时保留阅读位置。每个工具保存的原始输出最多 64 KiB，超限保留尾部；旧历史加载时也会按此上限裁剪。
 
 如果 Agent 生成了本地 HTML 图表，并在回答中附上 `visualize` 标记，侧栏会在回复结束后显示预览。可以操作图表里的控件，也可以放大查看。图表在禁止联网的环境中运行，D3 已随插件内置。
 
@@ -49,7 +49,9 @@ OpenCode 还可以在「运行模式」中选择 **Build、Plan 和本机自定�
 
 ## 开始使用
 
-当前版本为 **0.1.39**，目标环境是 **macOS 上的 Zotero 9.0.6**，插件清单兼容范围为 Zotero 9.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
+当前版本为 **0.1.40**，目标环境是 **macOS 上的 Zotero 9.0.6**，插件清单兼容范围为 Zotero 9.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
+
+0.1.40 增加了公共运行环境发现和 PDF 附件的 Windows 盘符/UNC 路径处理，并为 Codex View Image 转换原生盘符路径。完整的 Windows Agent 启动流程，尤其是 Pi 和 OpenCode，尚未验证；实测目标仍为 macOS。
 
 ### 安装插件
 
@@ -120,7 +122,7 @@ OpenCode 图片提问要求检测目录明确声明当前模型支持图片；�
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.39.xpi
+unzip -t dist/smart-paper-translator-0.1.40.xpi
 ```
 
 构建产物输出到 `dist/`。涉及运行时代码的修改，还需要在目标 Zotero 版本中对 XPI 做非安装式解析。适配器行为、存储结构、渲染限制和历史验证结果见[配置与实现参考](docs/technical-reference.zh-CN.md)。
