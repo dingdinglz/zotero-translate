@@ -52,12 +52,20 @@
 ```text
 zotero-translate/
 ├── AGENTS.md                         # 本项目开发约束与结构说明
-├── README.md                         # 功能、配置、隐私和开发说明
+├── README.md                         # 英文主介绍：Agents 侧栏、安装配置、界面截图与数据说明
+├── README.zh-CN.md                   # 中文介绍，与英文主版对应
 ├── package.json                      # Node 测试和静态检查入口
 ├── .gitignore
 ├── .agents/
 │   └── skills/
 │       └── develop-zotero-plugins/   # Zotero 插件开发 Skill 及参考资料
+├── docs/
+│   ├── screenshots/                 # 中英文 README 共用的 Zotero 实际界面截图
+│   │   ├── agent-settings.png       # 公共运行环境与 Pi 模型、适配器准备状态
+│   │   ├── paper-context.png        # 对话中展开的 PDF 截图、页码与问题
+│   │   ├── sidebar-overview.png     # PDF 框架图与 Agents 侧栏全景
+│   │   └── sidebar-results.png      # PDF 原文旁的 Agents 交互图表
+│   └── technical-reference.zh-CN.md  # 详细功能、配置、实现边界与历史验证记录
 ├── plugin/                           # XPI 的唯一运行时源码根目录
 │   ├── manifest.json                 # 插件清单、ID、版本和兼容范围
 │   ├── bootstrap.js                  # Zotero bootstrapped 生命周期入口
