@@ -157,4 +157,29 @@ function makeCache(options = {}) {
   return { cache, io };
 }
 
-module.exports = { MemoryIO, makePaper, makePreferenceStore, makeCache };
+// Gecko's Windows PathUtils/IOUtils reject forward slashes instead of silently
+// normalizing them like node:path.win32. Use this contract in filesystem mocks.
+function assertNativeWindowsPath(value) {
+  if (typeof value !== "string" || value.includes("/") || value.includes("\0") ||
+    !/^(?:[A-Za-z]:\\|\\\\[^\\]+\\[^\\]+)/u.test(value)) {
+    throw new Error("NS_ERROR_FILE_UNRECOGNIZED_PATH");
+  }
+}
+
+function windowsPathUtils() {
+  const path = require("node:path").win32;
+  return {
+    parent(value) {
+      assertNativeWindowsPath(value);
+      const parent = path.dirname(value);
+      return parent === value ? null : parent;
+    },
+    join(first, ...parts) {
+      assertNativeWindowsPath(first);
+      if (parts.some(part => /[\\/]/u.test(part))) throw new Error("NS_ERROR_FILE_UNRECOGNIZED_PATH");
+      return path.join(first, ...parts);
+    }
+  };
+}
+
+module.exports = { MemoryIO, makePaper, makePreferenceStore, makeCache, assertNativeWindowsPath, windowsPathUtils };

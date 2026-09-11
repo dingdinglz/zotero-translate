@@ -18,7 +18,7 @@
   const DIAGNOSTIC_STRING_LIMIT = 12000;
   const DIAGNOSTIC_COLLECTION_LIMIT = 48;
   const DIAGNOSTIC_DEPTH_LIMIT = 6;
-  const TOOL_RAW_OUTPUT_MAX_CHARS = 64 * 1024;
+  const TOOL_RAW_OUTPUT_MAX_BYTES = 64 * 1024;
   const STREAM_EMIT_INTERVAL_MS = 50;
   const STREAM_SAVE_DEBOUNCE_MS = 500;
   const DIAGNOSTIC_UPDATE_KINDS = new Set([
@@ -42,29 +42,52 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  function jsonByteLength(value) {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  }
+
+  function fitJSONTextTail(text, maxBytes) {
+    const tail = (length) => {
+      let start = text.length - length;
+      // Never split a valid UTF-16 pair at the retained tail's boundary.
+      if (start > 0 && /[\uDC00-\uDFFF]/u.test(text[start] || "") &&
+        /[\uD800-\uDBFF]/u.test(text[start - 1])) start++;
+      return text.slice(start);
+    };
+    let low = 0;
+    let high = Math.min(text.length, maxBytes);
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (jsonByteLength(tail(middle)) <= maxBytes) low = middle;
+      else high = middle - 1;
+    }
+    return tail(low);
+  }
+
   function boundedToolRawOutput(value) {
     if (value === undefined || value === null) return value ?? null;
-    if (typeof value === "string") return value.slice(-TOOL_RAW_OUTPUT_MAX_CHARS);
-    if (typeof value !== "object") return value;
-    const output = clone(value);
-    const textKeys = ["formatted_output", "output", "text", "data"];
-    let preferredKey = null;
-    for (const key of textKeys) {
-      if (typeof output[key] !== "string") continue;
-      preferredKey ||= key;
-      output[key] = output[key].slice(-TOOL_RAW_OUTPUT_MAX_CHARS);
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) return null;
+    if (encoded.length <= TOOL_RAW_OUTPUT_MAX_BYTES &&
+      new TextEncoder().encode(encoded).byteLength <= TOOL_RAW_OUTPUT_MAX_BYTES) return JSON.parse(encoded);
+    if (typeof value === "string") return fitJSONTextTail(value, TOOL_RAW_OUTPUT_MAX_BYTES);
+
+    // Bound the complete serialized value, not just one text field. Numeric
+    // array indices and arbitrary/oversized metadata keys must not be copied.
+    const compact = { truncated: true };
+    for (const key of ["exit_code", "exitCode", "wall_time_seconds", "duration_ms", "is_error"]) {
+      const item = value[key];
+      if (Object.prototype.hasOwnProperty.call(value, key) &&
+        (item === null || typeof item === "boolean" || (typeof item === "number" && Number.isFinite(item)))) {
+        compact[key] = item;
+      }
     }
-    let encoded;
-    try { encoded = JSON.stringify(output); }
-    catch (_error) { return { formatted_output: String(value).slice(-TOOL_RAW_OUTPUT_MAX_CHARS), truncated: true }; }
-    if (encoded.length <= TOOL_RAW_OUTPUT_MAX_CHARS + 4096) return output;
-    const compact = {};
-    for (const [key, item] of Object.entries(output)) {
-      if (item === null || ["number", "boolean"].includes(typeof item)) compact[key] = item;
-    }
-    if (preferredKey) compact[preferredKey] = output[preferredKey];
-    else compact.formatted_output = encoded.slice(-TOOL_RAW_OUTPUT_MAX_CHARS);
-    compact.truncated = true;
+    const preferredKey = ["formatted_output", "output", "text", "data"]
+      .find(key => typeof value[key] === "string");
+    const key = preferredKey || "formatted_output";
+    compact[key] = "";
+    const textBudget = TOOL_RAW_OUTPUT_MAX_BYTES - jsonByteLength(compact) + 2;
+    compact[key] = fitJSONTextTail(preferredKey ? value[preferredKey] : encoded, textBudget);
     return compact;
   }
 
@@ -631,8 +654,10 @@
   function normalizeToolImageSourcePath(value, workspacePath, joinPath) {
     const raw = fileURIToLocalPath(value);
     if (!raw || raw.includes("\0")) return null;
-    const candidate = ACP.isAbsolutePath(raw) ? raw : joinPath(workspacePath, raw);
-    if (!ACP.isAbsolutePath(candidate)) return null;
+    const candidate = ACP.toNativeAbsolutePath(
+      ACP.isAbsolutePath(raw) ? raw : joinPath(workspacePath, raw)
+    );
+    if (!candidate) return null;
     return {
       path: candidate,
       comparisonKey: normalizeLocalPath(candidate)
@@ -2836,8 +2861,8 @@
         if (!item?.isPDFAttachment?.()) {
           throw new CodexChatError("PAPER_UNSUPPORTED", "当前 Reader 不是 PDF 附件");
         }
-        const path = await item.getFilePathAsync();
-        if (!ACP.isAbsolutePath(path) || !(await global.IOUtils.exists(path))) {
+        const path = ACP.toNativeAbsolutePath(await item.getFilePathAsync());
+        if (!path || !(await global.IOUtils.exists(path))) {
           throw new CodexChatError("PDF_FILE_MISSING", "找不到当前 PDF 源文件");
         }
         return path;
@@ -2888,17 +2913,19 @@
         try { searchPath = String(global.Services?.env?.get("PATH") || ""); }
         catch (_error) { /* An unavailable process PATH must fall back to PDFWorker. */ }
         const executable = windows ? "pdftotext.exe" : "pdftotext";
-        const candidates = [
-          ...(windows ? [] : [
-            "/opt/homebrew/bin/pdftotext",
-            "/usr/local/bin/pdftotext",
-            "/usr/bin/pdftotext"
-          ]),
-          ...searchPath.split(windows ? ";" : ":")
-            .filter(path => ACP.isAbsolutePath(path) && path.length <= 4096)
-            .slice(0, 128)
-            .map(path => global.PathUtils.join(path, executable))
+        const candidates = windows ? [] : [
+          "/opt/homebrew/bin/pdftotext",
+          "/usr/local/bin/pdftotext",
+          "/usr/bin/pdftotext"
         ];
+        const directories = searchPath.split(windows ? ";" : ":")
+          .map(path => ACP.toNativeAbsolutePath(path, windows))
+          .filter(path => path && path.length <= 4096)
+          .slice(0, 128);
+        for (const directory of directories) {
+          try { candidates.push(global.PathUtils.join(directory, executable)); }
+          catch (_error) { /* A malformed PATH entry must not prevent PDFWorker fallback. */ }
+        }
         for (const path of new Set(candidates)) {
           try {
             if (await global.IOUtils.exists(path)) return true;

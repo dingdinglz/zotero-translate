@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.39 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.40 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -149,10 +149,39 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.39.xpi
+unzip -t dist/smart-paper-translator-0.1.40.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.40：PR #2 整合与验证
+
+PR #2 已 rebase 到 main `b401af7`。保留 main 的 OpenCode 原生启动、模型目录收集握手、按论文连接、配置确认与回滚，以及 visualize 的隔离与生命周期；双语 README 沿用 main 的结构，没有用 PR 的旧版说明覆盖新功能。
+
+公共运行环境发现增加 Windows 分号 PATH、`node.exe`、标准 npm `npx-cli.js`、`NVM_HOME` / `NVM_SYMLINK`、ProgramFiles 和 APPDATA。Windows 盘符及 UNC 路径进入 Gecko API 前转成原生反斜杠路径，不修改已保存的路径选择；当前 PDF 路径先确认存在。Codex View Image 同时支持盘符路径的正/反斜杠与 `file:///C:/...`，比较一致后仍用可用的原生路径读取。`pdftotext` 按平台构造候选，路径构造或文件访问异常均不会阻断 PDFWorker 兜底。该转换依据 Zotero 9.0.6 配套 Gecko 140.12.0 的 `PathUtils::InitFileWithPath()` / `nsLocalFile::InitWithPath()` 源码；Node 测试使用明确拒绝正斜杠的 Gecko 契约 mock，而非直接依赖会自动规范化的 `node:path.win32`。本次没有验证完整 Windows Agent 启动，特别是 Pi/OpenCode；OpenCode 仍沿用 main 的 macOS 原生收集实现。
+
+三 Agent 的文本/思考更新按 50 ms 合并，镜像写盘按 500 ms 防抖，最终状态与授权等更新立即推送。单工具 `rawOutput` 的上限为序列化 JSON 后的 **64 KiB UTF-8**，包含转义、键名、数组和元数据开销；超限保留文本尾部和退出码等固定标量，不拆 Unicode 代理对。旧镜像加载时应用相同上限并原子保存，再次加载不重复迁移。折叠工具卡片只建摘要；展开时才构建内容，重绘时先挂载再恢复卡片内滚动，忽略旧节点的迟到 toggle。
+
+已通过 **310 项自动测试**、JavaScript/静态检查、两次逐字节一致的可复现构建、XPI 根目录检查、`unzip -t` 和 SHA-256 校验。归档内 44 个运行时文件与 `plugin/` 源文件逐字节一致。回归覆盖真实 DOM 挂载语义、Windows 原生路径、路径构造失败、超大数字数组/键名、多字节与 JSON 转义、三 Agent 旧镜像幂等迁移及实时输出。独立 Chrome 使用实际侧栏模块和合成工具输出复核：重绘前后的卡片滚动位置均为 200；修复前同一复现从 200 变为 0。该预览不替代 Zotero 安装后的 UI 冒烟。
+
+最终文件：`dist/smart-paper-translator-0.1.40.xpi`，SHA-256：`b7c38dfd2338632e86007d3ac84b3cffa97296fc1b78ae06c7dd5444cadee89f`。**目标 Zotero 原生解析尚未完成**：当前终端的 `osascript` 无辅助访问权限，无法操作 Run JavaScript；没有改权限或 profile 绕过。未安装插件、下载适配器、调用真实模型或执行安装后 UI 冒烟。需在 Zotero 9.0.6 的 Run JavaScript 中以异步模式执行下面的非安装式检查（路径按实际仓库位置调整）：
+
+```javascript
+var { AddonManager } = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
+var file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+file.initWithPath("/ABSOLUTE/PATH/zotero-translate/dist/smart-paper-translator-0.1.40.xpi");
+var result = await AddonManager.getInstallForFile(file);
+return JSON.stringify({
+  appVersion: Services.appinfo.version,
+  error: result.error,
+  id: result.addon?.id,
+  version: result.addon?.version,
+  isCompatible: result.addon?.isCompatible,
+  appDisabled: result.addon?.appDisabled
+}, null, 2);
+```
+
+预期：`appVersion: 9.0.6`、`error: 0`、ID `smart-paper-translator@zotero.local`、`version: 0.1.40`、`isCompatible: true`、`appDisabled: false`；不要调用 `result.install()`。授权安装后的手动验收：展开长工具输出并滚动，生成后续回复时位置不跳回顶部；切换 Agent/论文仍保留各自历史，图表只在回复结束后出现；Windows Codex 的图片源路径为正斜杠时能生成本地副本，缺失文件仍明确报错。
 
 ## 0.1.39 验证记录
 

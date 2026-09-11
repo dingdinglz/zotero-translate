@@ -8,6 +8,7 @@ const {
   sanitizeDiagnostic,
   formatACPError,
   isAbsolutePath,
+  toNativeAbsolutePath,
   validateRuntimePaths,
   createEnvironment,
   inspectSharedRuntime,
@@ -15,6 +16,7 @@ const {
   createSubprocess,
   listRuntimePathCandidates
 } = require("../plugin/content/acp-client.js");
+const { assertNativeWindowsPath, windowsPathUtils } = require("./helpers.js");
 
 class AsyncPipe {
   constructor() {
@@ -368,6 +370,52 @@ test("Windows drive and UNC paths are absolute and use a semicolon PATH", () => 
   finally { Object.assign(global, saved); }
 });
 
+test("native paths respect the current platform and reject drive-relative and foreign roots", () => {
+  assert.equal(toNativeAbsolutePath("C:/tools/node.exe", true), "C:\\tools\\node.exe");
+  assert.equal(toNativeAbsolutePath("//server/share/node.exe", true), "\\\\server\\share\\node.exe");
+  for (const path of ["C:node.exe", "/rooted/node.exe", "\\node.exe", "relative", "C:/bad\0path"]) {
+    assert.equal(toNativeAbsolutePath(path, true), "");
+  }
+  assert.equal(toNativeAbsolutePath("/tmp/file\\name", false), "/tmp/file\\name");
+  assert.equal(toNativeAbsolutePath("//server/share/node", false), "//server/share/node");
+  assert.equal(toNativeAbsolutePath("C:/tools/node.exe", false), "");
+  const previous = global.Zotero;
+  global.Zotero = { isWin: false };
+  try { assert.equal(toNativeAbsolutePath("//server/share/node"), "//server/share/node"); }
+  finally { global.Zotero = previous; }
+});
+
+test("Windows runtime inspection and spawning normalize paths without changing the selection", async () => {
+  const names = ["PathUtils", "Services", "IOUtils", "ChromeUtils", "Zotero"];
+  const saved = Object.fromEntries(names.map(name => [name, global[name]]));
+  const paths = { nodePath: "C:/node/node.exe", npxCliPath: "C:/node/npm/npx-cli.js", codexPath: "C:/codex/codex.exe" };
+  const original = { ...paths };
+  const calls = [];
+  global.PathUtils = windowsPathUtils();
+  global.Zotero = { isWin: true };
+  global.Services = { env: { get: () => "C:/Windows/System32;/invalid;D:/tools" } };
+  global.IOUtils = { exists: async path => { assertNativeWindowsPath(path); return true; } };
+  global.ChromeUtils = { importESModule: () => ({ Subprocess: { call: async options => {
+    assertNativeWindowsPath(options.command);
+    for (const path of options.environment.PATH.split(";")) assertNativeWindowsPath(path);
+    calls.push(options);
+    const process = new FakeProcess();
+    process.stdout.push("v24.14.0"); process.exit();
+    return process;
+  } } }) };
+  try {
+    await inspectSharedRuntime(paths);
+    await inspectLocalRuntime(paths);
+    await createSubprocess(paths, { purpose: "serve", allowDownload: false });
+    assert.equal(calls.at(-1).arguments[0], "C:\\node\\npm\\npx-cli.js");
+    assert.equal(calls.at(-1).environment.CODEX_PATH, "C:\\codex\\codex.exe");
+    assert.equal(calls.at(-1).environment.PATH, "C:\\node;C:\\codex;C:\\Windows\\System32;D:\\tools");
+    assert.equal(calls.at(-1).environment.npm_config_offline, "true");
+    assert.deepEqual(paths, original);
+  }
+  finally { Object.assign(global, saved); }
+});
+
 function piProcess(version = "0.0.33") {
   const process = new FakeProcess((message, process) => {
     if (message.method === "initialize") process.respond(message.id, {
@@ -665,7 +713,6 @@ test("late chunks from a replaced process cannot reach a new connection or its d
 test("candidate discovery preserves Windows drive letters and finds Node plus npx-cli.js", async () => {
   const names = ["Services", "Ci", "Cc", "IOUtils", "PathUtils", "Zotero"];
   const saved = Object.fromEntries(names.map(name => [name, global[name]]));
-  const path = require("node:path").win32;
   const files = new Set([
     "C:\\Program Files\\nodejs\\node.exe",
     "C:\\Program Files\\nodejs\\npx-cli.js",
@@ -674,16 +721,16 @@ test("candidate discovery preserves Windows drive letters and finds Node plus np
     "D:\\nvm\\v24.14.0\\node_modules\\npm\\bin\\npx-cli.js"
   ]);
   const stats = [];
-  global.PathUtils = { join: path.join, parent: path.dirname };
+  global.PathUtils = windowsPathUtils();
   global.Zotero = { isWin: true };
   global.Services = {
     appinfo: { OS: "WINNT" },
     dirsvc: { get: () => ({ path: "C:\\Users\\test" }) },
     env: { get: name => ({
-      PATH: "C:\\Program Files\\nodejs;C:\\Users\\test\\AppData\\Roaming\\npm;relative",
-      ProgramFiles: "C:\\Program Files",
-      APPDATA: "C:\\Users\\test\\AppData\\Roaming",
-      NVM_HOME: "D:\\nvm"
+      PATH: "C:/Program Files/nodejs;C:/Users/test/AppData/Roaming/npm;relative;/invalid;C:\\",
+      ProgramFiles: "C:/Program Files",
+      APPDATA: "C:/Users/test/AppData/Roaming",
+      NVM_HOME: "D:/nvm"
     })[name] || "" }
   };
   global.Ci = { nsIFile: {} };
@@ -697,6 +744,7 @@ test("candidate discovery preserves Windows drive letters and finds Node plus np
       throw new Error("absent");
     },
     async stat(value) {
+      assertNativeWindowsPath(value);
       stats.push(value);
       if (files.has(value)) return { type: "regular" };
       throw new Error("missing");

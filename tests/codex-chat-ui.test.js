@@ -50,6 +50,7 @@ class Node {
     }
   }
   replaceChildren(...children) {
+    for (const child of this.children) child.parentNode = null;
     this.children = [];
     this.append(...children);
   }
@@ -851,9 +852,23 @@ test("selected old transcripts never block a different paper, agent, session or 
   }
 });
 
-test("streaming rerenders preserve expanded events and a reader's scroll position", () => {
+test("streaming rerenders restore tool scroll only after mounting the populated card", () => {
   const doc = new Document();
+  const createElement = doc.createElement.bind(doc);
+  doc.createElement = (name) => {
+    const node = createElement(name);
+    let scrollTop = 0;
+    Object.defineProperty(node, "scrollTop", {
+      get: () => scrollTop,
+      set: value => {
+        // A detached or empty element has no scrollable CSS box.
+        scrollTop = descendants(doc.body).includes(node) && node.children.length ? value : 0;
+      }
+    });
+    return node;
+  };
   const messages = new Node("div");
+  doc.body.append(messages);
   messages.scrollHeight = 600;
   messages.clientHeight = 200;
   const view = {
@@ -882,6 +897,7 @@ test("streaming rerenders preserve expanded events and a reader's scroll positio
   const firstDetails = messages.children[0];
   const firstContent = firstDetails.children[1];
   firstDetails.open = true;
+  firstDetails.dispatchEvent({ type: "toggle" });
   firstContent.scrollTop = 17;
   messages.scrollTop = 140;
 
@@ -892,6 +908,10 @@ test("streaming rerenders preserve expanded events and a reader's scroll positio
   assert.equal(updatedDetails.open, true);
   assert.equal(updatedDetails.children[1].scrollTop, 17);
   assert.equal(messages.scrollTop, 140);
+  const populatedChildren = updatedDetails.children[1].children.slice();
+  updatedDetails.dispatchEvent({ type: "toggle" });
+  assert.deepEqual(updatedDetails.children[1].children, populatedChildren);
+  assert.equal(updatedDetails.children[1].scrollTop, 17);
 });
 
 test("common ACP tools become semantic cards without raw transcript metadata", () => {
@@ -1056,6 +1076,25 @@ test("collapsed tool cards defer large output DOM until expanded", () => {
   details.open = true;
   details.dispatchEvent({ type: "toggle" });
   assert.equal(descendants(details).some((node) => String(node.textContent).includes(marker)), true);
+});
+
+test("late toggle events cannot populate a tool card removed by a newer render", () => {
+  const doc = new Document();
+  const ui = new CodexChatUI({ service: {} });
+  const view = { body: doc.body, attachmentID: 10, requestSerial: 1,
+    elements: { messages: doc.createElement("div"), notices: doc.createElement("div") } };
+  const state = { record: { session: { localID: "local", workspacePath: "/workspace" },
+    transcript: [{ id: "tool", kind: "tool", toolKind: "execute", rawOutput: "private output" }] } };
+  ui._renderTranscript(view, state);
+  const stale = view.elements.messages.children[0];
+  ui._renderTranscript(view, state);
+  stale.open = true;
+  stale.dispatchEvent({ type: "toggle" });
+  assert.equal(stale.children[1].children.length, 0);
+  const current = view.elements.messages.children[0];
+  current.open = true;
+  current.dispatchEvent({ type: "toggle" });
+  assert.ok(current.children[1].children.length);
 });
 
 test("tool image presentation refuses remote preview URLs and surfaces copy errors", () => {

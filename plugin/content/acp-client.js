@@ -33,10 +33,26 @@
 
   function usesWindowsPaths(paths = {}) {
     try {
-      if (global.Zotero?.isWin || global.Services?.appinfo?.OS === "WINNT") return true;
+      if (typeof global.Zotero?.isWin === "boolean") return global.Zotero.isWin;
+      if (global.Services?.appinfo?.OS) return global.Services.appinfo.OS === "WINNT";
     }
     catch (_error) {}
     return Object.values(paths).some(isWindowsAbsolutePath);
+  }
+
+  // Gecko 140 PathUtils/IOUtils require native backslashes on Windows. Path
+  // comparison alone must never turn an accepted C:/... into an unusable file.
+  function toNativeAbsolutePath(path, windows = usesWindowsPaths({ path })) {
+    if (!isAbsolutePath(path)) return "";
+    if (windows) return isWindowsAbsolutePath(path) ? path.replace(/\//gu, "\\") : "";
+    return path.startsWith("/") ? path : "";
+  }
+
+  function normalizeRuntimePaths(paths) {
+    const windows = usesWindowsPaths(paths);
+    return Object.fromEntries(Object.entries(paths).map(([key, path]) =>
+      [key, toNativeAbsolutePath(path, windows)]
+    ));
   }
 
   function pathName(path) {
@@ -719,11 +735,12 @@
   }
 
   async function listNVMVersions(homePath, windows = usesWindowsPaths()) {
+    const xdg = toNativeAbsolutePath(environmentValue("XDG_CONFIG_HOME"), windows);
     const roots = [...new Set([
-      environmentValue("NVM_DIR"), global.PathUtils.join(homePath, ".nvm"),
-      environmentValue("XDG_CONFIG_HOME") && global.PathUtils.join(environmentValue("XDG_CONFIG_HOME"), "nvm"),
-      windows && environmentValue("NVM_HOME")
-    ].filter(isAbsolutePath))];
+      toNativeAbsolutePath(environmentValue("NVM_DIR"), windows), global.PathUtils.join(homePath, ".nvm"),
+      xdg && global.PathUtils.join(xdg, "nvm"),
+      windows && toNativeAbsolutePath(environmentValue("NVM_HOME"), windows)
+    ].filter(Boolean))];
     const children = [];
     for (const root of roots) {
       const versionRoots = windows
@@ -758,10 +775,12 @@
   // Enumeration reads file metadata only: no shell startup files, executables, or downloads.
   async function listRuntimePathCandidates(configured = {}) {
     const windows = usesWindowsPaths(configured);
+    configured = normalizeRuntimePaths(configured);
     const candidates = { node: [], npx: [], codex: [], pi: [], opencode: [] };
     const seen = Object.fromEntries(Object.keys(candidates).map(kind => [kind, new Set()]));
     const add = async (kind, path, source, version = "") => {
-      if (seen[kind].has(path)) return;
+      path = toNativeAbsolutePath(path, windows);
+      if (!path || seen[kind].has(path)) return;
       seen[kind].add(path);
       if (await isRuntimeFile(path)) candidates[kind].push({ path, source, version });
     };
@@ -777,12 +796,15 @@
     }
     const pathSeparator = windows ? ";" : ":";
     const pathDirectories = environmentValue("PATH").split(pathSeparator)
-      .filter(path => isAbsolutePath(path) && path.length <= 4096);
+      .map(path => toNativeAbsolutePath(path, windows))
+      .filter(path => path && path.length <= 4096);
     for (const path of [...new Set(pathDirectories)].slice(0, 128)) directories.push({ path, source: "path" });
+    const programFiles = toNativeAbsolutePath(environmentValue("ProgramFiles"), windows);
+    const appData = toNativeAbsolutePath(environmentValue("APPDATA"), windows);
     const standardDirectories = windows ? [
-      environmentValue("NVM_SYMLINK"),
-      environmentValue("ProgramFiles") && global.PathUtils.join(environmentValue("ProgramFiles"), "nodejs"),
-      environmentValue("APPDATA") && global.PathUtils.join(environmentValue("APPDATA"), "npm")
+      toNativeAbsolutePath(environmentValue("NVM_SYMLINK"), windows),
+      programFiles && global.PathUtils.join(programFiles, "nodejs"),
+      appData && global.PathUtils.join(appData, "npm")
     ] : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
     for (const path of standardDirectories.filter(isAbsolutePath)) directories.push({ path, source: "standard" });
     const searched = new Set();
@@ -794,7 +816,7 @@
           .map(name => add(kind, global.PathUtils.join(directory, name), source, version))
       ));
       const prefix = global.PathUtils.parent(directory);
-      await add("npx", global.PathUtils.join(prefix, "lib", "node_modules", "npm", "bin", "npx-cli.js"), source, version);
+      if (prefix) await add("npx", global.PathUtils.join(prefix, "lib", "node_modules", "npm", "bin", "npx-cli.js"), source, version);
       await add("npx", global.PathUtils.join(directory, "node_modules", "npm", "bin", "npx-cli.js"), source, version);
       await add("npx", global.PathUtils.join(directory, "npx-cli.js"), source, version);
       await add("npx", npxLinkTarget(global.PathUtils.join(directory, "npx")), source, version);
@@ -817,8 +839,9 @@
   }
 
   function validateRuntimePaths(paths) {
+    const windows = usesWindowsPaths(paths);
     for (const [name, path] of Object.entries(paths)) {
-      if (!isAbsolutePath(path)) {
+      if (!toNativeAbsolutePath(path, windows)) {
         throw new ACPError("ACP_PATH_INVALID", `${name} 必须是绝对文件路径`);
       }
     }
@@ -827,9 +850,11 @@
   function createEnvironment(paths, { allowDownload }, agentId = "codex") {
     const provider = Agents.getProvider(agentId);
     const windows = usesWindowsPaths(paths);
+    paths = normalizeRuntimePaths(paths);
     const pathSeparator = windows ? ";" : ":";
     const inheritedDirectories = environmentValue("PATH").split(pathSeparator)
-      .filter(path => isAbsolutePath(path) && path.length <= 4096)
+      .map(path => toNativeAbsolutePath(path, windows))
+      .filter(path => path && path.length <= 4096)
       .slice(0, 128);
     const directories = [
       global.PathUtils.parent(paths.nodePath),
@@ -856,6 +881,7 @@
 
   async function createSubprocess(paths, { purpose, allowDownload }, agentId = "codex") {
     const provider = Agents.getProvider(agentId);
+    paths = normalizeRuntimePaths(paths);
     validateRuntimePaths(paths);
     const { Subprocess } = global.ChromeUtils.importESModule(
       "resource://gre/modules/Subprocess.sys.mjs"
@@ -929,7 +955,7 @@
   }
 
   async function inspectSharedRuntime(paths) {
-    const shared = { nodePath: paths.nodePath, npxCliPath: paths.npxCliPath };
+    const shared = normalizeRuntimePaths({ nodePath: paths.nodePath, npxCliPath: paths.npxCliPath });
     await validateExistingPaths(shared);
     const [node, npx] = await Promise.all([
       runLocalCommand(shared.nodePath, ["--version"], shared),
@@ -946,6 +972,7 @@
 
   async function inspectLocalRuntime(paths, agentId = "codex") {
     const provider = Agents.getProvider(agentId);
+    paths = normalizeRuntimePaths(paths);
     await validateExistingPaths(paths);
     const [node, npx, codex, login] = await Promise.all([
       runLocalCommand(paths.nodePath, ["--version"], paths, agentId),
@@ -1039,6 +1066,7 @@
     formatACPError,
     isAuthenticatedStatus,
     isAbsolutePath,
+    toNativeAbsolutePath,
     detectLocalPaths,
     validateRuntimePaths,
     inspectLocalRuntime,
