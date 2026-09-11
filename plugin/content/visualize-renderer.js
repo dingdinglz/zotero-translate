@@ -35,24 +35,42 @@
   }
 
   function workspaceFile(workspace, requested) {
-    if (typeof workspace !== "string" || !workspace.startsWith("/") || workspace === "/") {
-      throw new Error("当前论文工作区无效");
-    }
-    const clean = (path) => {
-      if (path.length > 4096 || /[\u0000-\u001f\\]/u.test(path) || path.split("/").includes("..")) {
-        throw new Error("图表路径无效");
-      }
-      return path.split("/").filter((part) => part && part !== ".").join("/");
+    const rawWorkspace = String(workspace || "");
+    const windows = /^[A-Za-z]:[\\/]/u.test(rawWorkspace) || /^\\\\[^\\/]+[\\/][^\\/]+/u.test(rawWorkspace);
+    const separator = windows ? "\\" : "/";
+    const absolute = windows ?
+      /^[A-Za-z]:[\\/]/u.test(rawWorkspace) || /^\\\\[^\\/]+[\\/][^\\/]+/u.test(rawWorkspace) :
+      rawWorkspace.startsWith("/");
+    if (!absolute) throw new Error("当前论文工作区无效");
+    const normalize = (path) => {
+      if (path.length > 4096 || /[\u0000-\u001f]/u.test(path)) throw new Error("图表路径无效");
+      if (!windows && path.includes("\\")) throw new Error("图表路径无效");
+      const parts = path.split(/[\\/]/u).filter((part) => part && part !== ".");
+      if (parts.includes("..")) throw new Error("图表路径无效");
+      return parts;
     };
-    const root = "/" + clean(workspace);
-    if (root === "/") throw new Error("当前论文工作区无效");
+    const rootParts = normalize(rawWorkspace);
+    const root = windows ?
+      (/^\\\\/u.test(rawWorkspace) ? "\\\\" : "") + rootParts.join(separator) :
+      "/" + rootParts.join("/");
+    if (root === "/" || (windows && rootParts.length < 2)) throw new Error("当前论文工作区无效");
     const raw = String(requested || "").trim();
-    if (!raw || /^[A-Za-z][\w+.-]*:/u.test(raw)) throw new Error("图表必须是工作区内的 HTML 文件");
-    const path = "/" + clean(raw.startsWith("/") ? raw : root + "/" + raw);
-    if (!path.startsWith(root + "/") || !/\.html?$/iu.test(path)) {
+    const requestedWindowsAbsolute = /^[A-Za-z]:[\\/]/u.test(raw) || /^\\\\/u.test(raw);
+    if (!raw || (/^[A-Za-z][\w+.-]*:/u.test(raw) && !requestedWindowsAbsolute)) {
+      throw new Error("图表必须是工作区内的 HTML 文件");
+    }
+    const requestedParts = normalize(raw);
+    const candidate = raw.startsWith("/") || (windows && /^[A-Za-z]:[\\/]/u.test(raw)) ||
+      (windows && /^\\\\/u.test(raw)) ?
+      (windows ? (/^\\\\/u.test(raw) ? "\\\\" : "") + requestedParts.join(separator) : "/" + requestedParts.join("/")) :
+      root + separator + requestedParts.join(separator);
+    const rootPrefix = root + separator;
+    const path = windows ? candidate.toLowerCase() : candidate;
+    const prefix = windows ? rootPrefix.toLowerCase() : rootPrefix;
+    if (!path.startsWith(prefix) || !/\.html?$/iu.test(candidate)) {
       throw new Error("只能预览当前论文工作区内的 HTML 文件");
     }
-    return path;
+    return candidate;
   }
 
   async function readWorkspaceHTML(fileSystem, workspace, requested) {
@@ -60,12 +78,15 @@
     if (typeof fileSystem?.inspectPath !== "function" || typeof fileSystem?.read !== "function") {
       throw new Error("当前环境无法安全读取图表文件");
     }
-    const parts = path.slice(1).split("/");
+    const windows = /^[A-Za-z]:[\\/]/u.test(path) || /^\\\\/u.test(path);
+    const separator = windows ? "\\" : "/";
+    const parts = windows ? path.split(/[\\/]/u).filter(Boolean) : path.slice(1).split("/");
     if (parts.length > 128) throw new Error("图表路径过深");
     const inspect = async () => {
       let item;
       for (let i = 0; i < parts.length; i++) {
-        item = await fileSystem.inspectPath("/" + parts.slice(0, i + 1).join("/"));
+        const prefix = windows ? parts.slice(0, i + 1).join(separator) : "/" + parts.slice(0, i + 1).join("/");
+        item = await fileSystem.inspectPath(prefix);
         if (!item || item.symlink || item.type !== (i === parts.length - 1 ? "regular" : "directory")) {
           throw new Error("图表路径包含软链接或非常规文件");
         }
