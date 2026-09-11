@@ -30,6 +30,17 @@ test("visualization paths remain within the exact workspace and reject traversal
   assert.throws(() => V.workspaceFile("/", "a.html"));
 });
 
+test("Windows drive and UNC workspaces keep native paths while enforcing the workspace boundary", () => {
+  assert.equal(V.workspaceFile("C:/Users/AimMetal/Zotero/spt/workspaces/1--ABCDEFGH/session-1", "output/chart.html"),
+    "C:\\Users\\AimMetal\\Zotero\\spt\\workspaces\\1--ABCDEFGH\\session-1\\output\\chart.html");
+  assert.equal(V.workspaceFile("\\\\server\\share\\spt\\session-1", "output/chart.html"),
+    "\\\\server\\share\\spt\\session-1\\output\\chart.html");
+  for (const path of ["../escape.html", "C:/Users/AimMetal/Zotero/other.html", "\\\\server\\share\\other.html",
+    "https://example.com/chart.html", "chart.svg"]) {
+    assert.throws(() => V.workspaceFile("C:/Users/AimMetal/Zotero/spt/session-1", path));
+  }
+});
+
 function fixture() {
   const bytes = new TextEncoder().encode(html);
   return {
@@ -58,6 +69,21 @@ test("HTML reads reject links in every path component, non-files, oversize and m
   await assert.rejects(V.readWorkspaceHTML(invalid, "/papers/one", "a.html"), /UTF-8/);
   const changed = fixture(); changed.read = async function () { const b = this.bytes; this.bytes = new Uint8Array(1); return b; };
   await assert.rejects(V.readWorkspaceHTML(changed, "/papers/one", "a.html"), /发生变化/);
+});
+
+test("HTML reads inspect Windows drive components with native separators", async () => {
+  const io = fixture();
+  assert.equal((await V.readWorkspaceHTML(io, "C:/Users/AimMetal/Zotero/spt/session-1", "output/chart.html")).html, html);
+  assert.deepEqual(io.inspected, [
+    "C:", "C:\\Users", "C:\\Users\\AimMetal", "C:\\Users\\AimMetal\\Zotero",
+    "C:\\Users\\AimMetal\\Zotero\\spt", "C:\\Users\\AimMetal\\Zotero\\spt\\session-1",
+    "C:\\Users\\AimMetal\\Zotero\\spt\\session-1\\output",
+    "C:\\Users\\AimMetal\\Zotero\\spt\\session-1\\output\\chart.html",
+    "C:", "C:\\Users", "C:\\Users\\AimMetal", "C:\\Users\\AimMetal\\Zotero",
+    "C:\\Users\\AimMetal\\Zotero\\spt", "C:\\Users\\AimMetal\\Zotero\\spt\\session-1",
+    "C:\\Users\\AimMetal\\Zotero\\spt\\session-1\\output",
+    "C:\\Users\\AimMetal\\Zotero\\spt\\session-1\\output\\chart.html"
+  ]);
 });
 
 test("only the pinned D3 URL is replaced; unsupported dependencies fail explicitly", () => {
