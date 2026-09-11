@@ -18,7 +18,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.37"
+    assert manifest["version"] == "0.1.39"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "9.0.*"
@@ -41,6 +41,7 @@ def main() -> None:
 
     constants = (PLUGIN / "content" / "constants.js").read_text(encoding="utf-8")
     acp_client = (PLUGIN / "content" / "acp-client.js").read_text(encoding="utf-8")
+    opencode_acp = (PLUGIN / "content" / "opencode-acp.js").read_text(encoding="utf-8")
     chat_cache = (PLUGIN / "content" / "chat-cache.js").read_text(encoding="utf-8")
     pdf_screenshot = (PLUGIN / "content" / "pdf-screenshot.js").read_text(encoding="utf-8")
     chat_ui = (PLUGIN / "content" / "codex-chat-ui.js").read_text(encoding="utf-8")
@@ -208,6 +209,14 @@ def main() -> None:
     assert 'permissionVerified' in codex_chat
     assert '"content/agent-providers.js"' in bootstrap
     assert '"content/agents-chat.js"' in bootstrap
+    assert bootstrap.index('"content/opencode-acp.js"') < bootstrap.index('"content/acp-client.js"')
+    assert '"--hostname", "127.0.0.1", "--port", "0", "--mdns=false"' in opencode_acp
+    assert 'OPENCODE_DISABLE_AUTOUPDATE: "1"' in opencode_acp
+    assert 'OPENCODE_DISABLE_MODELS_FETCH: "1"' in opencode_acp
+    assert 'npm_config_offline: "true"' in opencode_acp
+    assert 'OPENCODE_DB: dbPath' in opencode_acp
+    assert 'reasoningID: "effort", sessionMode: true' in providers
+    assert 'id="spt-agent-tab-opencode"' in xhtml
     ElementTree.parse(PLUGIN / "content/agents.svg")
     locales = [
         (PLUGIN / "locale" / locale / "smart-paper-translator-codex-chat.ftl").read_text(encoding="utf-8")
@@ -230,6 +239,7 @@ def main() -> None:
         "content/item-tree.css",
         "content/reader-ui.js",
         "content/acp-client.js",
+        "content/opencode-acp.js",
         "content/chat-cache.js",
         "content/pdf-screenshot.js",
         "content/codex-chat.js",

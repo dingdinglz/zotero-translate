@@ -2327,6 +2327,9 @@
         setLocalizedText(hint, "smart-paper-translator-agents-full-hint", "Full Access 允许操作工作区外的文件和联网，仅作用于当前 Codex 会话。");
         access.append(hint);
       }
+      else if (agentId === "opencode") {
+        setLocalizedText(access, "smart-paper-translator-agents-opencode-access", "OpenCode 按本机配置执行工具；需要授权时会在当前对话中询问。运行模式仅作用于当前论文会话。");
+      }
       else {
         access.classList?.add("spt-agents-access-pi");
         setLocalizedText(access, "smart-paper-translator-agents-pi-access", "Pi 按本机配置直接执行工具；这里不提供 Codex 的审批模式。扩展发出的交互请求仍需回应。");
@@ -2347,7 +2350,8 @@
       container.append(hint);
       for (const [id, label, recordKey] of [
         ["model", "模型", "model"],
-        ["reasoning_effort", "推理", "reasoningEffort"]
+        ["reasoning_effort", "推理", "reasoningEffort"],
+        ...(agentId === "opencode" ? [["mode", "运行模式", "agentMode"]] : [])
       ]) {
         const option = state.configOptions.find((entry) => entry.id === id);
         const values = (option?.options || option?.values || []).map((entry) =>
@@ -2357,7 +2361,7 @@
         const labelElement = doc.createElement("label");
         labelElement.className = "spt-codex-config-field";
         const labelText = doc.createElement("span");
-        setLocalizedText(labelText, `smart-paper-translator-agents-${id === "model" ? "model" : "thinking-label"}`, label);
+        setLocalizedText(labelText, `smart-paper-translator-agents-${id === "model" ? "model" : id === "mode" ? "session-mode" : "thinking-label"}`, label);
         labelElement.append(labelText);
         const picker = doc.createElement("span");
         picker.className = "spt-codex-config-picker";
@@ -2443,7 +2447,8 @@
       if (!state.adapter.preparedVersion || state.adapter.preparedVersion !== state.adapter.requiredVersion) {
         const notice = doc.createElement("div");
         notice.className = "spt-codex-notice";
-        setLocalizedText(notice, "smart-paper-translator-agents-not-prepared", `尚未准备 ${Agents.getProvider(agentId).command} ${state.adapter.requiredVersion}。请先到插件设置执行“准备并检测 ACP”。`,
+        if (agentId === "opencode") setLocalizedText(notice, "smart-paper-translator-agents-opencode-needs-setup", "请在插件设置中选择本机程序并检测 OpenCode。");
+        else setLocalizedText(notice, "smart-paper-translator-agents-not-prepared", `尚未准备 ${Agents.getProvider(agentId).command} ${state.adapter.requiredVersion}。请先到插件设置执行“准备并检测 ACP”。`,
           { adapter: Agents.getProvider(agentId).command, version: state.adapter.requiredVersion });
         container.append(notice);
       }

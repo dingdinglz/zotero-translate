@@ -27,6 +27,7 @@ async function startup({ id, version, rootURI }) {
     "content/api.js",
     "content/service.js",
     "content/pi-acp-compat.js",
+    "content/opencode-acp.js",
     "content/acp-client.js",
     "content/codex-chat.js",
     "content/agents-chat.js",

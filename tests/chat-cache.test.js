@@ -192,3 +192,31 @@ test("legacy Codex records keep their original session and paths while Pi resets
   assert.equal((await cache.load(paper)).session.id, legacy.session.id);
   assert.equal(await io.exists(`${screenshotDir}/capture-shot-1.png`), true);
 });
+
+test("OpenCode history and screenshot reset leave Codex and Pi data intact after a cache restart", async () => {
+  const { io } = makeHarness();
+  const paper = makePaper();
+  const create = agentId => new CodexChatCache({ rootPath: `/${agentId}-acp`, agentId, io,
+    joinPath: (...parts) => parts.join("/"), randomID: () => `${agentId}-local` });
+  for (const agentId of ["codex", "pi", "opencode"]) {
+    const cache = create(agentId), record = await cache.load(paper);
+    record.session.id = `${agentId}-remote-session`;
+    if (agentId === "opencode") record.session.config.agentMode = "custom-mode";
+    record.transcript.push({ id: "message", text: agentId });
+    await cache.ensureScreenshotDirectory(paper, record);
+    io.setText(cache.screenshotPath(paper, record, "capture-shot.png"), agentId);
+    await cache.save(paper, record);
+  }
+  const native = create("opencode"), recovered = await native.load(paper);
+  assert.equal(recovered.session.config.agentMode, "custom-mode");
+  assert.equal(recovered.session.config.mode, null);
+  assert.equal(validateChatRecord(recovered, paper, "pi"), false);
+  await native.archiveAndReset(paper, "test");
+  assert.equal(await io.exists(native.screenshotPath(paper, recovered, "capture-shot.png")), false);
+  for (const agentId of ["codex", "pi"]) {
+    const cache = create(agentId), record = await cache.load(paper);
+    assert.equal(record.session.id, `${agentId}-remote-session`);
+    assert.equal(record.transcript[0].text, agentId);
+    assert.equal(await io.exists(cache.screenshotPath(paper, record, "capture-shot.png")), true);
+  }
+});

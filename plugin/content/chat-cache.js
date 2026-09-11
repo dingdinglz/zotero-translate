@@ -34,7 +34,8 @@
         config: {
           mode: Agents.getProvider(agentId).defaultMode,
           model: null,
-          reasoningEffort: null
+          reasoningEffort: null,
+          ...(agentId === "opencode" ? { agentMode: null } : {})
         }
       },
       draft: {
@@ -62,6 +63,8 @@
       typeof record.session.localID === "string" &&
       typeof record.session.workspacePath === "string" &&
       Agents.validMode(record.session.config?.mode, agentId) &&
+      (agentId !== "opencode" || record.session.config.agentMode == null ||
+        (typeof record.session.config.agentMode === "string" && record.session.config.agentMode.length <= 256 && !/[\0\r\n]/u.test(record.session.config.agentMode))) &&
       (
         record.draft == null ||
         (record.draft && Array.isArray(record.draft.screenshots))

@@ -2,7 +2,9 @@
   "use strict";
 
   const pathInputs = { node: "spt-acp-node-path", npx: "spt-acp-npx-path",
-    codex: "spt-codex-executable-path", pi: "spt-pi-executable-path" };
+    codex: "spt-codex-executable-path", pi: "spt-pi-executable-path", opencode: "spt-opencode-executable-path" };
+
+  const agentTabs = ["codex", "pi", "opencode"];
 
   const manager = {
     initialized: false,
@@ -27,11 +29,12 @@
       this._listen("spt-reset-deepseek", "click", () => this.resetDeepSeek());
       this._listen("spt-reset-prompts", "click", () => this.resetPrompts());
       this._listen("spt-validate-prompts", "click", () => this.validatePrompts());
-      for (const agentId of ["codex", "pi"]) {
+      for (const agentId of agentTabs) {
         this._listen(`spt-agent-tab-${agentId}`, "click", () => this.selectAgentTab(agentId));
         this._listen(`spt-agent-tab-${agentId}`, "keydown", (event) => {
-          const target = { ArrowLeft: agentId === "codex" ? "pi" : "codex",
-            ArrowRight: agentId === "codex" ? "pi" : "codex", Home: "codex", End: "pi" }[event.key];
+          const index = agentTabs.indexOf(agentId);
+          const target = { ArrowLeft: agentTabs[(index + agentTabs.length - 1) % agentTabs.length],
+            ArrowRight: agentTabs[(index + 1) % agentTabs.length], Home: agentTabs[0], End: agentTabs.at(-1) }[event.key];
           if (!target) return;
           event.preventDefault();
           this.selectAgentTab(target, true);
@@ -72,6 +75,10 @@
         this._listen(`spt-pi-${action}`, "click", () => this.runPiAction(action));
       }
       this._listen("spt-pi-default-model", "change", () => this.renderPiReasoning(true));
+      for (const action of ["detect", "inspect", "browse"]) {
+        this._listen(`spt-opencode-${action}`, "click", () => this.runOpenCodeAction(action));
+      }
+      this._listen("spt-opencode-default-model", "change", () => this.renderOpenCodeReasoning(true));
       const doc = this.doc;
       const timer = this.win.setTimeout(() => {
         if (this.doc !== doc) return;
@@ -79,6 +86,7 @@
         this.updateKeyStatus();
         this.renderCodexStatus(this.bridge.getCodexStatus());
         this.renderPiStatus(this.bridge.getPiStatus());
+        this.renderOpenCodeStatus(this.bridge.getOpenCodeStatus?.());
         this.refreshPathCandidates();
       }, 0);
       this.cleanups.push(() => win.clearTimeout(timer));
@@ -207,8 +215,8 @@
     },
 
     selectAgentTab(agentId, focus = false) {
-      if (agentId !== "codex" && agentId !== "pi") return;
-      for (const id of ["codex", "pi"]) {
+      if (!agentTabs.includes(agentId)) return;
+      for (const id of agentTabs) {
         const active = id === agentId;
         const tab = this.doc.getElementById(`spt-agent-tab-${id}`);
         tab.setAttribute("aria-selected", String(active));
@@ -236,6 +244,10 @@
       else if (kind === "codex") {
         this._saveCodexPaths();
         this.renderCodexStatus(this.bridge.getCodexStatus());
+      }
+      else if (kind === "opencode") {
+        this.bridge.setOpenCodePaths({ opencodePath: this.doc.getElementById(pathInputs.opencode).value.trim() });
+        this.renderOpenCodeStatus(this.bridge.getOpenCodeStatus());
       }
       else {
         this.bridge.setPiPaths({ piPath: this.doc.getElementById(pathInputs.pi).value.trim() });
@@ -381,7 +393,7 @@
       inherited.textContent = option?.currentValue
         ? `跟随 ${agent} 当前值（${option.currentValue}）`
         : "尚未读取选项，请准备或重新检测 ACP";
-      if (agent === "Pi") this._localize(inherited,
+      if (agent !== "Codex") this._localize(inherited,
         option?.currentValue ? "inherit" : "options-unavailable", inherited.textContent,
         { agent, value: option?.currentValue || "" });
       select.append(inherited);
@@ -600,6 +612,81 @@
       });
     },
 
+    renderOpenCodeReasoning(resetInvalid = false) {
+      const model = this.doc.getElementById("spt-opencode-default-model").value;
+      const options = this.opencodeCatalog?.configOptionsByModel?.[model] || this.opencodeCatalog?.configOptions || [];
+      const reasoning = options.find(entry => entry.id === "reasoning_effort");
+      const values = (reasoning?.options || []).map(entry => typeof entry === "string" ? entry : entry?.value);
+      let saved = this.doc.getElementById("spt-opencode-default-reasoning").value;
+      if (resetInvalid && saved && !values.includes(saved)) {
+        saved = "";
+        this._setBoundValue("spt-opencode-default-reasoning", "");
+      }
+      this._populateCodexSelect("spt-opencode-default-reasoning", reasoning, saved, "OpenCode");
+    },
+
+    renderOpenCodeStatus(result = {}) {
+      if (!this.doc || !this.bridge) return;
+      if (result.paths?.opencodePath) this._setBoundValue("spt-opencode-executable-path", result.paths.opencodePath);
+      const fallback = this.bridge.getOpenCodeStatus?.() || {};
+      this.opencodeCatalog = {
+        configOptions: result.configOptions || fallback.configOptions || [],
+        configOptionsByModel: result.configOptionsByModel || fallback.configOptionsByModel || {}
+      };
+      this._populateCodexSelect("spt-opencode-default-model", this.opencodeCatalog.configOptions.find((entry) => entry.id === "model"),
+        this.doc.getElementById("spt-opencode-default-model").value, "OpenCode");
+      this.renderOpenCodeReasoning();
+      this.doc.getElementById("spt-opencode-runtime").textContent = result.adapter?.preparedVersion || fallback.adapter?.preparedVersion || "—";
+      this.doc.getElementById("spt-opencode-adapter").textContent = result.adapter?.preparedVersion ? "ACP 1 · Native" : "—";
+      this.doc.getElementById("spt-opencode-catalog").textContent = result.updatedAt || fallback.updatedAt || "—";
+      this.doc.getElementById("spt-opencode-status").dataset.kind = "normal";
+      const ready = Boolean(result.adapter?.preparedVersion && this.opencodeCatalog.configOptions.length);
+      this._localize(this.doc.getElementById("spt-opencode-status"), ready ? "ready" : "opencode-needs-setup",
+        ready ? "已准备" : "请在插件设置中选择本机程序并检测 OpenCode。");
+    },
+
+    runOpenCodeAction(action) {
+      return this._runACPAction(async (current, bridge) => {
+        this._localize(this.doc.getElementById("spt-opencode-status"), "working", "正在检测…");
+        if (action === "detect" || (action === "inspect" && !this.doc.getElementById(pathInputs.opencode).value.trim())) {
+          await this.refreshPathCandidates();
+          if (!current()) return;
+          const input = this.doc.getElementById(pathInputs.opencode);
+          const candidate = this.pathCandidates?.opencode?.[0]?.path;
+          if (!input.value.trim() && candidate) {
+            this._setBoundValue(pathInputs.opencode, candidate);
+            bridge.setOpenCodePaths({ opencodePath: candidate });
+            this._syncPathChoice("opencode");
+          }
+        }
+        if (action === "detect") {
+          this.renderOpenCodeStatus(bridge.getOpenCodeStatus());
+          return;
+        }
+        if (action === "browse") {
+          const path = await bridge.pickCodexPath("opencode", this.win);
+          if (!current()) return;
+          if (path) {
+            this._setBoundValue("spt-opencode-executable-path", path);
+            bridge.setOpenCodePaths({ opencodePath: path });
+          }
+          this.renderOpenCodeStatus(bridge.getOpenCodeStatus());
+        }
+        else {
+          bridge.setOpenCodePaths({ opencodePath: this.doc.getElementById("spt-opencode-executable-path").value });
+          const method = { inspect: "inspectOpenCodeRuntime" }[action];
+          const result = await bridge[method]();
+          if (current()) this.renderOpenCodeStatus(result);
+        }
+      }, (error) => {
+        this.renderOpenCodeStatus(this.bridge.getOpenCodeStatus());
+        const status = this.doc.getElementById("spt-opencode-status");
+        status.removeAttribute("data-l10n-id");
+        status.dataset.kind = "error";
+        status.textContent = this._formatCodexError(error, "OpenCode ACP error");
+      });
+    },
+
     destroy() {
       for (const cleanup of this.cleanups.splice(0)) cleanup();
       this.initialized = false;
@@ -608,6 +695,7 @@
       this.bridge = null;
       this.codexCatalog = { configOptions: [], configOptionsByModel: {}, updatedAt: null };
       this.piCatalog = null;
+      this.opencodeCatalog = null;
       this.sharedVersions = {};
       this.acpAction = null;
       this.pathCandidates = null;

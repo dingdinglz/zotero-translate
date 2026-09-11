@@ -166,7 +166,8 @@
 
 .spt-codex-runtime-status [data-codex-status="error"],
 #spt-acp-status,
-#spt-pi-status {
+#spt-pi-status,
+#spt-opencode-status {
   max-height: 240px;
   overflow: auto;
   white-space: pre-wrap;

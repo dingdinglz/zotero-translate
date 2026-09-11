@@ -2,9 +2,9 @@
 
 [English](README.md) · 简体中文
 
-**在 Zotero 里，一边读论文，一边和 Codex 或 Pi 讨论。**
+**在 Zotero 里，一边读论文，一边和 Codex、Pi 或 OpenCode 讨论。**
 
-Smart Paper Translator 把你电脑上已经配置好的 Codex 和 Pi 接入 Zotero 的 PDF 右侧栏。读到不理解的段落，可以直接选中提问；遇到复杂的图表，可以框选后一起发过去。下次打开这篇论文，还能接着上次的对话聊。
+Smart Paper Translator 把你电脑上已经配置好的 Codex、Pi 和 OpenCode 接入 Zotero 的 PDF 右侧栏。读到不理解的段落，可以直接选中提问；遇到复杂的图表，可以框选后一起发过去。下次打开这篇论文，还能接着上次的对话聊。
 
 [下载安装包](https://github.com/dingdinglz/zotero-translate/releases) · [开始使用](#开始使用) · [反馈问题](https://github.com/dingdinglz/zotero-translate/issues)
 
@@ -30,9 +30,11 @@ Smart Paper Translator 把你电脑上已经配置好的 Codex 和 Pi 接入 Zot
 
 ### 每篇论文，接着上次聊
 
-每个 PDF 都有自己的对话。Codex 和 Pi 分别保存历史、草稿与模型设置，侧栏也会记住这篇论文上次用的是哪个 Agent。切换后看到的是所选 Agent 自己的历史。
+每个 PDF 都有自己的对话。Codex、Pi 和 OpenCode 分别保存历史、草稿与模型设置，侧栏也会记住这篇论文上次用的是哪个 Agent。切换后看到的是所选 Agent 自己的历史。
 
 模型和思考强度可以直接在侧栏调整。可选档位随模型变化，Pi 的部分模型支持 `max`。重启 Zotero 后仍能查看本地历史，再次发送时会恢复原来的 Agent 会话。
+
+OpenCode 还可以在「运行模式」中选择 **Build、Plan 和本机自定义模式**。每篇论文分别记住选择，新会话默认跟随本机 OpenCode 配置；收到 OpenCode 确认后才保存变更。
 
 ### 回答就在原文旁边
 
@@ -47,7 +49,7 @@ Smart Paper Translator 把你电脑上已经配置好的 Codex 和 Pi 接入 Zot
 
 ## 开始使用
 
-当前版本为 **0.1.37**，目标环境是 **macOS 上的 Zotero 9.0.6**，插件清单兼容范围为 Zotero 9.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
+当前版本为 **0.1.39**，目标环境是 **macOS 上的 Zotero 9.0.6**，插件清单兼容范围为 Zotero 9.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
 
 ### 安装插件
 
@@ -59,7 +61,9 @@ Smart Paper Translator 把你电脑上已经配置好的 Codex 和 Pi 接入 Zot
 
 ### 连接 Agent
 
-先在本机安装并配置好 Codex 或 Pi，确保登录和模型可用，同时准备 Node.js 和 npm。这些程序不包含在插件安装包中。Pi 需要 **0.85.1 或更新版本**，以及 **Node.js 22.19.0 或更新版本**。
+先在本机安装并配置好所选 Agent，确保登录和模型可用。Codex 和 Pi 还需要 Node.js 和 npm；OpenCode 使用原生 ACP，无需配置 Node / npx。这些程序不包含在插件安装包中。Pi 需要 **0.85.1 或更新版本**，以及 **Node.js 22.19.0 或更新版本**。
+
+连接 Codex 或 Pi：
 
 1. 打开 Zotero 设置，进入 **Smart Paper Translator → Agents（ACP）**。
 2. 在公共运行环境里选择 Node 和 `npx-cli.js` 的路径，点击「检测 Node / npx」。可以从检测到的本机路径中选择，也可以手动输入或浏览文件。
@@ -75,7 +79,13 @@ Smart Paper Translator 把你电脑上已经配置好的 Codex 和 Pi 接入 Zot
 <!-- screenshot: agent-settings -->
 ![公共 Node 和 npx 路径，以及 Pi 的模型、思考强度和适配器准备状态](docs/screenshots/agent-settings.png)
 
-Codex 和 Pi 共用 Node / npx 运行环境，各自配置模型与思考强度。
+Codex 和 Pi 共用 Node / npx 运行环境，各自配置模型与思考强度。上图展示已有的 Pi 面板。
+
+连接 **OpenCode 1.18.30 或更新的稳定版 1.x**：打开 **OpenCode** 标签页，选择本机可执行文件（会枚举 `~/.opencode/bin`），点击「检测 OpenCode」，然后选择默认模型与思考强度。路径为空时会自动采用找到的首个本机候选，已有或手动输入的路径保持不变。检测通过独立空会话和临时数据库读取选项，不发送提示词、不下载依赖，结束后清理临时数据。若缺少依赖或登录，请先在终端运行 `opencode` 完成准备，再回来检测。
+
+0.1.39 修复了 OpenCode 输出终端标题控制码导致的检测报错，以及长模型目录读取不完整的问题。
+
+OpenCode 聊天进程禁用自动升级、后台模型目录刷新和 npm 下载。它附带的 HTTP 服务只监听 `127.0.0.1` 随机端口，使用随机进程密码，并关闭 mDNS。程序路径或版本变化后需要重新检测，已有论文历史保留。
 
 找不到路径或模型时，可以在设置里刷新路径列表或重新检测 Agent。使用 NVM 时，要检查 Zotero 中实际选择的 Node 路径，它可能和终端里用的不是同一个。更详细的配置与排查说明见[配置与实现参考](docs/technical-reference.zh-CN.md)。
 
@@ -94,11 +104,13 @@ Codex 和 Pi 共用 Node / npx 运行环境，各自配置模型与思考强度�
 
 打开 Agents 侧栏或切换 Agent 只读取本地历史，不请求模型生成。发送第一条消息时，插件会把 PDF 副本放到这篇论文的专用工作区，交给所选 Agent。后续发送问题和本轮附加的选区、截图；Agent 仍可读取工作区中的 PDF。
 
-Agent 进程在本机运行，但它配置的模型服务可能收到论文内容和提示词。Codex 沿用本机账号与配置，包括 Skills 和 MCP；Pi 沿用自己的登录、模型及扩展。插件不会自动修改 Zotero 条目或导入生成文件。
+Agent 进程在本机运行，但它配置的模型服务可能收到论文内容和提示词。Codex 沿用本机账号与配置，包括 Skills 和 MCP；Pi 和 OpenCode 沿用自己的登录、模型、权限及扩展。插件不会自动修改 Zotero 条目或导入生成文件。
 
-Codex 新会话默认使用审批模式。可以为当前对话开启 **Full Access**，允许联网和操作工作区外的文件。Pi 按本机工具与扩展配置执行；专用工作区不构成 Full Access 或 Pi 的安全沙箱。
+Codex 新会话默认使用审批模式。可以为当前对话开启 **Full Access**，允许联网和操作工作区外的文件。Pi 和 OpenCode 按本机工具与扩展配置执行，OpenCode 的工具授权请求显示在当前对话中；专用工作区不构成 Full Access、Pi 或 OpenCode 的安全沙箱。
 
-对话历史、PDF 副本和截图保存在 Zotero 数据目录下的 `smart-paper-translator/` 中，不加密，也不参与 Zotero 同步。文字和选区草稿只在本次 Zotero 运行期间保留，截图草稿可在重启后恢复。翻译 API Key 保存在 Mozilla Login Manager 中。
+OpenCode 图片提问要求检测目录明确声明当前模型支持图片；模型不支持原生 PDF 输入时，首轮会提供工作区内的文本快照引用。
+
+对话历史、PDF 副本和截图分别保存在 Zotero 数据目录下 `smart-paper-translator/` 的 `codex-acp/`、`pi-acp/` 和 `opencode-acp/` 中，不加密，也不参与 Zotero 同步。文字和选区草稿只在本次 Zotero 运行期间保留，截图草稿可在重启后恢复。翻译 API Key 保存在 Mozilla Login Manager 中。
 
 ## 开发
 
@@ -108,7 +120,7 @@ Codex 新会话默认使用审批模式。可以为当前对话开启 **Full Acc
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.37.xpi
+unzip -t dist/smart-paper-translator-0.1.39.xpi
 ```
 
 构建产物输出到 `dist/`。涉及运行时代码的修改，还需要在目标 Zotero 版本中对 XPI 做非安装式解析。适配器行为、存储结构、渲染限制和历史验证结果见[配置与实现参考](docs/technical-reference.zh-CN.md)。

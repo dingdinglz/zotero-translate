@@ -26,6 +26,17 @@
       modelPref: Constants.PREFS.piDefaultModel,
       reasoningPref: Constants.PREFS.piDefaultReasoningEffort,
       modes: Object.freeze([]), defaultMode: null
+    }),
+    opencode: Object.freeze({
+      id: "opencode", label: "OpenCode", command: "opencode acp", runtime: "native",
+      packageSpec: null, version: "opencode-native-acp-2", minimumVersion: "1.18.30",
+      directory: "opencode-acp", reasoningID: "effort", sessionMode: true,
+      executablePref: Constants.PREFS.opencodeExecutablePath,
+      preparedPref: Constants.PREFS.opencodePreparedVersion,
+      fingerprintPref: Constants.PREFS.opencodePreparedFingerprint,
+      modelPref: Constants.PREFS.opencodeDefaultModel,
+      reasoningPref: Constants.PREFS.opencodeDefaultReasoningEffort,
+      modes: Object.freeze([]), defaultMode: null
     })
   });
 
@@ -37,7 +48,7 @@
   function normalizeConfigOptions(options, agentId) {
     const provider = getProvider(agentId);
     return (Array.isArray(options) ? options : []).filter((option) =>
-      option && ["model", "reasoning_effort", provider.reasoningID, ...(provider.modes.length ? ["mode"] : [])].includes(option.id)
+      option && ["model", "reasoning_effort", provider.reasoningID, ...(provider.modes.length || provider.sessionMode ? ["mode"] : [])].includes(option.id)
     ).map((option) => ({ ...option, id: option.id === provider.reasoningID ? "reasoning_effort" : option.id }));
   }
 

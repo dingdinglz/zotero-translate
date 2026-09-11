@@ -358,7 +358,7 @@ test("file selection uses Zotero FilePicker and only returns the result to the l
       get file() { assert.equal(cancelled, false); return "/chosen/executable"; }
     } };
   } };
-  for (const kind of ["node", "npx", "codex", "pi"]) {
+  for (const kind of ["node", "npx", "codex", "pi", "opencode"]) {
     assert.equal(await plugin._pickCodexPath(kind, parent), "/chosen/executable");
     assert.equal(opened.at(-1).win, parent);
   }
@@ -381,4 +381,28 @@ test("candidate discovery bridge reads both agent configurations without writing
   assert.equal(inputs.nodePath, "/configured/node");
   assert.equal(inputs.codexPath, "/configured/codex");
   assert.equal(preferenceCalls.some(call => call.operation === "set"), false);
+});
+
+test("OpenCode detection is independent of Node and invalidates only its preparation on failure", async () => {
+  const { plugin, values } = loadMainPlugin();
+  const calls = [];
+  plugin.opencodeProbeService = { acp: { getStatus: () => ({ preparedVersion: "1.18.30" }) }, getConfigurationCatalog: () => ({ configOptions: [] }) };
+  plugin.agentsChatService = { async refreshAgentCatalog(agent, options) {
+    calls.push([agent, options.prepare]);
+    return { configOptions: [{ id: "model" }] };
+  } };
+  plugin._installPreferenceBridge();
+  plugin.bridge.setOpenCodePaths({ opencodePath: "/local/opencode" });
+  values.delete(Constants.PREFS.codexNodePath);
+  values.delete(Constants.PREFS.codexNpxCliPath);
+  const result = await plugin.bridge.inspectOpenCodeRuntime();
+  assert.equal(result.paths.opencodePath, "/local/opencode");
+  assert.deepEqual(calls, [["opencode", true]]);
+  assert.equal(values.has(Constants.PREFS.codexNodePath), false);
+  values.set(Constants.PREFS.opencodePreparedVersion, "1.18.30");
+  values.set(Constants.PREFS.piPreparedVersion, "0.0.33");
+  plugin.agentsChatService.refreshAgentCatalog = async () => { throw new Error("offline dependency missing"); };
+  await assert.rejects(plugin.bridge.inspectOpenCodeRuntime(), /offline dependency missing/u);
+  assert.equal(values.get(Constants.PREFS.opencodePreparedVersion), "");
+  assert.equal(values.get(Constants.PREFS.piPreparedVersion), "0.0.33");
 });

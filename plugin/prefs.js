@@ -27,3 +27,8 @@ pref("extensions.smart-paper-translator.piPreparedVersion", "");
 pref("extensions.smart-paper-translator.piPreparedFingerprint", "");
 pref("extensions.smart-paper-translator.piDefaultModel", "");
 pref("extensions.smart-paper-translator.piDefaultReasoningEffort", "");
+pref("extensions.smart-paper-translator.opencodeExecutablePath", "");
+pref("extensions.smart-paper-translator.opencodePreparedVersion", "");
+pref("extensions.smart-paper-translator.opencodePreparedFingerprint", "");
+pref("extensions.smart-paper-translator.opencodeDefaultModel", "");
+pref("extensions.smart-paper-translator.opencodeDefaultReasoningEffort", "");

@@ -156,7 +156,7 @@ function makeHarness({
   let cacheID = 0;
   let messageID = 0;
   const cache = new CodexChatCache({
-    rootPath: agentId === "codex" ? "/chat" : "/pi-chat",
+    rootPath: agentId === "codex" ? "/chat" : `/${agentId}-chat`,
     agentId,
     io,
     joinPath: (...parts) => parts.join("/"),
@@ -850,7 +850,7 @@ test("developer mode alone captures bounded redacted tool and thought diagnostic
   assert.equal(state.diagnosticEventCount, 3);
 
   const report = await service.getDiagnosticReport(10);
-  assert.equal(report.pluginVersion, "0.1.34");
+  assert.equal(report.pluginVersion, Constants.VERSION);
   assert.equal(report.eventCount, 3);
   assert.deepEqual(report.events.map((entry) => entry.sessionUpdate), [
     "agent_thought_chunk",
@@ -1516,4 +1516,150 @@ test("Pi missing login fails closed and extension choices require their exact op
   await h.service.respondPermission(10, id, "no");
   assert.deepEqual(await reply, { outcome: { outcome: "selected", optionId: "no" } });
   await h.service.shutdown();
+});
+
+function openCodeHarness() {
+  const acp = new FakeACP();
+  let remote = { model: "local/vision", effort: "high", mode: "build" };
+  const options = () => [
+    { id: "model", currentValue: remote.model, options: ["local/vision", "local/text"] },
+    ...(remote.model === "local/vision" ? [{ id: "effort", currentValue: remote.effort, options: ["high", "max"] }] : []),
+    { id: "mode", currentValue: remote.mode, options: ["build", "plan", "paper-review"] }
+  ];
+  Object.defineProperty(acp, "newSessionResult", { get: () => ({ sessionId: acp.sessionID, configOptions: options() }) });
+  Object.defineProperty(acp, "loadResult", { get: () => ({ configOptions: options() }) });
+  acp.start = async (value) => { acp.started = true; acp.startOptions = value; };
+  acp.setConfigHook = async ({ configId, value }) => {
+    remote[configId] = value;
+    if (configId === "model") remote.effort = "high";
+    return { configOptions: options() };
+  };
+  acp.nativeRuntime = {
+    getWorkingDirectory: () => "/tmp/opencode-probe",
+    readModelCatalog: async () => ({ "local/vision": { image: true, pdf: true }, "local/text": { image: false, pdf: false } })
+  };
+  const harness = makeHarness({ acp, agentId: "opencode", preferenceOverrides: {
+    [Constants.PREFS.opencodeExecutablePath]: "/local/opencode",
+    [Constants.PREFS.opencodePreparedVersion]: "1.18.30"
+  } });
+  return { ...harness, remote };
+}
+
+test("OpenCode catalog uses an isolated empty session, preserves mode and optional effort, and never prompts", async () => {
+  const { service, acp, prefs } = openCodeHarness();
+  const catalog = await service.refreshConfigurationCatalog();
+  assert.deepEqual(catalog.configOptions.map(entry => entry.id), ["model", "reasoning_effort", "mode"]);
+  assert.deepEqual(catalog.configOptionsByModel["local/text"].map(entry => entry.id), ["model", "mode"]);
+  assert.deepEqual(catalog.modelCapabilities["local/vision"], { image: true, pdf: true });
+  assert.equal(acp.requests.find(entry => entry.method === "session/new").params.cwd, "/tmp/opencode-probe");
+  assert.equal(acp.requests.some(entry => entry.method === "session/prompt"), false);
+  assert.equal(acp.requests.some(entry => entry.method === "session/delete"), false);
+  assert.equal(acp.stopCalled, true);
+  prefs.set(Constants.PREFS.codexNodePath, "/new/node");
+  assert.ok(service.getConfigurationCatalog().configOptions.length);
+  prefs.set(Constants.PREFS.opencodePreparedVersion, "1.18.31");
+  assert.equal(service.getConfigurationCatalog().configOptions.length, 0);
+});
+
+test("OpenCode per-paper mode and native effort are confirmed, persisted and restored in order", async () => {
+  const { service, acp, remote } = openCodeHarness();
+  await service.refreshConfigurationCatalog();
+  await service.setSessionConfig(10, "model", "local/vision");
+  await service.setSessionConfig(10, "reasoning_effort", "max");
+  await service.setSessionConfig(10, "mode", "paper-review");
+  const sent = await service.send(10, "review");
+  assert.equal(sent.record.session.config.mode, null);
+  assert.equal(sent.record.session.config.agentMode, "paper-review");
+  assert.equal(sent.record.session.config.reasoningEffort, "max");
+  assert.equal(acp.startOptions.cwd, sent.record.session.workspacePath);
+  assert.equal(acp.requests.some(entry => entry.method === "session/set_mode"), false);
+  remote.model = "local/text"; remote.mode = "build"; remote.effort = "high";
+  await service.releaseIdle();
+  const offset = acp.requests.length;
+  await service.send(10, "continue");
+  const updates = acp.requests.slice(offset).filter(entry => entry.method === "session/set_config_option");
+  assert.deepEqual(updates.map(entry => entry.params.configId), ["model", "effort", "mode"]);
+  assert.equal(remote.mode, "paper-review");
+  const before = (await service.load(10)).record.session.config;
+  acp.setConfigHook = async () => ({ configOptions: [] });
+  await assert.rejects(service.setSessionConfig(10, "mode", "plan"), { code: "CONFIG_APPLY_FAILED" });
+  assert.deepEqual((await service.load(10)).record.session.config, before);
+});
+
+test("OpenCode text-only models retain screenshots before any prompt and receive workspace text references", async () => {
+  const { service, acp, fileSystem } = openCodeHarness();
+  await service.refreshConfigurationCatalog();
+  await service.setSessionConfig(10, "model", "local/text");
+  const [shot] = await service.saveScreenshotDrafts(10, [screenshotCapture()]);
+  await assert.rejects(service.send(10, "image", { screenshots: [shot] }), { code: "MODEL_IMAGE_UNSUPPORTED" });
+  assert.equal(acp.requests.some(entry => entry.method === "session/prompt"), false);
+  assert.equal((await service.load(10)).record.draft.screenshots.length, 1);
+  await service.send(10, "read text");
+  const prompt = acp.requests.find(entry => entry.method === "session/prompt").params.prompt;
+  assert.equal(prompt.some(block => block.type === "resource_link"), false);
+  assert.match(prompt[1].text, /source.txt/u);
+  assert.ok(fileSystem.textWrites.some(entry => entry.path.endsWith("/source.txt")));
+});
+
+test("OpenCode replay removes synthetic source and image resources while restoring saved screenshot cards", async () => {
+  const { service, acp } = openCodeHarness();
+  await service.refreshConfigurationCatalog();
+  await service.setSessionConfig(10, "model", "local/vision");
+  const [shot] = await service.saveScreenshotDrafts(10, [screenshotCapture()]);
+  await service.send(10, "look at this", { screenshots: [shot] });
+  const original = acp.requests.find(entry => entry.method === "session/prompt").params.prompt;
+  assert.ok(original.some(block => block.type === "image"));
+  acp.loadHook = async ({ sessionId }) => {
+    for (const content of [...original, { type: "text", text: "internal source text", annotations: { audience: ["assistant"] } }]) {
+      acp.emit("session/update", { sessionId, update: { sessionUpdate: "user_message_chunk", content } });
+    }
+    acp.emit("session/update", { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } } });
+  };
+  const replay = await service.reload(10);
+  const user = replay.record.transcript.find(entry => entry.role === "user");
+  assert.equal(user.text, "look at this");
+  assert.equal(user.screenshots.length, 1);
+  assert.equal(replay.record.transcript.some(entry => entry.text?.includes("internal source text")), false);
+  const rebuilt = await service.rebuild(10);
+  assert.equal(acp.started, false);
+  assert.equal(rebuilt.record.session.config.agentMode, null);
+});
+
+test("OpenCode can replace an unavailable saved mode after reconnect and clears effort for a text model", async () => {
+  const { service, acp } = openCodeHarness();
+  await service.refreshConfigurationCatalog();
+  await service.send(10, "first");
+  const state = [...service.states.values()][0];
+  state.record.session.config.agentMode = "removed-custom-mode";
+  await service.releaseIdle();
+  await assert.rejects(service.send(10, "blocked"), { code: "CONFIG_UNAVAILABLE" });
+  const changed = await service.setSessionConfig(10, "mode", "plan");
+  assert.equal(changed.record.session.config.agentMode, "plan");
+  await service.releaseIdle();
+  state.record.session.config.reasoningEffort = "removed-effort";
+  const modelChanged = await service.setSessionConfig(10, "model", "local/text");
+  assert.equal(modelChanged.record.session.config.reasoningEffort, null);
+  assert.equal(acp.requests.filter(entry => entry.method === "session/prompt").length, 1);
+  await service.shutdown();
+});
+
+test("OpenCode permission choices, stop, and missing sessions preserve agent boundaries", async () => {
+  const { service, acp } = openCodeHarness();
+  await service.send(10, "first");
+  const reply = acp.handlers.get("session/request_permission")({ sessionId: acp.sessionID,
+    toolCall: { toolCallId: "native-permission", title: "Write a note" },
+    options: [{ optionId: "once", name: "Allow once", kind: "allow_once" }, { optionId: "reject", name: "Reject", kind: "reject_once" }]
+  });
+  const pending = await service.load(10);
+  await assert.rejects(service.setSessionConfig(10, "mode", "plan"), { code: "TURN_ACTIVE" });
+  await service.respondPermission(10, pending.pendingInteractions[0].id, "reject");
+  assert.deepEqual(await reply, { outcome: { outcome: "selected", optionId: "reject" } });
+  await service.cancel(10);
+  acp.loadHook = () => { throw new Error("Session not found"); };
+  await service.releaseIdle();
+  const missing = await service.reload(10);
+  assert.equal(missing.historyReadOnly, true);
+  assert.ok(missing.record.transcript.some(entry => entry.text === "first"));
+  await service.shutdown();
+  assert.equal(acp.shutdownCalled, true);
 });

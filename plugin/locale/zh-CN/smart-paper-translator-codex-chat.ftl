@@ -82,3 +82,13 @@ smart-paper-translator-agents-path-option =
         [node] 所选 Node · { $path }
        *[standard] 常见位置 · { $path }
     }
+
+smart-paper-translator-agents-session-mode = 运行模式
+smart-paper-translator-agents-opencode-title = 本地 OpenCode（原生 ACP）
+smart-paper-translator-agents-opencode-setup = 沿用本机 OpenCode 的登录、模型、权限及扩展配置，不需要 Node / npx。需要 OpenCode 1.18.30 或更新的 1.x。检测不发送提示词，也不下载依赖。
+smart-paper-translator-agents-opencode-thinking = 模型、思考档位和运行模式由 OpenCode 提供。程序升级或本机配置改变后，请重新检测；依赖缺失时请先在终端准备。
+smart-paper-translator-agents-opencode-detect = 刷新路径列表
+smart-paper-translator-agents-opencode-inspect = 检测 OpenCode
+smart-paper-translator-agents-opencode-offline = 原生启动使用本机 OpenCode，禁用自动升级与依赖下载。检测使用独立临时数据库和空会话，结束后清理；不会创建模型回复或修改原有 OpenCode 会话。
+smart-paper-translator-agents-opencode-access = OpenCode 按本机配置执行工具；需要授权时会在当前对话中询问。运行模式仅作用于当前论文会话。
+smart-paper-translator-agents-opencode-needs-setup = 请在插件设置中选择本机程序并检测 OpenCode。

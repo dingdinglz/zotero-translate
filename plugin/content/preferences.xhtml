@@ -76,7 +76,7 @@
     </description>
   </groupbox>
 
-  <groupbox id="spt-acp-settings" data-search-strings-raw="Agents,Codex,Pi,ACP,Node,npx,本地模型,侧栏,对话">
+  <groupbox id="spt-acp-settings" data-search-strings-raw="Agents,Codex,Pi,OpenCode,ACP,Node,npx,本地模型,侧栏,对话">
     <label><html:h2 data-l10n-id="smart-paper-translator-agents-settings-title">Agents（ACP）</html:h2></label>
     <description data-l10n-id="smart-paper-translator-agents-overview">
       Reader 右侧“Agents”使用本机 Agent 登录和配置，与上方翻译 API 完全独立。打开 PDF 或展开侧栏不会启动 ACP、下载依赖或产生模型用量。
@@ -122,6 +122,7 @@
     <html:div class="spt-agent-tabs" role="tablist" data-l10n-id="smart-paper-translator-agents-settings-tabs" aria-label="Agent 配置">
       <html:button id="spt-agent-tab-codex" type="button" role="tab" aria-selected="true" aria-controls="spt-agent-panel-codex" tabindex="0">Codex</html:button>
       <html:button id="spt-agent-tab-pi" type="button" role="tab" aria-selected="false" aria-controls="spt-agent-panel-pi" tabindex="-1">Pi</html:button>
+      <html:button id="spt-agent-tab-opencode" type="button" role="tab" aria-selected="false" aria-controls="spt-agent-panel-opencode" tabindex="-1">OpenCode</html:button>
     </html:div>
     <html:div id="spt-agent-panel-codex" class="spt-agent-panel" role="tabpanel" aria-labelledby="spt-agent-tab-codex">
       <html:h3 data-l10n-id="smart-paper-translator-agents-codex-title">本地 Codex（ACP）</html:h3>
@@ -207,6 +208,41 @@
       </html:div>
       <html:p data-l10n-id="smart-paper-translator-agents-pi-offline">准备按钮是唯一允许下载 pi-acp 的入口。检测只创建空会话，不发送提示词；聊天启动使用已准备的软件和 Pi 离线启动设置。需要 Pi 0.85.1 或更新版本。</html:p>
       <html:p data-l10n-id="smart-paper-translator-agents-pi-access">Pi 按本机配置直接执行工具；这里不提供 Codex 的审批模式。扩展发出的交互请求仍需回应。</html:p>
+    </html:div>
+    <html:div id="spt-agent-panel-opencode" class="spt-agent-panel" role="tabpanel" aria-labelledby="spt-agent-tab-opencode" hidden="hidden">
+      <html:h3 data-l10n-id="smart-paper-translator-agents-opencode-title">本地 OpenCode（原生 ACP）</html:h3>
+      <html:p data-l10n-id="smart-paper-translator-agents-opencode-setup">沿用本机 OpenCode 的登录、模型、权限及扩展配置，不需要 Node / npx。需要 OpenCode 1.18.30 或更新的 1.x。检测只读取配置，不发送模型提示词，也不下载依赖。</html:p>
+      <html:div class="spt-prefs-grid spt-codex-prefs-grid">
+        <html:label for="spt-opencode-executable-path">OpenCode</html:label>
+        <html:div class="spt-path-field">
+          <html:select id="spt-path-options-opencode" data-path-candidates="opencode" data-l10n-id="smart-paper-translator-agents-path-candidates" data-l10n-args='{"name":"OpenCode"}' aria-label="OpenCode 路径候选">
+            <html:option value="" data-l10n-id="smart-paper-translator-agents-path-manual">手动输入或浏览…</html:option>
+          </html:select>
+          <html:div class="spt-prefs-path-row">
+            <html:input id="spt-opencode-executable-path" type="text" preference="extensions.smart-paper-translator.opencodeExecutablePath" placeholder="/absolute/path/to/opencode" />
+            <html:button id="spt-opencode-browse" type="button" data-l10n-id="smart-paper-translator-agents-browse">选择…</html:button>
+          </html:div>
+        </html:div>
+        <html:label for="spt-opencode-default-model" data-l10n-id="smart-paper-translator-agents-default-model">新会话默认模型</html:label>
+        <html:select id="spt-opencode-default-model" preference="extensions.smart-paper-translator.opencodeDefaultModel"><html:option value="">OpenCode</html:option></html:select>
+        <html:label for="spt-opencode-default-reasoning" data-l10n-id="smart-paper-translator-agents-default-thinking">新会话默认思考强度</html:label>
+        <html:select id="spt-opencode-default-reasoning" preference="extensions.smart-paper-translator.opencodeDefaultReasoningEffort"><html:option value="">OpenCode</html:option></html:select>
+      </html:div>
+      <html:p data-l10n-id="smart-paper-translator-agents-opencode-thinking">模型、思考档位和运行模式由 OpenCode 提供。程序升级或本机配置改变后，请重新检测；依赖缺失时请先在终端准备。</html:p>
+      <html:div class="spt-prefs-inline spt-codex-actions">
+        <html:button id="spt-opencode-detect" type="button" data-l10n-id="smart-paper-translator-agents-opencode-detect">刷新路径列表</html:button>
+        <html:button id="spt-opencode-inspect" type="button" data-l10n-id="smart-paper-translator-agents-opencode-inspect">检测 OpenCode</html:button>
+      </html:div>
+      <html:div class="spt-codex-runtime-status" role="status">
+        <html:dl>
+          <html:dt data-l10n-id="smart-paper-translator-agents-runtime">本机运行时</html:dt><html:dd id="spt-opencode-runtime">—</html:dd>
+          <html:dt>ACP</html:dt><html:dd id="spt-opencode-adapter">—</html:dd>
+          <html:dt data-l10n-id="smart-paper-translator-agents-catalog">模型选项目录</html:dt><html:dd id="spt-opencode-catalog">—</html:dd>
+          <html:dt data-l10n-id="smart-paper-translator-agents-status">状态</html:dt><html:dd id="spt-opencode-status">—</html:dd>
+        </html:dl>
+      </html:div>
+      <html:p data-l10n-id="smart-paper-translator-agents-opencode-offline">原生启动使用本机 OpenCode，禁用自动升级与依赖下载。检测使用独立临时数据库和空会话，结束后清理；不会创建模型回复或修改原有 OpenCode 会话。</html:p>
+      <html:p data-l10n-id="smart-paper-translator-agents-opencode-access">OpenCode 按本机配置执行工具；需要授权时会在当前对话中询问。运行模式仅作用于当前论文会话。</html:p>
     </html:div>
   </groupbox>
 

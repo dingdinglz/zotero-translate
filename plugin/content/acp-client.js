@@ -8,6 +8,7 @@
 
   const Agents = modules.AgentProviders || (typeof require === "function" ? require("./agent-providers.js") : null);
   const PiCompat = modules.PiACPCompat || (typeof require === "function" ? require("./pi-acp-compat.js") : null);
+  const OpenCode = modules.OpenCodeACP || (typeof require === "function" ? require("./opencode-acp.js") : null);
 
   class ACPError extends Error {
     constructor(code, message, details) {
@@ -26,7 +27,7 @@
     return String(value || "")
       .replace(/(https?:\/\/)[^/\s:@]+:[^@\s/]+@/giu, "$1[REDACTED]@")
       .replace(/Bearer\s+[^\s]+/giu, "Bearer [REDACTED]")
-      .replace(/(authorization|api[-_ ]?key|token|secret)(\s*[:=]\s*)([^\s]+)/giu, "$1$2[REDACTED]")
+      .replace(/(authorization|api[-_ ]?key|token|secret|password)(["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)/giu, "$1$2[REDACTED]")
       .replace(/\b(?:sk|sess)-[A-Za-z0-9_-]{12,}\b/gu, "[REDACTED]")
       .slice(-maxLength);
   }
@@ -49,7 +50,7 @@
     for (const [key, value] of Object.entries(details)) {
       if (value === undefined || value === null || value === "") continue;
       const label = labels[key] || key;
-      if (/(?:token|secret|credential|api[-_ ]?key|authorization)/iu.test(key)) {
+      if (/(?:token|secret|credential|password|api[-_ ]?key|authorization)/iu.test(key)) {
         lines.push(`${label}：[REDACTED]`);
         continue;
       }
@@ -57,7 +58,7 @@
       if (typeof value === "object") {
         try {
           rendered = JSON.stringify(value, (nestedKey, nestedValue) =>
-            /(?:token|secret|credential|api[-_ ]?key|authorization)/iu.test(nestedKey)
+            /(?:token|secret|credential|password|api[-_ ]?key|authorization)/iu.test(nestedKey)
               ? "[REDACTED]"
               : nestedValue
           , 2);
@@ -171,6 +172,7 @@
     constructor({
       processFactory,
       agentId = "codex",
+      nativeRuntime = null,
       getPreparedVersion,
       setPreparedVersion,
       requestTimeoutMs,
@@ -180,6 +182,7 @@
     } = {}) {
       this.provider = Agents.getProvider(agentId);
       this.processFactory = processFactory;
+      this.nativeRuntime = nativeRuntime;
       this.getPreparedVersion = getPreparedVersion || (() => "");
       this.setPreparedVersion = setPreparedVersion || (() => {});
       this.requestTimeoutMs = requestTimeoutMs || Constants.ACP_REQUEST_TIMEOUT_MS;
@@ -228,6 +231,11 @@
     async prepare() {
       if (this.closed) throw new ACPError("ACP_CLOSED", "ACP 客户端已关闭");
       await this.stop();
+      if (this.provider.runtime === "native") {
+        await this._start({ allowUnprepared: true });
+        this.setPreparedVersion(this.nativeVersion);
+        return this.getStatus();
+      }
       if (this.provider.id === "pi") {
         // pi-acp has no --version CLI. Preparation only initializes ACP; it never prompts Pi.
         try {
@@ -350,11 +358,14 @@
       return result;
     }
 
-    async start() {
+    async start({ cwd } = {}) {
       if (this.closed) throw new ACPError("ACP_CLOSED", "ACP 客户端已关闭");
-      if (this.initialized && this.process) return this.initializeResult;
+      if (this.initialized && this.process) {
+        if (this.provider.runtime === "native" && this.getPreparedVersion() !== this.nativeVersion) await this.stop();
+        else return this.initializeResult;
+      }
       if (this.starting) return this.starting;
-      this.starting = this._start({ allowUnprepared: false });
+      this.starting = this._start({ allowUnprepared: false, cwd });
       try {
         return await this.starting;
       }
@@ -363,12 +374,20 @@
       }
     }
 
-    async _start({ allowUnprepared, allowDownload = false }) {
+    async _start({ allowUnprepared, allowDownload = false, cwd }) {
       if (this.process) await this.stop();
-      if (!allowUnprepared && this.getPreparedVersion() !== this.provider.version) {
+      if (this.cleanupTasks.size) await Promise.allSettled(this.cleanupTasks);
+      if (this.provider.runtime === "native") {
+        const generation = this.generation;
+        try { this.nativeVersion = await this.nativeRuntime.readVersion(); }
+        catch (error) { this.setPreparedVersion(""); throw error; }
+        if (this.closed || generation !== this.generation) throw new ACPError("ACP_STOPPED", "OpenCode startup was cancelled");
+      }
+      if (!allowUnprepared && this.getPreparedVersion() !== (this.nativeVersion || this.provider.version)) {
+        if (this.provider.runtime === "native") this.setPreparedVersion("");
         throw new ACPError(
           "ACP_NOT_PREPARED",
-          `请先在设置中准备并检测 ${this.provider.command} ${this.provider.version}`
+          this.provider.runtime === "native" ? "OpenCode 路径或版本已变化，请先在设置中检测 OpenCode" : `请先在设置中准备并检测 ${this.provider.command} ${this.provider.version}`
         );
       }
       const generation = ++this.generation;
@@ -377,7 +396,7 @@
       this.initialized = false;
       this.initializeResult = null;
       this.authStatus = null;
-      const process = await this.processFactory({ purpose: "serve", allowDownload });
+      const process = await this.processFactory({ purpose: "serve", allowDownload, ...(cwd ? { cwd } : {}) });
       if (this.closed || generation !== this.generation) {
         await this._terminateProcess(process);
         throw new ACPError("ACP_STOPPED", "ACP startup was cancelled");
@@ -407,6 +426,12 @@
         if (this.provider.id === "pi" && this.initializeResult?.agentInfo?.version !== this.provider.version) {
           throw new ACPError("ACP_VERSION_MISMATCH", `pi-acp requires ${this.provider.version}`);
         }
+        if (this.provider.runtime === "native" && (
+          this.initializeResult?.agentInfo?.name?.toLowerCase() !== "opencode" ||
+          this.initializeResult?.agentInfo?.version !== this.nativeVersion ||
+          this.initializeResult?.agentCapabilities?.loadSession !== true ||
+          !this.initializeResult?.agentCapabilities?.sessionCapabilities?.close
+        )) throw new ACPError("ACP_CAPABILITY_MISMATCH", "OpenCode 未返回所需版本、会话恢复或关闭能力");
         this.initialized = true;
         this._emit({ type: "ready", status: this.getStatus() });
         return this.initializeResult;
@@ -418,14 +443,18 @@
     }
 
     async _readStdout(process, generation) {
+      const decoder = this.decoder;
+      const titleFilter = this.provider.runtime === "native" ? new OpenCode.TerminalTitleFilter() : null;
       try {
         while (this.process === process && generation === this.generation) {
           const chunk = await process.stdout.readString();
+          if (this.process !== process || generation !== this.generation) return;
           if (!chunk) break;
-          for (const message of this.decoder.push(chunk)) this._handleMessage(message);
+          for (const message of decoder.push(titleFilter ? titleFilter.push(chunk) : chunk)) this._handleMessage(message);
         }
-        if (this.process === process) {
-          for (const message of this.decoder.finish()) this._handleMessage(message);
+        if (this.process === process && generation === this.generation) {
+          titleFilter?.finish();
+          for (const message of decoder.finish()) this._handleMessage(message);
         }
       }
       catch (error) {
@@ -438,6 +467,7 @@
       try {
         while (this.process === process && generation === this.generation) {
           const chunk = await process.stderr.readString();
+          if (generation !== this.generation) return;
           if (!chunk) break;
           this.stderr = sanitizeDiagnostic(this.stderr + chunk);
           this._emit({ type: "stderr", diagnostic: this.stderr });
@@ -455,7 +485,8 @@
         const exitCode = Number(result?.exitCode ?? result ?? 0);
         this._failProcess(new ACPError(
           "ACP_PROCESS_EXIT",
-          `${this.provider.command} 进程已退出（${exitCode}）`,
+          `${this.provider.command} 进程已退出（${exitCode}）` + (this.provider.runtime === "native"
+            ? `。请先在终端运行 opencode 完成登录和依赖准备，再回设置检测 OpenCode。${this.stderr ? "\n" + this.stderr : ""}` : ""),
           this.stderr
         ));
       }
@@ -563,9 +594,9 @@
 
     async refreshAuthenticationStatus() {
       await this.start();
-      if (this.provider.id === "pi") {
+      if (this.provider.id !== "codex") {
         // Pi authenticates out of band; session/new reports auth_required when no model is usable.
-        return { status: "configured-in-pi" };
+        return { status: `configured-in-${this.provider.id}` };
       }
       this.authStatus = await this.request("authentication/status", {});
       return this.authStatus;
@@ -587,7 +618,7 @@
       return {
         healthy: Boolean(this.process && this.initialized),
         preparedVersion: this.getPreparedVersion() || "",
-        requiredVersion: this.provider.version,
+        requiredVersion: this.provider.minimumVersion || this.provider.version,
         agent: this.initializeResult?.agentInfo || null,
         capabilities: this.initializeResult?.agentCapabilities || null,
         authentication: this.authStatus || null,
@@ -610,7 +641,8 @@
       this._emit({ type: "exit", error, diagnostic: this.stderr });
       const cleanup = this._terminateProcess(current);
       this.cleanupTasks.add(cleanup);
-      void cleanup.finally(() => this.cleanupTasks.delete(cleanup));
+      void cleanup.catch(error => this.log("Unable to clean up ACP process", error))
+        .finally(() => this.cleanupTasks.delete(cleanup));
     }
 
     async stop() {
@@ -630,6 +662,7 @@
         await this._terminateProcess(process);
       }
       await Promise.allSettled(this.cleanupTasks);
+      await this.nativeRuntime?.cleanup();
     }
 
     async _terminateProcess(process) {
@@ -644,6 +677,7 @@
       }
       try { await process.kill?.(1000); }
       catch (_error) {}
+      if (this.provider.runtime === "native" && !this.process) await this.nativeRuntime?.cleanup();
     }
 
     async shutdown() {
@@ -697,17 +731,19 @@
 
   // Enumeration reads file metadata only: no shell startup files, executables, or downloads.
   async function listRuntimePathCandidates(configured = {}) {
-    const candidates = { node: [], npx: [], codex: [], pi: [] };
+    const candidates = { node: [], npx: [], codex: [], pi: [], opencode: [] };
     const seen = Object.fromEntries(Object.keys(candidates).map(kind => [kind, new Set()]));
     const add = async (kind, path, source, version = "") => {
       if (seen[kind].has(path)) return;
       seen[kind].add(path);
       if (await isRuntimeFile(path)) candidates[kind].push({ path, source, version });
     };
-    for (const [kind, key] of [["node", "nodePath"], ["npx", "npxCliPath"], ["codex", "codexPath"], ["pi", "piPath"]]) {
+    for (const [kind, key] of [["node", "nodePath"], ["npx", "npxCliPath"], ["codex", "codexPath"], ["pi", "piPath"], ["opencode", "opencodePath"]]) {
       await add(kind, configured[key], "configured");
     }
     const directories = [];
+    directories.push({ path: global.PathUtils.join(getHomePath(), ".opencode", "bin"), source: "opencode" });
+    directories.push({ path: global.PathUtils.join(getHomePath(), ".local", "bin"), source: "local" });
     if (isAbsolutePath(configured.nodePath)) directories.push({ path: global.PathUtils.parent(configured.nodePath), source: "node" });
     for (const root of await listNVMVersions(getHomePath())) {
       directories.push({ path: global.PathUtils.join(root, "bin"), source: "nvm", version: root.slice(root.lastIndexOf("/") + 1) });
@@ -719,7 +755,7 @@
     for (const { path: directory, source, version } of directories) {
       if (searched.has(directory)) continue;
       searched.add(directory);
-      await Promise.all(["node", "codex", "pi"].map(kind => add(kind, global.PathUtils.join(directory, kind), source, version)));
+      await Promise.all(["node", "codex", "pi", "opencode"].map(kind => add(kind, global.PathUtils.join(directory, kind), source, version)));
       const prefix = global.PathUtils.parent(directory);
       await add("npx", global.PathUtils.join(prefix, "lib", "node_modules", "npm", "bin", "npx-cli.js"), source, version);
       await add("npx", global.PathUtils.join(directory, "npx-cli.js"), source, version);
@@ -925,17 +961,19 @@
     };
   }
 
-  function createZoteroACPClient({ getPreference, setPreference, log, agentId = "codex" } = {}) {
+  function createZoteroACPClient({ getPreference, setPreference, log, agentId = "codex", probe = false } = {}) {
     const provider = Agents.getProvider(agentId);
     const readPaths = () => ({
       nodePath: String(getPreference(Constants.PREFS.codexNodePath) || "").trim(),
       npxCliPath: String(getPreference(Constants.PREFS.codexNpxCliPath) || "").trim(),
       [`${provider.id}Path`]: String(getPreference(provider.executablePref) || "").trim()
     });
-    const fingerprint = () => JSON.stringify(readPaths());
+    const fingerprint = () => JSON.stringify(provider.runtime === "native" ? { opencodePath: readPaths().opencodePath } : readPaths());
+    const nativeRuntime = provider.runtime === "native" ? OpenCode.createRuntime({ readPaths, probe }) : null;
     return new ACPClient({
       agentId,
-      processFactory: (options) => createSubprocess(readPaths(), options, agentId),
+      nativeRuntime,
+      processFactory: (options) => nativeRuntime ? nativeRuntime.spawn(options) : createSubprocess(readPaths(), options, agentId),
       getPreparedVersion: () => {
         const savedFingerprint = String(
           getPreference(provider.fingerprintPref) || ""

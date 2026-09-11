@@ -553,3 +553,78 @@ test("candidate discovery reads PATH, NVM and npm symlinks without executing pro
   }
   finally { Object.assign(global, saved); }
 });
+
+test("OpenCode native handshake requires version, load and close and never uses Codex auth or npm preparation", async () => {
+  let saved = "", version = "1.18.30", cleaned = 0;
+  const launches = [];
+  const process = new FakeProcess((message, process) => {
+    assert.notEqual(message.method, "authentication/status");
+    if (message.method === "initialize") process.respond(message.id, {
+      protocolVersion: 1, agentInfo: { name: "OpenCode", version },
+      agentCapabilities: { loadSession: true, sessionCapabilities: { close: {} } }
+    });
+  });
+  const client = new ACPClient({ agentId: "opencode",
+    nativeRuntime: { readVersion: async () => version, cleanup: async () => { cleaned++; } },
+    processFactory: async options => { launches.push(options); return process; },
+    getPreparedVersion: () => saved, setPreparedVersion: value => { saved = value; }
+  });
+  await client.prepare();
+  assert.equal(saved, "1.18.30");
+  assert.equal(launches[0].allowDownload, false);
+  assert.equal((await client.refreshAuthenticationStatus()).status, "configured-in-opencode");
+  saved = ""; // Changing the executable path invalidates even an existing connection.
+  await assert.rejects(client.start({ cwd: "/paper" }), { code: "ACP_NOT_PREPARED" });
+  assert.equal(process.killed, true);
+  saved = "1.18.30";
+  version = "1.18.31";
+  await assert.rejects(client.start({ cwd: "/paper" }), { code: "ACP_NOT_PREPARED" });
+  assert.equal(saved, "");
+  assert.equal(launches.length, 1);
+  assert.ok(cleaned);
+  await client.shutdown();
+});
+
+test("OpenCode accepts title-prefixed long configuration frames while Codex remains strict", async () => {
+  const result = { configOptions: [{ id: "model", options: Array.from({ length: 900 }, (_, n) => ({ value: `provider/model-${n}`, name: "中文模型 " + "long name ".repeat(10) })) }] };
+  const process = new FakeProcess((message, process) => {
+    if (message.method === "initialize") process.respond(message.id, {
+      protocolVersion: 1, agentInfo: { name: "OpenCode", version: "1.18.30" },
+      agentCapabilities: { loadSession: true, sessionCapabilities: { close: {} } }
+    });
+    else {
+      const wire = "\x1b]0;paper: ready\x07" + JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\n";
+      for (let offset = 0; offset < wire.length; offset += 32768) process.stdout.push(wire.slice(offset, offset + 32768));
+    }
+  });
+  const client = new ACPClient({ agentId: "opencode", processFactory: async () => process,
+    nativeRuntime: { readVersion: async () => "1.18.30", cleanup: async () => {} }, getPreparedVersion: () => "1.18.30"
+  });
+  await client.start();
+  assert.deepEqual(await client.request("session/new", {}), result);
+  await client.shutdown();
+  const codex = serveProcess();
+  const strict = new ACPClient({ processFactory: async () => codex, getPreparedVersion: () => "1.6.2" });
+  await strict.start();
+  const pending = strict.request("session/new", {});
+  codex.stdout.push('\x1b]0;title\x07{"jsonrpc":"2.0","id":3,"result":{}}\n');
+  await assert.rejects(pending, { code: "ACP_INVALID_JSON" });
+  await strict.shutdown();
+});
+
+test("late chunks from a replaced process cannot reach a new connection or its diagnostic buffer", async () => {
+  const client = new ACPClient();
+  const previous = new FakeProcess(), next = new FakeProcess();
+  client.process = previous; client.generation = 1; client.decoder = new JSONLineDecoder();
+  const stdout = client._readStdout(previous, 1), stderr = client._readStderr(previous, 1);
+  client.process = next; client.generation = 2; client.decoder = new JSONLineDecoder();
+  const events = [];
+  client.subscribe(event => events.push(event));
+  previous.stdout.push('{"jsonrpc":"2.0","method":"session/update","params":{}}\n');
+  previous.stderr.push("previous process diagnostic");
+  await Promise.all([stdout, stderr]);
+  assert.equal(client.decoder.buffer, "");
+  assert.equal(client.stderr, "");
+  assert.deepEqual(events, []);
+  await client.shutdown();
+});

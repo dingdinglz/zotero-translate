@@ -616,8 +616,8 @@ test("streaming responses defer chart IO and runtime creation until the response
   assert.equal(options.visualizationBudget.remaining, 4);
 });
 
-test("Codex and Pi agent messages route visualization reads to their local session and dispose on switching", async () => {
-  for (const agentId of ["codex", "pi"]) {
+test("All three agent messages route visualization reads to their local session and dispose on switching", async () => {
+  for (const agentId of ["codex", "pi", "opencode"]) {
     const doc = new Document(), loads = []; let mounted, disposed = 0;
     const ui = new CodexChatUI({
       service: { forAgent: (agent, id) => { assert.equal(agent, agentId); assert.equal(id, 10); return {
@@ -1500,4 +1500,27 @@ test("Agent and Codex access selectors stay locked until cancellation finishes",
   view.agentId = "pi";
   ui._renderConfig(view, state);
   assert.equal(descendants(view.elements.configuration).some(node => node.localName === "select"), false);
+});
+
+test("OpenCode exposes native session modes with full labels and rolls back rejected changes", async () => {
+  const doc = new Document(), body = doc.createElement("section");
+  const changes = [];
+  const ui = new CodexChatUI({ service: { forAgent: () => ({ setSessionConfig: async (...args) => { changes.push(args); throw new Error("mode rejected"); } }) } });
+  ui._renderShell({ doc, body });
+  const view = ui.views.get(body); view.attachmentID = 10; view.agentId = "opencode";
+  const state = { status: "ready", configOptions: [{ id: "mode", currentValue: "plan", options: [
+    { value: "plan", name: "Plan and carefully review this paper" }, { value: "build", name: "Build" }
+  ] }], record: { session: { config: { mode: null, agentMode: "plan" } } } };
+  ui._renderConfig(view, state);
+  const picker = descendants(view.elements.configuration).find(node => node.localName === "select");
+  assert.deepEqual(picker.children.map(node => node.value), ["plan", "build"]);
+  picker.value = "build";
+  await picker.listeners.get("change")();
+  assert.deepEqual(changes, [[10, "mode", "build"]]);
+  assert.equal(picker.value, "plan");
+  assert.ok(descendants(view.elements.configuration).some(node => node.textContent === "Plan and carefully review this paper"));
+  state.status = "waiting-approval";
+  ui._renderConfig(view, state);
+  assert.equal(descendants(view.elements.configuration).find(node => node.localName === "select").disabled, true);
+  ui._destroyView(body);
 });

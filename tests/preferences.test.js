@@ -219,3 +219,95 @@ test("path discovery ignores older results and survives closing the preferences 
   await last;
   assert.equal(manager.pathCandidates, null);
 });
+
+test("OpenCode tab navigates all three tabs and detects without changing Node/npx or another agent", async () => {
+  const { manager, bridge, byID, calls } = preferencesFixture();
+  bridge.getOpenCodeStatus = () => ({ paths: { opencodePath: "/local/opencode" }, adapter: {} });
+  bridge.setOpenCodePaths = value => { calls.push(["opencode", { ...value }]); };
+  let finish;
+  bridge.inspectOpenCodeRuntime = () => new Promise(resolve => { finish = resolve; });
+  byID.get("spt-opencode-executable-path").value = "/local/opencode";
+  byID.get("spt-acp-node-path").value = "";
+  byID.get("spt-acp-npx-path").value = "";
+  manager.selectAgentTab("opencode");
+  byID.get("spt-agent-tab-opencode").dispatchEvent({ type: "keydown", key: "ArrowRight", preventDefault() {} });
+  assert.equal(byID.get("spt-agent-tab-codex").focused, true);
+  const pending = manager.runOpenCodeAction("inspect");
+  assert.equal(byID.get("spt-pi-inspect").disabled, true);
+  assert.equal(byID.get("spt-opencode-inspect").disabled, true);
+  assert.deepEqual(calls, [["opencode", { opencodePath: "/local/opencode" }]]);
+  finish({ adapter: { preparedVersion: "1.18.30" }, configOptions: [{ id: "model", currentValue: "p/m", options: ["p/m"] }] });
+  await pending;
+  assert.equal(byID.get("spt-opencode-runtime").textContent, "1.18.30");
+  assert.equal(byID.get("spt-opencode-status").attrs["data-l10n-id"], "smart-paper-translator-agents-ready");
+  assert.equal(byID.get("spt-acp-node-path").value, "");
+  manager.destroy();
+});
+
+test("OpenCode file picker cancellation and closed views never commit a path", async () => {
+  for (const close of [false, true]) {
+    const { manager, bridge, calls } = preferencesFixture();
+    bridge.setOpenCodePaths = value => calls.push(value);
+    bridge.getOpenCodeStatus = () => ({});
+    let finish;
+    bridge.pickCodexPath = () => new Promise(resolve => { finish = resolve; });
+    const pending = manager.runOpenCodeAction("browse");
+    if (close) manager.destroy();
+    finish(close ? "/late/opencode" : "");
+    await pending;
+    assert.deepEqual(calls, []);
+    if (!close) manager.destroy();
+  }
+});
+
+test("OpenCode inspection discovers an empty path without requiring Node or npx", async () => {
+  const { manager, bridge, byID, calls } = preferencesFixture();
+  let selected = "", inspected = 0;
+  bridge.getOpenCodeStatus = () => ({ paths: { opencodePath: selected }, adapter: {} });
+  bridge.setOpenCodePaths = value => { selected = value.opencodePath; calls.push(["opencode", selected]); };
+  bridge.listACPPathCandidates = async () => ({ opencode: [{ path: "/home/.opencode/bin/opencode", source: "opencode" }] });
+  bridge.inspectOpenCodeRuntime = async () => {
+    inspected++;
+    assert.equal(selected, "/home/.opencode/bin/opencode");
+    return bridge.getOpenCodeStatus();
+  };
+  byID.get("spt-acp-node-path").value = "";
+  byID.get("spt-acp-npx-path").value = "";
+  await manager.runOpenCodeAction("inspect");
+  assert.equal(inspected, 1);
+  assert.equal(byID.get("spt-opencode-executable-path").value, selected);
+  assert.equal(byID.get("spt-path-options-opencode").value, selected);
+  assert.ok(calls.every(call => call[0] === "opencode"));
+  assert.equal(byID.get("spt-acp-node-path").value, "");
+  assert.equal(byID.get("spt-acp-npx-path").value, "");
+  manager.destroy();
+});
+
+test("OpenCode explicit path discovery fills only blank fields and never starts ACP", async () => {
+  for (const manual of ["", "/custom/opencode"]) {
+    const { manager, bridge, byID, calls } = preferencesFixture();
+    let selected = manual;
+    bridge.getOpenCodeStatus = () => ({ paths: { opencodePath: selected }, adapter: {} });
+    bridge.setOpenCodePaths = value => { selected = value.opencodePath; calls.push(selected); };
+    bridge.listACPPathCandidates = async () => ({ opencode: [{ path: "/home/.opencode/bin/opencode", source: "opencode" }] });
+    bridge.inspectOpenCodeRuntime = () => assert.fail("Path discovery must not start ACP");
+    byID.get("spt-opencode-executable-path").value = manual;
+    await manager.runOpenCodeAction("detect");
+    assert.equal(selected, manual || "/home/.opencode/bin/opencode");
+    assert.equal(calls.length, manual ? 0 : 1);
+    manager.destroy();
+  }
+});
+
+test("OpenCode auto-discovery discards results after preferences close", async () => {
+  const { manager, bridge, calls } = preferencesFixture();
+  let finish;
+  bridge.listACPPathCandidates = () => new Promise(resolve => { finish = resolve; });
+  bridge.setOpenCodePaths = value => calls.push(value);
+  bridge.inspectOpenCodeRuntime = () => assert.fail("Closed view must not start ACP");
+  const detecting = manager.runOpenCodeAction("inspect");
+  manager.destroy();
+  finish({ opencode: [{ path: "/late/opencode", source: "path" }] });
+  await detecting;
+  assert.deepEqual(calls, []);
+});

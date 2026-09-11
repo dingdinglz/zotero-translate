@@ -96,8 +96,20 @@ var SmartPaperTranslatorPlugin = {
     });
     this.piProbeService = createPiService();
     await this.piProbeService.initialize();
+    this.opencodeChatCache = modules.ChatCache.createZoteroChatCache({
+      agentId: "opencode", onError: (message, error) => this.log(message, error)
+    });
+    const createOpenCodeService = (_attachmentID, probe = false) => new modules.CodexChat.CodexChatService({
+      agentId: "opencode", getPreference, paperRepository: this.paperRepository,
+      cache: this.opencodeChatCache,
+      acpClient: modules.ACP.createZoteroACPClient({ agentId: "opencode", probe, getPreference, setPreference, log: (message, error) => this.log(message, error) }),
+      fileSystem: modules.CodexChat.createZoteroFileSystem(), log: (message, error) => this.log(message, error)
+    });
+    this.opencodeProbeService = createOpenCodeService(null, true);
+    await this.opencodeProbeService.initialize();
     this.agentsChatService = new modules.AgentsChat.AgentsChatService({
       codexService: this.codexChatService, piProbeService: this.piProbeService, createPiService,
+      opencodeProbeService: this.opencodeProbeService, createOpenCodeService,
       paperRepository: this.paperRepository, getPreference, setPreference
     });
     this.codexChatUI = new modules.CodexChatUI.CodexChatUI({
@@ -172,7 +184,7 @@ var SmartPaperTranslatorPlugin = {
       formatCodexError: (error, fallback) => modules.ACP.formatACPError(error, fallback),
       getACPPaths: () => this._sharedACPPaths(),
       listACPPathCandidates: () => runCodexAction("Local path discovery failed", () =>
-        modules.ACP.listRuntimePathCandidates({ ...this._codexPaths(), piPath: this._piPaths().piPath })),
+        modules.ACP.listRuntimePathCandidates({ ...this._codexPaths(), piPath: this._piPaths().piPath, opencodePath: this._opencodePaths().opencodePath })),
       setACPPaths: (paths) => {
         const prefs = modules.Constants.PREFS;
         this._setPreference(prefs.codexNodePath, String(paths?.nodePath || "").trim());
@@ -266,6 +278,24 @@ var SmartPaperTranslatorPlugin = {
       }),
       inspectPiRuntime: () => runCodexAction("Pi inspection failed", () => this._inspectPi(false)),
       preparePiACP: () => runCodexAction("Pi ACP preparation failed", () => this._inspectPi(true)),
+      getOpenCodeStatus: () => ({
+        paths: this._opencodePaths(), adapter: this._publicACPStatus(this.opencodeProbeService.acp),
+        ...this.opencodeProbeService.getConfigurationCatalog()
+      }),
+      setOpenCodePaths: (paths) => {
+        this._setPreference(modules.Constants.PREFS.opencodeExecutablePath, String(paths?.opencodePath || "").trim());
+        return this._opencodePaths();
+      },
+      inspectOpenCodeRuntime: () => runCodexAction("OpenCode inspection failed", async () => {
+        try {
+          const catalog = await this.agentsChatService.refreshAgentCatalog("opencode", { prepare: true });
+          return { paths: this._opencodePaths(), adapter: this._publicACPStatus(this.opencodeProbeService.acp), ...catalog };
+        }
+        catch (error) {
+          this._setPreference(modules.Constants.PREFS.opencodePreparedVersion, "");
+          throw error;
+        }
+      }),
       defaults: Object.freeze({
         deepseekBaseURL: modules.Constants.PROVIDERS.deepseek.baseURL,
         deepseekModel: modules.Constants.PROVIDERS.deepseek.model,
@@ -306,6 +336,10 @@ var SmartPaperTranslatorPlugin = {
     return runtime;
   },
 
+  _opencodePaths() {
+    return { opencodePath: String(this._getPreference(SmartPaperTranslatorModules.Constants.PREFS.opencodeExecutablePath) || "").trim() };
+  },
+
   _piPaths() {
     const prefs = SmartPaperTranslatorModules.Constants.PREFS;
     return {
@@ -340,7 +374,7 @@ var SmartPaperTranslatorPlugin = {
   },
 
   async _pickCodexPath(kind, parentWindow) {
-    const title = { node: "Node", npx: "npx-cli.js", codex: "Codex", pi: "Pi" }[kind];
+    const title = { node: "Node", npx: "npx-cli.js", codex: "Codex", pi: "Pi", opencode: "OpenCode" }[kind];
     if (!title) throw new Error("未知路径类型");
     const { FilePicker } = ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
     const picker = new FilePicker();
@@ -372,7 +406,8 @@ var SmartPaperTranslatorPlugin = {
       prefs.codexDeveloperMode,
       prefs.piExecutablePath,
       prefs.piDefaultModel,
-      prefs.piDefaultReasoningEffort
+      prefs.piDefaultReasoningEffort,
+      prefs.opencodeExecutablePath, prefs.opencodeDefaultModel, prefs.opencodeDefaultReasoningEffort
     ];
     for (const name of names) {
       const symbol = Zotero.Prefs.registerObserver(

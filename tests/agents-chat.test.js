@@ -25,6 +25,7 @@ function harness() {
   const codex = makeService(), probe = makeService();
   const router = new AgentsChatService({
     codexService: codex, piProbeService: probe, createPiService: makeService,
+    opencodeProbeService: probe, createOpenCodeService: makeService,
     paperRepository: { async get(id) { return { paper: { storageKey: papers.get(id), attachmentID: id } }; } },
     getPreference: key => prefs.get(key), setPreference: (key, value) => prefs.set(key, value)
   });
@@ -103,4 +104,29 @@ test("Pi thinking normalization is idempotent and never exposes Pi mode as permi
   assert.equal(Agents.validMode("agent-full-access", "pi"), false);
   assert.match(Agents.readerText("add", "en-US"), /Agents/u);
   assert.match(Agents.readerText("add", "zh-CN"), /添加/u);
+});
+
+test("OpenCode selection, connection references and paper pools are independent from Pi", async () => {
+  const h = harness();
+  await h.router.setActiveAgent(10, "opencode");
+  assert.equal(h.services.length, 2, "switching only reads local history");
+  const open = h.router.forAgent("opencode", 10), pi = h.router.forAgent("pi", 10);
+  const otherPaper = h.router.forAgent("opencode", 11);
+  assert.notEqual(open, pi); assert.notEqual(open, otherPaper);
+  assert.equal(await h.router.getActiveAgent(11), "codex");
+  h.router.retain("opencode", 10); h.router.retain("pi", 10);
+  h.router.release("opencode", 10);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(open.released, 1); assert.equal(pi.released, 0);
+  open.states.set("1--ABCDEFGH", { turn: {}, interactions: new Map(), status: "generating" });
+  await assert.rejects(h.router.setActiveAgent(10, "pi"), /Wait/u);
+  await h.router.shutdown();
+});
+
+test("OpenCode effort and dynamic mode keep their distinct native semantics", () => {
+  const normalized = Agents.normalizeConfigOptions([{ id: "model" }, { id: "effort" }, { id: "mode" }, { id: "unsafe" }], "opencode");
+  assert.deepEqual(normalized.map(option => option.id), ["model", "reasoning_effort", "mode"]);
+  assert.deepEqual(Agents.normalizeConfigOptions(normalized, "opencode"), normalized);
+  assert.equal(Agents.validMode("agent-full-access", "opencode"), false);
+  assert.equal(Agents.validMode(null, "opencode"), true);
 });

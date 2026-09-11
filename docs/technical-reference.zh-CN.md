@@ -2,9 +2,9 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.37 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.39 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
-Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi，与翻译服务及其 API Key 分开配置。
+Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
 ## 功能
 
@@ -20,18 +20,18 @@ Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio �
 
 ### Agents ACP 论文对话
 
-- 在 Zotero 主窗口 Reader 的原生右侧 Item Pane 显示“Agents”，采用中性对话图标和 Codex / Pi 下拉选择。插件只通过 `item-details.tabID → Zotero.Reader.getByTabID()` 获取当前 PDF 附件；无法精确解析时直接禁用，不猜测父条目附件。
+- 在 Zotero 主窗口 Reader 的原生右侧 Item Pane 显示“Agents”，采用中性对话图标和 Codex / Pi / OpenCode 下拉选择。插件只通过 `item-details.tabID → Zotero.Reader.getByTabID()` 获取当前 PDF 附件；无法精确解析时直接禁用，不猜测父条目附件。
 - PDF 划线弹窗提供“添加到 Agents”：点击只把选中文本及 PDF 坐标加入当前附件、当前 Agent 的内存草稿，自动尝试展开同一 Reader tab 的 Agents 侧栏并聚焦问题输入框，不启动 ACP、不请求模型。多个选区可累积、去重和删除，卡片只显示页码与文本；正在生成时加入的选区留给下一轮发送。按 PDF 禁用划线翻译不会关闭此入口。
 - Reader 工具栏和 Agents 输入区都提供“截图”。进入框选模式后可在左侧 PDF 阅读区拖出矩形，靠近边缘时自动滚动；跨页矩形按实际覆盖页面拆成多张图，页间空隙不计入。插件针对 Zotero 9.0.6 隔离调用 PDF.js 原页渲染能力，按 PDF 坐标重新生成不含工具栏、框选层、深色模式或 Zotero 批注的干净 PNG；内部能力或版本不匹配时失败关闭，不退回屏幕抓图。
 - 截图采用自适应高分辨率渲染，单张最长边 4096、最多 1600 万像素且 PNG 不超过 12 MiB。张数不设固定上限；侧栏按页折叠分组并只解码已展开的预览。为避免 Zotero 或 stdio 内存耗尽，单轮仍有 64 MiB/1.28 亿像素的紧急总保护，超限时保留完整草稿并阻止发送。
 - 框选结果先进入当前 PDF、捕获开始时所选 Agent 的会话草稿，不自动发送。卡片支持放大、移除和重新框选；重新框选成功前保留旧图。允许不填写问题直接发送纯图片。真正发送时，每张 PNG 使用 ACP 图片块，并用受安全边界保护的 JSON 同步发送页索引、页标签、PDF 点坐标矩形、输出像素、旋转和渲染比例；图片像素与论文内容都被标记为不可信数据。当前模型拒绝图片输入时，本地用户消息会回滚，截图草稿原样保留且不会自动换模型。
-- 每篇论文记住当前 Agent，首次默认 Codex；Codex / Pi 各自保留 session、历史、模型、思考强度与草稿。切换只读本地历史，不启动模型；连接、生成、等待授权和停止期间禁用切换，停止完成后恢复。同一 PDF/Agent 的多个 Reader 视图共享单 turn 锁，不同 PDF 可并行对话。
+- 每篇论文记住当前 Agent，首次默认 Codex；Codex / Pi / OpenCode 各自保留 session、历史、模型、思考强度与草稿。切换只读本地历史，不启动模型；连接、生成、等待授权和停止期间禁用切换，停止完成后恢复。同一 PDF/Agent 的多个 Reader 视图共享单 turn 锁，不同 PDF 可并行对话。
 - Codex 支持“审批模式 / Full Access”：新会话默认审批，已有会话恢复保存的权限。Full Access 允许工作区外文件操作和联网，只作用于当前 Codex 会话；切换成功后保存，失败保留原选择并在发送前重新确认。Pi 直接使用本机工具执行机制，界面不把它的思考 mode 当作权限；适配器扩展发出的交互请求仍然显示。
 - 第一条真实消息会把源 PDF 原子复制为专用工作区中的 `source.pdf`，再以 `application/pdf` 的 ACP `resource_link` 引用；后续 turn 不重复附加 PDF，只发送文本以及用户本轮明确添加的截图图片块。
 - Zotero 重启后，在用户重新加载或首次发送前通过 `session/load` 恢复同一 Agent session，并用 thread 回放对账本地镜像。交付状态不确定时必须先对账，避免重复发送。
-- 支持 Codex/Pi 消息中的 `visualize` HTML 图表标记。回复完成后自动预览当前论文、当前 Agent 和本地会话工作区中的 HTML，提供图例/鼠标交互、展开查看、重试和原标记。已有历史中的标记也可渲染；无需重新向模型提问。固定 D3 7.9.0 与基础明暗主题随插件内置，支持 `https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js` 的离线替换；其他外部依赖会明确报错。文件须为无软链接的 UTF-8 常规 HTML，单文件上限 1 MiB；消息区同时预览上限 4 个，展开层增加 1 个。
+- 支持 三个 Agent 消息中的 `visualize` HTML 图表标记。回复完成后自动预览当前论文、当前 Agent 和本地会话工作区中的 HTML，提供图例/鼠标交互、展开查看、重试和原标记。已有历史中的标记也可渲染；无需重新向模型提问。固定 D3 7.9.0 与基础明暗主题随插件内置，支持 `https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js` 的离线替换；其他外部依赖会明确报错。文件须为无软链接的 UTF-8 常规 HTML，单文件上限 1 MiB；消息区同时预览上限 4 个，展开层增加 1 个。
 - 支持流式文本、安全 Markdown（标题、强调、列表、引用、表格、代码）、完整的 KaTeX 0.18.4 → Firefox MathML 公式，以及 fenced `mermaid` 图表。Mermaid 11.16.1 随 XPI 离线内置并按窗口延迟加载；图表以严格模式、禁用 HTML 标签和交互的方式渲染，经本地资源与 SVG 白名单复核后作为隔离数据图片显示，宽图可横向滚动，源码可折叠查看和复制，解析失败或超限时自动展开源码。公式支持分式、求和上下标、集合运算、重音、根式、矩阵、对齐环境及上下花括号；解析失败时保留原始 TeX，不再输出命令粘连的伪公式。Codex 的 `:codex-file-citation{...}` 与兼容的 `::codex-file-citation{...}` 文件引用会显示为引用胶囊，并且只允许在当前论文工作区内定位。工具和计划卡片在长对话中保持固定高度；流式更新会保留已展开卡片与阅读位置，只有用户原本就在底部时才继续跟随新内容。
-- Codex / Pi 的对话消息、代码、表格及展开的工具内容支持鼠标选择文字，并使用原生 ⌘C（Windows/Linux 为 Ctrl+C）或“编辑 → 复制”。选中文字时暂停消息区重绘，取消选择后立即显示最新回复；生成、停止及授权状态仍正常更新。
+- 三个 Agent 的对话消息、代码、表格及展开的工具内容支持鼠标选择文字，并使用原生 ⌘C（Windows/Linux 为 Ctrl+C）或“编辑 → 复制”。选中文字时暂停消息区重绘，取消选择后立即显示最新回复；生成、停止及授权状态仍正常更新。
 - 超宽工具输出、路径和表格被限制在 Item Pane 内，不再把用户消息推到侧栏可视区域之外。
 - `execute`、文件读取、图片查看和搜索等常见工具会显示为语义卡片，只呈现安全元数据，不再把内部 ID、时间戳及原始事件 JSON 暴露在界面中；权限审批使用同一套可读展示。Codex 完成态 `View Image` 会联合核对工具类型、标题、输入路径、位置和资源链接，再把通过常规文件、25 MiB、扩展名与文件签名校验的 PNG/JPEG/GIF/WebP/AVIF 复制到工作区外的会话媒体目录；SVG、未知格式、路径不一致和伪装文件只显示错误，不回退直读源路径。图片卡片默认折叠，用户展开后才解码本地副本；点击预览可在当前 Zotero 窗口放大，并在适应窗口与 1:1 原始像素间切换。Web Search 会区分多查询搜索、打开网页和页内查找，完整展示 ACP 返回的查询、页面、查找词，以及事件中实际携带的结果标题、摘要或文本；若固定适配器没有传回网页正文或结果摘要，卡片会明确标注协议事件未携带内容。
 - Agents 回答和 Web Search 卡片中的 HTTP/HTTPS 链接只在用户点击后通过 Zotero 9.0.6 的 `Zotero.launchURL()` 交给系统默认浏览器；插件不在 Item Pane 内导航，也不允许其他 URL scheme。
@@ -42,17 +42,17 @@ Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio �
 - 已发送截图在消息历史中默认折叠，只显示页码、数量和位置摘要；展开后才从会话隔离副本解码缩略图，并可放大查看。`session/load` 回放中的 base64 图片标记只用于重新关联同一截图 ID 的本地受控副本，不直接作为界面图片源。
 - 设置页的模型与推理强度只作为新会话默认值；首条消息发送前即可在侧栏为当前 PDF 单独选择，创建后也可继续修改同一个 session。模型变化时会使用该模型实际支持的推理强度列表。模型和思考强度各占一行，收起时显示完整名称，长名称自动换行；保留原生下拉菜单与键盘操作。
 - 支持 ACP 权限请求和表单 elicitation。命令、cwd、主机、读写位置及适配器提供的授权选项会在侧栏显示；插件不会自动批准。
-- 插件为每篇论文、每个 Agent 提供独立工作区，不自动导入生成文件或修改 Zotero 条目。Full Access 和 Pi 的工具可能操作工作区外文件；工作区不是这两种执行方式的安全沙箱。
+- 插件为每篇论文、每个 Agent 提供独立工作区，不自动导入生成文件或修改 Zotero 条目。Full Access、Pi 和 OpenCode 的工具可能操作工作区外文件；工作区不是这些执行方式的安全沙箱。
 
 独立 Reader 窗口不提供 Agents 侧栏；当前目标是 Zotero 主窗口中的 Reader tab。
 
 ## 公共 ACP 运行环境
 
-在 Zotero 设置中打开 “Smart Paper Translator → Agents（ACP）”。顶部“公共运行环境”配置 Node、`npx-cli.js`，两者由 Codex / Pi 共用。Node、npx、Codex、Pi 路径均提供候选下拉、可编辑文本框及“选择…”文件浏览。打开设置即只读扫描 Zotero 进程的 PATH、默认 `~/.nvm`、`NVM_DIR` / `XDG_CONFIG_HOME` 下的 NVM 与常见安装位置；候选显示来源及 NVM 目录版本，识别 npm 的 npx 软链接。选择下拉项后填入绝对路径，也可直接修改文本；“刷新路径列表”保留当前及手动选择，不执行 shell 配置或候选程序。点击“检测 Node / npx”才读取本机版本，不启动 Agent、不下载、不发送提示词。已保存路径在升级后保留。
+在 Zotero 设置中打开 “Smart Paper Translator → Agents（ACP）”。顶部“公共运行环境”配置 Node、`npx-cli.js`，两者由 Codex / Pi 共用。Node、npx、Codex、Pi、OpenCode 路径均提供候选下拉、可编辑文本框及“选择…”文件浏览。打开设置即只读扫描 Zotero 进程的 PATH、默认 `~/.nvm`、`NVM_DIR` / `XDG_CONFIG_HOME` 下的 NVM 与常见安装位置；候选显示来源及 NVM 目录版本，识别 npm 的 npx 软链接。选择下拉项后填入绝对路径，也可直接修改文本；“刷新路径列表”保留当前及手动选择，不执行 shell 配置或候选程序。点击“检测 Node / npx”才读取本机版本，不启动 Agent、不下载、不发送提示词。已保存路径在升级后保留。
 
-以这里检测到的 Node 版本为准，终端的 `node --version` 可能来自另一套安装。例如，终端 NVM 是 Node 24.14.0，而设置仍指向 `/usr/local/bin/node` 的 22.13.0，仍然不满足 Pi 的最低要求。应选择 NVM 下的 `bin/node` 和对应 `lib/node_modules/npm/bin/npx-cli.js`，然后重新检测。所选 Node 目录会排在子进程 PATH 首位，供两个 Agent 使用。
+以这里检测到的 Node 版本为准，终端的 `node --version` 可能来自另一套安装。例如，终端 NVM 是 Node 24.14.0，而设置仍指向 `/usr/local/bin/node` 的 22.13.0，仍然不满足 Pi 的最低要求。应选择 NVM 下的 `bin/node` 和对应 `lib/node_modules/npm/bin/npx-cli.js`，然后重新检测。所选 Node 目录会排在子进程 PATH 首位，供启动的 Agent 使用；OpenCode 不要求填写 Node/npx。
 
-下方圆角分段式 Codex / Pi Tab 分别保存各自的可执行路径、默认模型和思考强度，并显示独立的准备状态。Tab 切换只显示本地设置，不启动 ACP；检测或准备期间锁住配置以防路径混用。路径刷新不修改公共 Node / npx。文件选择使用 [Zotero 推荐的 FilePicker 模块](https://www.zotero.org/support/dev/zotero_8_for_developers)，由它处理新版 BrowsingContext 参数；取消或关闭设置窗口后不提交结果。
+下方圆角分段式 Codex / Pi / OpenCode Tab 分别保存各自的可执行路径、默认模型和思考强度，并显示独立的准备状态。Tab 切换只显示本地设置，不启动 ACP；检测或准备期间锁住配置以防路径混用。路径刷新不修改公共 Node / npx。文件选择使用 [Zotero 推荐的 FilePicker 模块](https://www.zotero.org/support/dev/zotero_8_for_developers)，由它处理新版 BrowsingContext 参数；取消或关闭设置窗口后不提交结果。
 
 ## 配置本机 Codex
 
@@ -80,6 +80,24 @@ Pi 每篇论文懒创建独立连接，因为该适配器会替换同一连接�
 
 `pi-acp@0.0.33` 原版的档位白名单只到 `xhigh`。插件内置 `pi-acp-compat.js`，在自己的 Node 进程中用 [Node 模块加载钩子](https://nodejs.org/api/module.html#moduleregisterhooksoptions) 转换该固定版本入口：读取 Pi 的 `get_available_thinking_levels`，支持 `max` 并在设置后回读确认，保持已有 `max` 的真实显示。只转换 SHA-256 为 `24ff73fda6e3c76ddce2d359a79f5c4b8f292eb290e4d2ab85aac94676b2c2dc` 的 `dist/index.js`，内容不符即报错；不改本机 Pi 或 npm 缓存。补丁随 XPI 发布，无需等待上游合并，也不自动提交上游 PR。
 
+## 配置本机 OpenCode
+
+以本机 **OpenCode 1.18.30 / Zotero 9.0.6** 为验证基线，接受不低于 1.18.30 的稳定版 1.x。直接启动本机 `opencode acp`，不安装 npm 适配器，不要求填写 Node / npx。设置中的 **OpenCode** Tab 提供候选下拉、手动路径、文件浏览和「检测 OpenCode」；自动枚举包括 `~/.opencode/bin`。点击刷新或检测时，如果路径为空，则填入首个本机候选；已有路径和手动输入不被覆盖，设置关闭后不采用迟到结果。先在终端运行 `opencode` 配置登录、provider、模型和所需依赖，再检测；检测及日常聊天均不下载依赖。
+
+启动显式传入 `--hostname 127.0.0.1 --port 0 --mdns=false` 与当前论文工作区 `--cwd`，用仅在进程环境中存在的随机密码保护附带 HTTP 服务。设置 `OPENCODE_DISABLE_AUTOUPDATE=1`、`OPENCODE_DISABLE_MODELS_FETCH=1`、`npm_config_offline=true`，阻止启动升级、后台模型目录刷新和 npm 下载；这些设置不阻止发送后的模型请求或本机配置允许的工具联网。
+
+「检测 OpenCode」先读取本机版本，再启动独立 ACP 进程，以系统临时目录中的 `OPENCODE_DB` 创建空 session。它验证 ACP 1、OpenCode 版本、会话恢复及关闭能力，读取模型和模式，按模型查询思考档位。结束时调用 `session/close`、关闭进程并删除插件自己的临时目录；不调用 `session/delete`，不发送提示词。程序路径或版本变化会使检测目录失效，旧论文历史保留。OpenCode 与 Pi 各自按论文懒创建连接，检测连接独立；Reader 释放后回收空闲进程，下次发送恢复原 session。
+
+`model` 完整保留 `provider/model`；`effort` 对应侧栏思考控件，`mode` 显示为「运行模式」，提供 OpenCode 返回的 Build、Plan 和本机自定义模式。它保存到 `session.config.agentMode`，不会当作 Codex Full Access 权限。新 session 默认跟随本机模式，切换确认成功后才持久化；恢复先应用模型，再校验思考强度，失效选项阻止发送并允许重选。等待连接、生成、授权或停止期间禁用切换。映射依据 [OpenCode v1.18.30 ACP 配置源码](https://github.com/anomalyco/opencode/blob/v1.18.30/packages/opencode/src/acp/config-option.ts)。
+
+检测时有界解析 `opencode models --verbose`（16 MiB / 10000 模型上限），只保存 ID 与明确的图片、PDF 输入能力，不保留原始输出中的 headers、options 或凭据。截图发送要求当前模型明确支持图片；能力缺失时整轮阻止，完整草稿保留。每篇论文工作区同时准备 `source.pdf` 与 `source.txt`；模型不能原生输入 PDF 时，首轮改为文本快照引用。历史回放按 [OpenCode 内容转换协议](https://github.com/anomalyco/opencode/blob/v1.18.30/packages/opencode/src/acp/content.ts) 隐去合成上下文和类型化资源，保留问题、选区和已验证本地截图，避免重复显示。
+
+0.1.39 在 OpenCode 子进程中设置 `OPENCODE_DISABLE_TERMINAL_TITLE=1` 与 `NO_COLOR=1`；对本机扩展仍输出的 OSC 0/1/2 标题控制码做有界流式过滤，支持 BEL/ST 结束与跨块输入，保留 JSON 字符串中的转义内容。其余控制码、非 JSON 日志、超限或未闭合控制序列继续报错。该问题也有[上游记录](https://github.com/anomalyco/opencode/issues/17282)。
+
+模型目录收集使用固定 `/bin/sh` 脚本，只通过 argv 传入本机程序路径和参数，不读取 shell 启动配置。CLI 退出后以随机标记告知收集完成，再等待客户端关闭 stdin；这样避免 Zotero 9.0.6 Unix 管道在 HUP 与下一次读取之间关闭而丢失尾部。保持真实退出码、16 MiB/30 秒上限，取消时清理所属子进程，原始输出仅留在本次解析内存中。ACP 会话的原生直接启动方式不变。
+
+OpenCode 继承本机权限与扩展配置，ACP 授权通过已有交互卡片选择；插件不自动批准。Markdown、复制、公式、Mermaid、visualize、文件引用和外链继续使用相同安全边界，Codex View Image 路径识别不用于 OpenCode。
+
 ## 对话存储与恢复
 
 本机 Zotero 数据目录下新增：
@@ -95,7 +113,8 @@ smart-paper-translator/
 │   ├── archives/                    # 重建后保留的旧映射和旧工作区
 │   ├── configuration-catalog.json   # 最近一次显式检测得到的模型/推理选项目录
 │   └── configuration-workspace/     # 不含论文的临时配置检测工作区
-└── pi-acp/                          # 与 Codex 同结构，独立保存 Pi 数据
+├── pi-acp/                          # 与 Codex 同结构，独立保存 Pi 数据
+└── opencode-acp/                    # 独立保存 OpenCode 历史/工作区/截图/目录；空会话检测使用系统临时目录
 ```
 
 - 当前 Agent 选择仅存本机偏好；旧记录缺失 Agent 标识时视为 Codex，保留原 session ID、工作区与图片引用。重建会话只影响当前 Agent。文字和选区草稿仅存内存；截图草稿按 Agent 独立持久化与恢复。
@@ -115,7 +134,7 @@ smart-paper-translator/
 - 第一条 Codex 消息会把 PDF 的本地快照交给本机 Codex；后续消息不再重复 PDF，但本轮明确附加的截图及精确位置仍会发送。同一 thread 中 Codex 仍可读取自己的工作区和上下文。
 - `tool-images/<论文标识>/<本地会话标识>/` 位于 ACP 工作区之外，不会作为 cwd、资源、附加目录或软链接交给 Codex；普通界面不显示源文件绝对路径，只渲染完成校验的受控副本。
 - `screenshots/<论文标识>/<本地会话标识>/` 同样位于 ACP 工作区之外，路径不写入图片载荷或位置 JSON；发送时插件重新校验常规文件类型、PNG 签名、字节数、像素尺寸与位置元数据，再以内嵌图片块传输。
-- 本机 Codex 的 Skills/MCP 与 Pi 的扩展可能访问论文之外的数据或服务；Codex 审批模式仍受其沙箱和审批机制约束，Full Access 与 Pi 不提供该工作区沙箱限制。
+- 本机 Codex 的 Skills/MCP 与 Pi/OpenCode 的扩展可能访问论文之外的数据或服务；Codex 审批模式仍受其沙箱和审批机制约束，Full Access、Pi 与 OpenCode 不提供该工作区沙箱限制。
 - `visualize` 的 HTML/JavaScript 只在双层不透明源 `sandbox="allow-scripts"` iframe 中运行；不授予同源、弹窗、表单、下载或 Zotero 接口权限。固定外层 CSP 的 `frame-src` 阻断图表自行导航，内层 CSP 阻断联网、远程资源、嵌套 URL、字体与 Worker；仅允许内嵌数据图片。消息桥只校验和转发有界尺寸、状态与 Escape 关闭通知，不提供工具、文件、外链或文库操作。Zotero 原生侧仅观察插件固定外层文档的状态属性，并校验当前 iframe、文档与随机标识；无需允许内容页访问特权窗口。切换论文、Agent、本地会话和关闭视图时清理预览。HTML 不注入 Zotero 文档或特权 Gecko sandbox。实现依据 [MDN srcdoc 隔离说明](https://developer.mozilla.org/en-US/docs/Web/API/HTMLIFrameElement/srcdoc) 和 [CSP frame-src](https://www.w3.org/TR/CSP/#directive-frame-src)，双层隔离/导航阻断已在 Zotero 9.0.6 / Gecko 140.12.0 用临时合成内容探测。
 - 普通消息中的原始 HTML 不会渲染，远程图片不会自动加载；普通 Markdown、公式、Codex 指令、工具输出和权限详情均通过受限 DOM/MathML 节点显示，不把不可信内容交给 `innerHTML`。公式由 XPI 内置 KaTeX 离线转换，使用 `trust: false`、有限宏展开与尺寸上限，只导入不含外部元素、链接或资源属性的 MathML。Mermaid 固定版本运行时在同一 Zotero 窗口的本地 `about:blank` HTML iframe 与专用 Gecko sandbox 中延迟加载，以适配 Item Pane 的无 `body` XUL 文档；sandbox 通过该 HTML 窗口原型继承只读的全局 `window`/`document` 绑定。它锁定严格安全配置并限制源文本、边数、渲染时间、SVG 大小和节点数。返回 SVG 只额外接受 Mermaid flowchart 自动生成、且只引用本地片段的 `feDropShadow` 投影，仍拒绝活动元素、HTML、链接和非本地资源引用，最终只作为 `data:image/svg+xml` 图片显示，不把活动 SVG 注入 Item Pane。HTTP/HTTPS 链接只在明确点击后交给系统浏览器，网页访问不发生在插件渲染过程中。
 - 开发者模式默认关闭。开启时只收集当前实时 turn 的工具与思考事件，不收集用户消息或最终回答；内存日志采用有界环形缓冲并做密钥和用户目录脱敏，关闭模式、重建会话或退出插件时清空。
@@ -124,16 +143,36 @@ smart-paper-translator/
 
 ## 开发与验证
 
-插件 XPI 不捆绑 Node、Pi、npm 缓存或 ACP 适配器包；它额外内置 MIT 许可的 KaTeX 0.18.4、Mermaid 11.16.1 和 ISC 许可的 D3 7.9.0 单文件运行时，不含运行时 CDN、字体或网络下载。开发检查需要 Node.js 22、Python 3 和 Info-ZIP：
+插件 XPI 不捆绑 Node、Pi、OpenCode、npm 缓存或 ACP 适配器包；它额外内置 MIT 许可的 KaTeX 0.18.4、Mermaid 11.16.1 和 ISC 许可的 D3 7.9.0 单文件运行时，不含运行时 CDN、字体或网络下载。开发检查需要 Node.js 22、Python 3 和 Info-ZIP：
 
 ```bash
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.37.xpi
+unzip -t dist/smart-paper-translator-0.1.39.xpi
 ```
 
-真实 npx 下载、Codex/Pi 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.39 验证记录
+
+修复 OpenCode 本机扩展输出终端标题控制码引起的 `ACP_INVALID_JSON`，以及原生模型目录读取可能提前结束的问题。打开设置仍只枚举候选；用户点击 OpenCode 刷新或检测时，仅对空路径自动选择本机候选。已有路径、其他 Agent 的公共运行环境和论文历史保留。
+
+已通过 **289 项自动测试**、JavaScript/静态检查、可复现构建、XPI 根目录检查、`unzip -t` 和 SHA-256 校验。最终归档内 44 个文件与运行时源码逐字节一致。新增覆盖标题控制码的每个分块位置、JSON 转义文本保留、未知/超限/未闭合控制码拒绝、长模型配置消息、收集结束握手与退出码、取消后子进程回收、旧连接迟到数据，以及空路径发现和设置关闭后的异步隔离；Codex/Pi 继续通过回归。
+
+在 **Zotero 9.0.6 / OpenCode 1.18.30** 的原生 Subprocess 环境中，使用禁用脚本缓存加载的修复模块验证了 901 个合成模型的长 ACP 响应、连续配置切换和完整能力目录。复用本机 OpenCode 配置的独立临时空会话也完整读取了 7 个模型，逐个确认模型配置，调用 `session/close` 并清理临时数据；全过程没有 `session/prompt`，没有安装插件或修改已保存的 Agent 设置。
+
+最终 **0.1.39 XPI** 已通过 Zotero 9.0.6 的 `AddonManager.getInstallForFile()` 非安装式解析：`error: 0`、`id: smart-paper-translator@zotero.local`、`version: 0.1.39`、`isCompatible: true`、`appDisabled: false`。SHA-256：`2481826d15cfcdf090ea300314440a95643afc579df6aca96c344815629333f3`。未执行安装后的聊天 UI 冒烟、真实模型请求或发布。
+
+## 0.1.38 验证记录
+
+本次已通过 **280 项自动测试**、JavaScript 与静态检查、可复现构建、XPI 根目录与 `unzip -t`、SHA-256 校验；归档内 44 个运行时文件与源码逐字节一致。新增覆盖三 Agent 的路径/数据/截图隔离、OpenCode 原生启动参数、版本变化失效、空会话探测与清理、按论文连接、配置确认与失败回滚、失效模式恢复、模型与思考顺序、图片能力阻止、历史回放及会话丢失；Codex/Pi 原有用例继续通过。
+
+在本机 OpenCode **1.18.30** 上，用独立临时 XDG 配置、数据库和合成模型完成原生 ACP 握手、创建空 session、读取 Build/Plan、切换 Plan 与 `max`、解析模型图片/PDF 能力、关闭 session 和清理临时目录。测试记录只有 `--version`、`acp`、`models` 命令及无提示词配置方法，没有 `session/prompt`，未使用真实 API Key。macOS 执行沙箱内的端口监听被阻止后，在获准的本机回环环境中完成该检查。
+
+独立浏览器使用实际设置页与侧栏模块、合成配置验证了 400px 三 Tab 布局、Home/方向键切换、Tab 切换不调用 Agent，以及 240px 侧栏的长模型/自定义模式换行与忙碌禁用。文本选择和复制、陈旧异步结果、草稿与渲染边界继续由自动回归覆盖。该预览不替代安装后的完整 Zotero UI 冒烟测试。
+
+最终 **0.1.38 XPI** 已在 **Zotero 9.0.6** 中用 `AddonManager.getInstallForFile()` 非安装式解析：`id: smart-paper-translator@zotero.local`、`version: 0.1.38`、`error: 0`、`isCompatible: true`、`appDisabled: false`。未安装插件、修改 Zotero profile、发送真实模型请求或发布。
 
 ## 历史验证记录
 

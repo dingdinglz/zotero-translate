@@ -2,9 +2,9 @@
 
 English · [简体中文](README.zh-CN.md)
 
-**Codex and Pi, beside your paper in Zotero.**
+**Codex, Pi and OpenCode, beside your paper in Zotero.**
 
-Smart Paper Translator adds an Agents sidebar to Zotero's PDF reader. Ask about a passage while it's still in view, attach a figure to your question, and return to the conversation when you reopen the paper. It connects to the Codex or Pi you already use on your computer.
+Smart Paper Translator adds an Agents sidebar to Zotero's PDF reader. Ask about a passage while it's still in view, attach a figure to your question, and return to the conversation when you reopen the paper. It connects to the Codex, Pi or OpenCode you already use on your computer.
 
 [Download](https://github.com/dingdinglz/zotero-translate/releases) · [Get started](#get-started) · [Report an issue](https://github.com/dingdinglz/zotero-translate/issues)
 
@@ -30,9 +30,11 @@ The screenshot and its page location stay with the question, ready to reopen in 
 
 ### Pick up where you left off
 
-Each PDF keeps its own conversation. Codex and Pi have separate histories, drafts, and model settings, and the sidebar remembers which agent you last used for that paper. Switching agents opens that agent's history.
+Each PDF keeps its own conversation. Codex, Pi and OpenCode have separate histories, drafts, and model settings, and the sidebar remembers which agent you last used for that paper. Switching agents opens that agent's history.
 
 You can choose the model and thinking level in the sidebar. The available levels follow the selected model, including Pi's `max` where supported. After restarting Zotero, you can read the saved history and resume the same agent session when you send another message.
+
+OpenCode also offers **Build**, **Plan**, and your local custom modes under **Run mode**. Each paper keeps its own choice; a new session follows OpenCode’s local default. Changes are saved after OpenCode confirms them.
 
 ### Read the answer next to the source
 
@@ -47,7 +49,7 @@ An interactive chart from the conversation, shown beside the passage it explains
 
 ## Get started
 
-The current version is **0.1.37**, targeting **macOS with Zotero 9.0.6**. The plugin declares compatibility with Zotero 9.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
+The current version is **0.1.39**, targeting **macOS with Zotero 9.0.6**. The plugin declares compatibility with Zotero 9.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
 
 ### Install the plugin
 
@@ -59,7 +61,9 @@ Updates are installed manually from a newer XPI.
 
 ### Connect an agent
 
-You need a working local Codex or Pi installation, with its login and models configured, plus Node.js and npm. The plugin does not include those programs. Pi requires **Pi 0.85.1 or later** and **Node.js 22.19.0 or later**.
+You need a working local installation of the agent you choose, with its login and models configured. Codex and Pi also need Node.js and npm; OpenCode uses native ACP and does not need Node / npx configuration. The plugin does not include those programs. Pi requires **Pi 0.85.1 or later** and **Node.js 22.19.0 or later**.
+
+For Codex or Pi:
 
 1. Open Zotero settings, then **Smart Paper Translator → Agents (ACP)**.
 2. Select the paths to Node and `npx-cli.js` in the shared runtime section, then click **Check Node / npx**. Paths can be selected from detected installations, entered manually, or chosen with the file picker.
@@ -75,7 +79,13 @@ Preparation downloads the pinned adapter and checks the connection and model opt
 <!-- screenshot: agent-settings -->
 ![Shared Node and npx paths, with the Pi tab showing its model, thinking level, and prepared adapter](docs/screenshots/agent-settings.png)
 
-Codex and Pi share the Node / npx runtime and keep their own model settings.
+Codex and Pi share the Node / npx runtime and keep their own model settings. The screenshot above shows the existing Pi panel.
+
+For **OpenCode 1.18.30 or a newer stable 1.x version**, open the **OpenCode** tab, select the local executable (including installations in `~/.opencode/bin`), and click **Detect OpenCode** (检测 OpenCode). If the path is empty, detection selects the first local candidate; existing or manually entered paths are kept. You can then choose default model and thinking options. Detection uses an independent empty session and temporary database, sends no prompt, and removes temporary data when done. It does not download dependencies. If something is missing, first run `opencode` in your terminal to complete login and dependency setup, then inspect again.
+
+Version 0.1.39 fixes detection errors caused by terminal title codes in OpenCode output and incomplete reads of large model catalogs.
+
+OpenCode chat disables automatic upgrades, background model catalog refresh, and npm downloads. Its accompanying HTTP server binds to `127.0.0.1` on a random port with a random process password and mDNS disabled. A changed executable path or version requires a fresh inspection; saved paper conversations remain available.
 
 If a path or model is missing, use the path refresh or agent inspection controls in settings. With NVM, check the Node path selected in Zotero: it may differ from the one your terminal uses. Detailed setup and troubleshooting are in the [technical reference (Chinese)](docs/technical-reference.zh-CN.md).
 
@@ -94,11 +104,13 @@ You can use the Agents sidebar without configuring the translation API.
 
 Opening the Agents sidebar or switching agents reads local history without requesting model output. Your first message gives the selected agent a copy of the PDF in a workspace for that paper. Later messages include your question and any selections or screenshots you attach. The agent can still read the PDF in its workspace.
 
-The agent runs locally, but its configured model provider may receive paper content and prompts. Codex uses its existing account and configuration, including Skills and MCP; Pi uses its own login, models, and extensions. The plugin does not automatically modify Zotero items or import generated files.
+The agent runs locally, but its configured model provider may receive paper content and prompts. Codex uses its existing account and configuration, including Skills and MCP; Pi and OpenCode use their own login, models, permissions, and extensions. The plugin does not automatically modify Zotero items or import generated files.
 
-Codex starts in approval mode. You can enable **Full Access** for the current conversation to allow network access and file operations outside its workspace. Pi follows its local tool and extension configuration. The paper workspace is not a security sandbox for Full Access or Pi.
+Codex starts in approval mode. You can enable **Full Access** for the current conversation to allow network access and file operations outside its workspace. Pi and OpenCode follow their local tool and extension configuration. OpenCode permission requests appear in the conversation. The paper workspace is not a security sandbox for Full Access, Pi, or OpenCode.
 
-Histories, PDF copies, and screenshots are stored under `smart-paper-translator/` in your Zotero data directory. These files are not encrypted or included in Zotero sync. Text and selection drafts last only for the current Zotero run; screenshot drafts can be restored after a restart. Translation API keys are stored in Mozilla Login Manager.
+OpenCode image questions require explicit image support in the inspected model catalog. When a model cannot accept PDFs directly, the first question references a text snapshot in the paper workspace.
+
+Histories, PDF copies, and screenshots are stored in separate `codex-acp/`, `pi-acp/`, and `opencode-acp/` directories under `smart-paper-translator/` in your Zotero data directory. These files are not encrypted or included in Zotero sync. Text and selection drafts last only for the current Zotero run; screenshot drafts can be restored after a restart. Translation API keys are stored in Mozilla Login Manager.
 
 ## Development
 
@@ -108,7 +120,7 @@ Read [AGENTS.md](AGENTS.md) before changing plugin code. Runtime files live in `
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.37.xpi
+unzip -t dist/smart-paper-translator-0.1.39.xpi
 ```
 
 Build output goes to `dist/`. Runtime changes also require non-installing XPI parsing in the target Zotero version. The [technical reference (Chinese)](docs/technical-reference.zh-CN.md) covers adapter behavior, storage, rendering limits, and historical validation results.
