@@ -162,9 +162,11 @@ PR #2 已 rebase 到 main `b401af7`。保留 main 的 OpenCode 原生启动、�
 
 三 Agent 的文本/思考更新按 50 ms 合并，镜像写盘按 500 ms 防抖，最终状态与授权等更新立即推送。单工具 `rawOutput` 的上限为序列化 JSON 后的 **64 KiB UTF-8**，包含转义、键名、数组和元数据开销；超限保留文本尾部和退出码等固定标量，不拆 Unicode 代理对。旧镜像加载时应用相同上限并原子保存，再次加载不重复迁移。折叠工具卡片只建摘要；展开时才构建内容，重绘时先挂载再恢复卡片内滚动，忽略旧节点的迟到 toggle。
 
-已通过 **310 项自动测试**、JavaScript/静态检查、两次逐字节一致的可复现构建、XPI 根目录检查、`unzip -t` 和 SHA-256 校验。归档内 44 个运行时文件与 `plugin/` 源文件逐字节一致。回归覆盖真实 DOM 挂载语义、Windows 原生路径、路径构造失败、超大数字数组/键名、多字节与 JSON 转义、三 Agent 旧镜像幂等迁移及实时输出。独立 Chrome 使用实际侧栏模块和合成工具输出复核：重绘前后的卡片滚动位置均为 200；修复前同一复现从 200 变为 0。该预览不替代 Zotero 安装后的 UI 冒烟。
+visualize 的 Windows 路径检查保留盘符绝对根，UNC 从完整的 `\\server\share` 开始，读取前后检查共享根、所有中间目录及最终 HTML，拒绝软链接、非常规文件和其他会话/共享目录。D3 哈希恢复为仓库 LF 文件的实际值，并通过 `.gitattributes` 固定该 bundle 的 LF 换行；`core.autocrlf=true` 的 Git 检出过滤验证仍得到相同字节与哈希。
 
-最终文件：`dist/smart-paper-translator-0.1.40.xpi`，SHA-256：`b7c38dfd2338632e86007d3ac84b3cffa97296fc1b78ae06c7dd5444cadee89f`。**目标 Zotero 原生解析尚未完成**：当前终端的 `osascript` 无辅助访问权限，无法操作 Run JavaScript；没有改权限或 profile 绕过。未安装插件、下载适配器、调用真实模型或执行安装后 UI 冒烟。需在 Zotero 9.0.6 的 Run JavaScript 中以异步模式执行下面的非安装式检查（路径按实际仓库位置调整）：
+2026-09-13 使用 Node 24.14.0 通过 **314 项自动测试**、JavaScript/静态检查、两次逐字节一致的可复现构建、XPI 根目录检查、`unzip -t` 和 SHA-256 校验。归档内 44 个运行时文件与 `plugin/` 源文件逐字节一致。回归覆盖真实 DOM 挂载语义、Windows 原生路径、UNC 共享根及各级文件类型/软链接、路径构造失败、超大数字数组/键名、多字节与 JSON 转义、三 Agent 旧镜像幂等迁移及实时输出。初次整合时，独立 Chrome 使用实际侧栏模块和合成工具输出复核：重绘前后的卡片滚动位置均为 200；修复前同一复现从 200 变为 0。Windows 路径验证使用契约 mock，尚未做 Windows 真机验证，该预览也不替代 Zotero 安装后的 UI 冒烟。
+
+最终文件：`dist/smart-paper-translator-0.1.40.xpi`，SHA-256：`de37af1d8cb33ce44dca56fd6bda39835fa60fe527a15b8398b281e0d1e0624d`。已在 macOS Zotero 9.0.6 / Gecko 140.12.0 的 Run JavaScript 中使用 `AddonManager.getInstallForFile()` 完成非安装式解析：`error=0`、插件 ID 为 `smart-paper-translator@zotero.local`、版本 `0.1.40`、`isCompatible=true`、`appDisabled=false`。未安装插件、下载适配器、调用真实模型或执行安装后 UI 冒烟。下面的非安装式检查可用于复核（路径按实际仓库位置调整）：
 
 ```javascript
 var { AddonManager } = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");

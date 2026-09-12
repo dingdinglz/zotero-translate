@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const V = require("../plugin/content/visualize-renderer.js");
+const { assertNativeWindowsPath } = require("./helpers.js");
 
 const marker = path => V.MARKER_START + JSON.stringify({ path, title: "趋势与残差", mode: "wide" }) + "\uE201";
 const html = '<div id="demo">图表</div><script src="' + V.D3_URL + '"></script><script>d3.select("#demo");</script>';
@@ -41,15 +42,21 @@ test("Windows drive and UNC workspaces keep native paths while enforcing the wor
   }
 });
 
-function fixture() {
+function fixture({ windows = false } = {}) {
   const bytes = new TextEncoder().encode(html);
   return {
-    bytes, inspected: [], reads: 0, kinds: new Map(),
+    bytes, inspected: [], reads: 0, readPaths: [], kinds: new Map(),
     async inspectPath(path) {
+      if (windows) assertNativeWindowsPath(path);
       this.inspected.push(path);
       return this.kinds.get(path) || { type: path.endsWith(".html") ? "regular" : "directory", symlink: false, size: this.bytes.length, lastModified: 1 };
     },
-    async read(path, options) { this.reads++; assert.equal(options.maxBytes, V.MAX_BYTES + 1); return this.bytes; }
+    async read(path, options) {
+      if (windows) assertNativeWindowsPath(path);
+      this.reads++; this.readPaths.push(path);
+      assert.equal(options.maxBytes, V.MAX_BYTES + 1);
+      return this.bytes;
+    }
   };
 }
 
@@ -72,18 +79,49 @@ test("HTML reads reject links in every path component, non-files, oversize and m
 });
 
 test("HTML reads inspect Windows drive components with native separators", async () => {
-  const io = fixture();
+  const io = fixture({ windows: true });
   assert.equal((await V.readWorkspaceHTML(io, "C:/Users/AimMetal/Zotero/spt/session-1", "output/chart.html")).html, html);
   assert.deepEqual(io.inspected, [
-    "C:", "C:\\Users", "C:\\Users\\AimMetal", "C:\\Users\\AimMetal\\Zotero",
+    "C:\\", "C:\\Users", "C:\\Users\\AimMetal", "C:\\Users\\AimMetal\\Zotero",
     "C:\\Users\\AimMetal\\Zotero\\spt", "C:\\Users\\AimMetal\\Zotero\\spt\\session-1",
     "C:\\Users\\AimMetal\\Zotero\\spt\\session-1\\output",
     "C:\\Users\\AimMetal\\Zotero\\spt\\session-1\\output\\chart.html",
-    "C:", "C:\\Users", "C:\\Users\\AimMetal", "C:\\Users\\AimMetal\\Zotero",
+    "C:\\", "C:\\Users", "C:\\Users\\AimMetal", "C:\\Users\\AimMetal\\Zotero",
     "C:\\Users\\AimMetal\\Zotero\\spt", "C:\\Users\\AimMetal\\Zotero\\spt\\session-1",
     "C:\\Users\\AimMetal\\Zotero\\spt\\session-1\\output",
     "C:\\Users\\AimMetal\\Zotero\\spt\\session-1\\output\\chart.html"
   ]);
+});
+
+test("UNC HTML reads preserve the share root and inspect every component before and after reading", async () => {
+  const io = fixture({ windows: true });
+  const workspace = "\\\\server\\share\\spt\\session-1";
+  const file = workspace + "\\output\\chart.html";
+  const components = ["\\\\server\\share", "\\\\server\\share\\spt", workspace, workspace + "\\output", file];
+  assert.equal((await V.readWorkspaceHTML(io, workspace, "output/chart.html")).html, html);
+  assert.deepEqual(io.inspected, [...components, ...components]);
+  assert.deepEqual(io.readPaths, [file]);
+});
+
+test("UNC HTML reads reject symlinks, invalid components and other workspaces before reading", async () => {
+  const workspace = "\\\\server\\share\\spt\\session-1";
+  const file = workspace + "\\output\\chart.html";
+  const directories = ["\\\\server\\share", "\\\\server\\share\\spt", workspace, workspace + "\\output"];
+  for (const path of [...directories, file]) {
+    for (const item of [{ symlink: true }, { symlink: false, type: "other" },
+      { symlink: false, type: path === file ? "directory" : "regular" }]) {
+      const io = fixture({ windows: true }); io.kinds.set(path, item);
+      await assert.rejects(V.readWorkspaceHTML(io, workspace, "output/chart.html"), /软链接或非常规文件/);
+      assert.equal(io.reads, 0);
+    }
+  }
+  for (const requested of ["../chart.html", "\\\\server\\other-share\\spt\\session-1\\chart.html",
+    "\\\\server\\share\\spt\\session-2\\chart.html", "\\\\other-server\\share\\spt\\session-1\\chart.html"]) {
+    const io = fixture({ windows: true });
+    await assert.rejects(V.readWorkspaceHTML(io, workspace, requested));
+    assert.deepEqual(io.inspected, []);
+    assert.equal(io.reads, 0);
+  }
 });
 
 test("only the pinned D3 URL is replaced; unsupported dependencies fail explicitly", () => {

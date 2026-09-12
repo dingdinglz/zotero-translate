@@ -104,7 +104,7 @@ def main() -> None:
     assert "inspectPath" in visualize_renderer
     assert '"content/visualize-renderer.js"' in bootstrap
     assert hashlib.sha256((PLUGIN / "content/vendor/d3/d3.min.js").read_bytes()).hexdigest() == (
-        "8b56e04f36583949cb0832c5cb863785ad26d6b9d444068f069764ea154f379a"
+        "f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539"
     )
     assert 'output: "mathml"' in math_renderer
     assert 'trust: false' in math_renderer

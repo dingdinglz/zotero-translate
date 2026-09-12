@@ -52,6 +52,8 @@
 - 悬浮面板术语删除仅清理当前论文中同一规范化原文的全部 selection 缓存配置变体；原子写入成功后更新列表与计数，不改摘要、智能标签或其他论文。删除必须使此前在途的对应划线请求及缓存探测失效，防止旧结果恢复缓存；异步列表刷新和删除回调复核 Reader、论文与请求序号，失败保留术语并允许重试。
 - 当前 PDF 的划线翻译禁用开关默认关闭，禁用附件 ID 列表仅持久化在本机 Zotero 偏好中；命中禁用状态时不得追加插件划线翻译 UI、查询划线缓存或发起翻译请求，且不得影响其他 PDF 或独立的“添加到 Agents”入口。
 
+- visualize 文件逐级检查必须保留原生绝对路径根：Windows 盘符从 `C:\` 开始，UNC 从完整的 `\\server\share` 开始，并检查共享根、各级目录与最终文件，读取前后均不得跳过软链接或类型校验。D3 的固定哈希以仓库 LF 字节为准，`.gitattributes` 固定该 bundle 的 LF 换行，不得用本机 CRLF 转换后的哈希替换。
+
 上述 PDF/媒体/Markdown/外链/公式/Mermaid/开发者日志边界同样适用于 Pi 和 OpenCode；Codex View Image 的形状识别只作用于 Codex 工具事件，不得猜测其他 Agent 输出文件路径。
 
 ## 当前项目结构
@@ -62,6 +64,7 @@ zotero-translate/
 ├── README.md                         # 英文主介绍：Agents 侧栏、安装配置、界面截图与数据说明
 ├── README.zh-CN.md                   # 中文介绍，与英文主版对应
 ├── package.json                      # Node 测试和静态检查入口
+├── .gitattributes                    # 固定 D3 bundle 的 LF 换行与跨平台字节一致性
 ├── .gitignore
 ├── .agents/
 │   └── skills/
@@ -97,7 +100,7 @@ zotero-translate/
 │       ├── agents-chat.js            # 当前 Agent 偏好、服务路由、Pi/OpenCode 每论文连接/引用与独立探测生命周期
 │       ├── math-renderer.js          # KaTeX→MathML、有界不可信输入与安全导入/原始 TeX 回退
 │       ├── mermaid-renderer.js       # Mermaid XUL/HTML sandbox、串行缓存、有界 SVG 校验与数据图片
-│       ├── visualize-renderer.js     # visualize 标记、工作区 HTML 校验、双层无网络 iframe、UTF-8 资源、原生状态观察与预览清理
+│       ├── visualize-renderer.js     # visualize 标记、Unix/Windows/UNC 工作区逐级校验、双层无网络 iframe、资源/状态与清理
 │       ├── visualize-theme.css       # 隔离图表的本地明暗主题与基础控件样式
 │       ├── codex-chat-ui.js          # Agents Item Pane、配置/权限、文本选择/滚动保持、工具延迟构建与安全渲染/图表路由
 │       ├── codex-chat.css            # Agents 配置/权限、消息选择、Mermaid/媒体及图表预览和放大层样式
@@ -140,7 +143,7 @@ zotero-translate/
 │   ├── codex-chat-ui.test.js         # Agent/草稿/选择、挂载后滚动恢复/迟到 toggle、安全渲染/外链与图表清理
 │   ├── math-renderer.test.js         # 公式回归样本、KaTeX 安全选项、MathML 导入过滤与回退
 │   ├── mermaid-renderer.test.js      # Mermaid 上限、固定安全配置、SVG 过滤、延迟加载/串行/缓存与回退
-│   ├── visualize-renderer.test.js    # 标记/路径/文件限制、离线脚本替换、双层隔离、资源返回类型、启动错误、原生状态与清理
+│   ├── visualize-renderer.test.js    # 标记/路径/文件限制、UNC 共享根与逐级安全检查、离线脚本/双层隔离、原生状态与清理
 │   ├── main.test.js                  # ACP/Agent 设置桥接、只读发现、FilePicker 选取/取消与偏好作用域
 │   ├── preferences.test.js           # 路径下拉/编辑/刷新/空路径发现/迟到结果、Tab/表单保留与检测锁
 │   ├── service.test.js               # 摘要、缓存探测/强制刷新、术语删除/在途失效、并发与取消
