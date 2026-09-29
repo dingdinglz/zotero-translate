@@ -515,7 +515,7 @@
       button.title = state.screenshotProgress || (
         available
           ? label
-          : `当前页面不支持 Zotero ${PDFScreenshot.TARGET_ZOTERO_VERSION} 原页截图`
+          : `原页截图需 Zotero ${PDFScreenshot.TARGET_ZOTERO_VERSIONS.join(" / ")} 的 PDF 原页视图`
       );
       button.setAttribute("aria-label", label);
     }

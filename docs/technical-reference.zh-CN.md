@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.40 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.41 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -22,7 +22,7 @@ Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio �
 
 - 在 Zotero 主窗口 Reader 的原生右侧 Item Pane 显示“Agents”，采用中性对话图标和 Codex / Pi / OpenCode 下拉选择。插件只通过 `item-details.tabID → Zotero.Reader.getByTabID()` 获取当前 PDF 附件；无法精确解析时直接禁用，不猜测父条目附件。
 - PDF 划线弹窗提供“添加到 Agents”：点击只把选中文本及 PDF 坐标加入当前附件、当前 Agent 的内存草稿，自动尝试展开同一 Reader tab 的 Agents 侧栏并聚焦问题输入框，不启动 ACP、不请求模型。多个选区可累积、去重和删除，卡片只显示页码与文本；正在生成时加入的选区留给下一轮发送。按 PDF 禁用划线翻译不会关闭此入口。
-- Reader 工具栏和 Agents 输入区都提供“截图”。进入框选模式后可在左侧 PDF 阅读区拖出矩形，靠近边缘时自动滚动；跨页矩形按实际覆盖页面拆成多张图，页间空隙不计入。插件针对 Zotero 9.0.6 隔离调用 PDF.js 原页渲染能力，按 PDF 坐标重新生成不含工具栏、框选层、深色模式或 Zotero 批注的干净 PNG；内部能力或版本不匹配时失败关闭，不退回屏幕抓图。
+- Reader 工具栏和 Agents 输入区都提供“截图”。进入框选模式后可在左侧 PDF 阅读区拖出矩形，靠近边缘时自动滚动；跨页矩形按实际覆盖页面拆成多张图，页间空隙不计入。插件针对 Zotero 9.0.6 / 10.0.4 隔离调用 PDF.js 原页渲染能力，按 PDF 坐标重新生成不含工具栏、框选层、深色模式或 Zotero 批注的干净 PNG；内部能力或精确版本不匹配时失败关闭，不退回屏幕抓图。Zotero 10 的 Reading Mode 重排视图不提供原页截图，不捕获其后台隐藏的 PDF。
 - 截图采用自适应高分辨率渲染，单张最长边 4096、最多 1600 万像素且 PNG 不超过 12 MiB。张数不设固定上限；侧栏按页折叠分组并只解码已展开的预览。为避免 Zotero 或 stdio 内存耗尽，单轮仍有 64 MiB/1.28 亿像素的紧急总保护，超限时保留完整草稿并阻止发送。
 - 框选结果先进入当前 PDF、捕获开始时所选 Agent 的会话草稿，不自动发送。卡片支持放大、移除和重新框选；重新框选成功前保留旧图。允许不填写问题直接发送纯图片。真正发送时，每张 PNG 使用 ACP 图片块，并用受安全边界保护的 JSON 同步发送页索引、页标签、PDF 点坐标矩形、输出像素、旋转和渲染比例；图片像素与论文内容都被标记为不可信数据。当前模型拒绝图片输入时，本地用户消息会回滚，截图草稿原样保留且不会自动换模型。
 - 每篇论文记住当前 Agent，首次默认 Codex；Codex / Pi / OpenCode 各自保留 session、历史、模型、思考强度与草稿。切换只读本地历史，不启动模型；连接、生成、等待授权和停止期间禁用切换，停止完成后恢复。同一 PDF/Agent 的多个 Reader 视图共享单 turn 锁，不同 PDF 可并行对话。
@@ -34,7 +34,7 @@ Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio �
 - 三个 Agent 的对话消息、代码、表格及展开的工具内容支持鼠标选择文字，并使用原生 ⌘C（Windows/Linux 为 Ctrl+C）或“编辑 → 复制”。选中文字时暂停消息区重绘，取消选择后立即显示最新回复；生成、停止及授权状态仍正常更新。
 - 超宽工具输出、路径和表格被限制在 Item Pane 内，不再把用户消息推到侧栏可视区域之外。
 - `execute`、文件读取、图片查看和搜索等常见工具会显示为语义卡片，只呈现安全元数据，不再把内部 ID、时间戳及原始事件 JSON 暴露在界面中；权限审批使用同一套可读展示。Codex 完成态 `View Image` 会联合核对工具类型、标题、输入路径、位置和资源链接，再把通过常规文件、25 MiB、扩展名与文件签名校验的 PNG/JPEG/GIF/WebP/AVIF 复制到工作区外的会话媒体目录；SVG、未知格式、路径不一致和伪装文件只显示错误，不回退直读源路径。图片卡片默认折叠，用户展开后才解码本地副本；点击预览可在当前 Zotero 窗口放大，并在适应窗口与 1:1 原始像素间切换。Web Search 会区分多查询搜索、打开网页和页内查找，完整展示 ACP 返回的查询、页面、查找词，以及事件中实际携带的结果标题、摘要或文本；若固定适配器没有传回网页正文或结果摘要，卡片会明确标注协议事件未携带内容。
-- Agents 回答和 Web Search 卡片中的 HTTP/HTTPS 链接只在用户点击后通过 Zotero 9.0.6 的 `Zotero.launchURL()` 交给系统默认浏览器；插件不在 Item Pane 内导航，也不允许其他 URL scheme。
+- Agents 回答和 Web Search 卡片中的 HTTP/HTTPS 链接只在用户点击后通过 Zotero 的 `Zotero.launchURL()` 交给系统默认浏览器；插件不在 Item Pane 内导航，也不允许其他 URL scheme。
 - Agent 思考增量中的最新非空状态行会显示在输入框上方的加载栏中；空白分隔块被忽略，历史思考不再堆成可展开卡片，任务结束后加载栏自动隐藏。
 - 设置页提供默认关闭的“开发者模式”。只有开启后，Agents 侧栏才显示“复制日志”按钮，并在内存中记录当前实时 turn 的工具调用与思考事件；关闭后立即清空且停止采集。日志会脱敏用户主目录和常见密钥字段，并限制事件、字符串及集合大小，但复制前仍应检查其中的命令、路径和工具输出。
 - 首轮实际发送给 ACP 的论文安全边界和 `resource_link` 只作为协议上下文保存；用户消息气泡始终只显示用户输入的问题，远端回放也会做同样的展示归一化。
@@ -122,7 +122,7 @@ smart-paper-translator/
 - Agent 的持久 session 是上下文权威来源，本地镜像用于离线展示。session 缺失时保留本地历史为只读，需用户确认后才能新建会话。
 - PDF 大小或修改时间变化时暂停发送。用户可以继续使用旧快照，或归档旧映射与工作区后建立新 session。
 - 同一 session 重启或 `session/load` 回放时，工具调用 ID 和截图 ID 会重新关联各自的本地受控副本。移除未发送截图会立即删除其文件；发送成功后的截图随 session 保留。新建会话会删除旧 session 的 `tool-images` 与 `screenshots` 目录，因此旧归档中的图片预览不再保留。
-- 若系统找不到 `pdftotext`，插件使用 Zotero 9.0.6 的 `Zotero.PDFWorker.getFullText()` 生成本地 `source.txt` 兜底，但仍保留并引用真实 PDF。
+- 若系统找不到 `pdftotext`，插件使用 Zotero 的 `Zotero.PDFWorker.getFullText()` 生成本地 `source.txt` 兜底，但仍保留并引用真实 PDF。
 
 这些文件不参与 Zotero 同步，也不加密。
 
@@ -143,16 +143,38 @@ smart-paper-translator/
 
 ## 开发与验证
 
-插件 XPI 不捆绑 Node、Pi、OpenCode、npm 缓存或 ACP 适配器包；它额外内置 MIT 许可的 KaTeX 0.18.4、Mermaid 11.16.1 和 ISC 许可的 D3 7.9.0 单文件运行时，不含运行时 CDN、字体或网络下载。开发检查需要 Node.js 22、Python 3 和 Info-ZIP：
+插件 XPI 不捆绑 Node、Pi、OpenCode、npm 缓存或 ACP 适配器包；它额外内置 MIT 许可的 KaTeX 0.18.4、Mermaid 11.16.1 和 ISC 许可的 D3 7.9.0 单文件运行时，不含运行时 CDN、字体或网络下载。开发检查需要支持 `module.registerHooks()` 的 Node.js（本次为 24.14.0）、Python 3 和 Info-ZIP：
 
 ```bash
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.40.xpi
+unzip -t dist/smart-paper-translator-0.1.41.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.41：Zotero 10 迁移
+
+当前目标为 macOS Zotero **10.0.4 / Gecko 140.15.0**。清单上限按 [Zotero 10 官方迁移说明](https://www.zotero.org/support/dev/zotero_10_for_developers) 更新为 `10.0.*`，最低版本仍为 `9.0`，插件 ID、偏好键、缓存目录和 Agent 会话格式保持兼容。
+
+已核对官方 `make-it-red` 示例、`zotero/zotero` 的 `10.0.4` 标签及本机 `app/omni.ja`：
+
+- 插件没有使用已移除的单选分类 getter、`itemsView.collectionTreeRow`、旧全文搜索/数据库表、`CookieSandbox` 或本机 HTTP 接口。智能标签继续通过公开的 `ItemTreeManager` 读本机缓存，不遍历内部条目行，因而不会把新增的库标题/间隔行当成论文。
+- Reader 事件、`getByTabID()`、`ItemPaneManager.registerSection()`、`PreferencePanes.register()`、`File.getResourceAsync()`、`PDFWorker.getFullText()` 均在 10.0.4 原生运行时确认存在。Fluent 沿用标准 `locale/<locale>/文件.ftl` 和 localization link，交给新版插件本地化注册逻辑处理。
+- 私有截图桥独立维护冻结的精确版本白名单 `9.0.6` / `10.0.4`；未知补丁或 beta 版本在读取私有字段前拒绝。Zotero 10 的 `_lastView` 可能指向 Reading Mode 重排视图，只有当前视图确实具备 PDF.js 页面与容器时才开放截图，缺失时不改用隐藏的原 PDF。
+
+2026-09-29 使用 Node 24.14.0 执行 `npm run check`，**316 项测试全部通过**，包含 9/10 精确版本、未知版本零私有访问和 Reading Mode 失败关闭回归；JavaScript、XHTML/安全静态检查通过。两次构建的 XPI 逐字节一致，归档中 44 个运行时文件与 `plugin/` 完全相同，通过根目录、`unzip -t` 和 SHA-256 校验。
+
+最终文件：`dist/smart-paper-translator-0.1.41.xpi`，SHA-256：`250b4a0afebf571ea4e35723db4fdd84881630f626c1e654b95adcf30a940034`。
+
+在 Zotero **10.0.4 / Gecko 140.15.0** 中对新旧 XPI 执行非安装式 `AddonManager.getInstallForFile()`：旧版 0.1.40 返回 `error=-11`、`isCompatible=false`、`appDisabled=true`；新版 0.1.41 返回 `error=0`、正确的插件 ID/版本、`isCompatible=true`、`appDisabled=false`。
+
+从 XPI 隔离加载实际截图模块，用当前 Reader 检查桥接结构，然后通过该 Reader 的 PDF.js 在内存中新建一页合成 PDF，内容为左右两个红、蓝矩形。原页渲染得到 **480×320 / 4324 字节 PNG**，签名、尺寸与截图规范化通过；解码后的两侧像素分别为 `[255,0,0,255]` / `[0,0,255,255]`。合成 PDF、画布与加载任务均在结束后释放；没有把用户论文截图保存到磁盘或发送到模型。XPI 中 D3 和主题 CSS 通过 `Zotero.File.getResourceAsync()` 返回 UTF-8 字符串。
+
+此轮未安装插件、修改 Zotero profile、准备 Agent 依赖或调用真实模型；不将原生解析和合成渲染等同于完整安装后 UI 冒烟。Zotero 9.0.6 沿用历史验证，本次未重新运行该客户端。
+
+手动验收：在「工具 → 插件 → 从文件安装」选择 0.1.41 XPI，打开 PDF 原页，确认 Agents 侧栏及既有历史可读；框选截图后检查草稿、缩略图及页码；切换论文和 Agent，确认草稿/历史各自隔离。重排阅读模式中的截图入口应保持禁用。
 
 ## 0.1.40：PR #2 整合与验证
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Smart Paper Translator",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "Academic translation, smart tags, and local Codex, Pi and OpenCode ACP chat for Zotero",
   "author": "Local Developer",
   "applications": {
@@ -9,7 +9,7 @@
       "id": "smart-paper-translator@zotero.local",
       "update_url": "https://example.invalid/smart-paper-translator/updates.json",
       "strict_min_version": "9.0",
-      "strict_max_version": "9.0.*"
+      "strict_max_version": "10.0.*"
     }
   }
 }

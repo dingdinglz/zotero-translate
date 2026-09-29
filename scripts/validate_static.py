@@ -18,10 +18,10 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.40"
+    assert manifest["version"] == "0.1.41"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
-    assert zotero["strict_max_version"] == "9.0.*"
+    assert zotero["strict_max_version"] == "10.0.*"
     assert zotero["update_url"].startswith("https://")
 
     ElementTree.parse(PLUGIN / "content" / "preferences.xhtml")
@@ -53,7 +53,7 @@ def main() -> None:
     assert 'ACP_MODE: "agent"' in constants
     assert 'ACP_TOOL_IMAGES_DIRECTORY: "tool-images"' in constants
     assert 'ACP_SCREENSHOTS_DIRECTORY: "screenshots"' in constants
-    assert 'PDF_SCREENSHOT_TARGET_ZOTERO_VERSION: "9.0.6"' in constants
+    assert 'PDF_SCREENSHOT_TARGET_ZOTERO_VERSIONS: Object.freeze(["9.0.6", "10.0.4"])' in constants
     assert "PDF_SCREENSHOT_MAX_EDGE: 4096" in constants
     assert "PDF_SCREENSHOT_MAX_PIXELS: 16 * 1000 * 1000" in constants
     assert "PDF_SCREENSHOT_MAX_BYTES: 12 * 1024 * 1024" in constants
@@ -74,7 +74,7 @@ def main() -> None:
     assert "deleteToolImageDirectory" in chat_cache
     assert "ensureScreenshotDirectory" in chat_cache
     assert "deleteScreenshotDirectory" in chat_cache
-    assert "PDF_SCREENSHOT_TARGET_ZOTERO_VERSION" in pdf_screenshot
+    assert "PDF_SCREENSHOT_TARGET_ZOTERO_VERSIONS" in pdf_screenshot
     assert "view?._iframeWindow" in pdf_screenshot
     assert "PDFViewerApplication" in pdf_screenshot
     assert "pdfDocument.getPage" in pdf_screenshot

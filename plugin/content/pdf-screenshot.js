@@ -7,7 +7,9 @@
   );
 
   const PNG_SIGNATURE = Object.freeze([137, 80, 78, 71, 13, 10, 26, 10]);
-  const TARGET_ZOTERO_VERSION = Constants.PDF_SCREENSHOT_TARGET_ZOTERO_VERSION;
+  // Private Reader/PDF.js contracts are verified per exact release, separately
+  // from the manifest's compatibility range for public plugin APIs.
+  const TARGET_ZOTERO_VERSIONS = Constants.PDF_SCREENSHOT_TARGET_ZOTERO_VERSIONS;
   const MIN_SELECTION_PIXELS = 3;
   const EDGE_SCROLL_ZONE = 52;
   const EDGE_SCROLL_MAX_STEP = 26;
@@ -359,7 +361,7 @@
     if (rotation == null || !page?.getViewport || !page?.render || !document?.createElement) {
       throw new PDFScreenshotError(
         "SCREENSHOT_RENDER_UNAVAILABLE",
-        `Zotero ${TARGET_ZOTERO_VERSION} 的 PDF 原页渲染能力不可用`
+        "当前 PDF 原页渲染能力不可用"
       );
     }
     const normalizedPDFRect = normalizePDFRect(pdfRect);
@@ -463,7 +465,16 @@
   function resolveTargetContext(doc, {
     zoteroVersion = global.Zotero?.version
   } = {}) {
+    // Reject unknown releases before reading any private Reader fields.
+    if (!TARGET_ZOTERO_VERSIONS.includes(String(zoteroVersion || ""))) {
+      throw new PDFScreenshotError(
+        "SCREENSHOT_BRIDGE_UNAVAILABLE",
+        `当前 Zotero 版本尚未验证原页截图（支持 ${TARGET_ZOTERO_VERSIONS.join(" / ")}）；草稿未改变`
+      );
+    }
     const readerApp = doc?.defaultView?._reader;
+    // In Zotero 10, _lastView can be a Reading Mode overlay. Only the active
+    // PDF.js view is eligible; never capture a hidden PDF or the reflowed page.
     const view = readerApp?._lastView;
     const iframeWindow = view?._iframeWindow;
     const application = iframeWindow?.PDFViewerApplication;
@@ -471,14 +482,13 @@
     const pdfDocument = application?.pdfDocument;
     const container = iframeWindow?.document?.getElementById?.("viewerContainer");
     if (
-      String(zoteroVersion || "") !== TARGET_ZOTERO_VERSION ||
       readerApp?._type !== "pdf" || !view || !iframeWindow || !application ||
       !pdfViewer || !pdfDocument?.getPage || !Array.isArray(pdfViewer._pages) ||
       !container || !iframeWindow.document?.createElement
     ) {
       throw new PDFScreenshotError(
         "SCREENSHOT_BRIDGE_UNAVAILABLE",
-        `当前页面不支持 Zotero ${TARGET_ZOTERO_VERSION} 原页截图；草稿未改变`
+        "当前视图不支持 PDF 原页截图；请切回 PDF 原页视图，草稿未改变"
       );
     }
     return {
@@ -502,7 +512,7 @@
     const scrollTop = Number(context.container.scrollTop) || 0;
     const descriptors = [];
     const pages = context.pdfViewer._pages;
-    // `_pages` belongs to the PDF.js content compartment in Zotero 9.0.6.
+    // `_pages` belongs to the PDF.js content compartment in Zotero 9/10.
     // Invoking its `.flatMap()` with this privileged callback throws
     // "Permission denied to pass object to privileged code" on pointerdown.
     for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
@@ -952,7 +962,7 @@
   const exported = {
     PDFScreenshotError,
     ZoteroPDFScreenshotBridge,
-    TARGET_ZOTERO_VERSION,
+    TARGET_ZOTERO_VERSIONS,
     normalizePDFRect,
     normalizeScreenshotLocation,
     normalizeScreenshotReference,

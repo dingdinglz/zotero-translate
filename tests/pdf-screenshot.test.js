@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const Constants = require("../plugin/content/constants.js");
 const {
   PDFScreenshotError,
-  TARGET_ZOTERO_VERSION,
+  TARGET_ZOTERO_VERSIONS,
   normalizePDFRect,
   normalizeScreenshotLocation,
   normalizeScreenshotCapture,
@@ -297,13 +297,13 @@ test("clean crop unwraps PDFPageProxy and creates options in the PDF.js realm", 
   assert.equal(optionObjects.at(-1).background, "#ffffff");
 });
 
-test("the private Reader bridge is exact-version gated and fails closed", () => {
+function readerContextDocument() {
   const container = {};
   const innerDocument = {
     createElement() {},
     getElementById(id) { return id === "viewerContainer" ? container : null; }
   };
-  const contextDocument = {
+  return {
     defaultView: {
       _reader: {
         _type: "pdf",
@@ -320,15 +320,38 @@ test("the private Reader bridge is exact-version gated and fails closed", () => 
       }
     }
   };
-  assert.equal(resolveTargetContext(contextDocument, {
-    zoteroVersion: TARGET_ZOTERO_VERSION
-  }).container, container);
-  assert.throws(
-    () => resolveTargetContext(contextDocument, { zoteroVersion: "9.0.7" }),
-    (error) => error instanceof PDFScreenshotError && error.code === "SCREENSHOT_BRIDGE_UNAVAILABLE"
-  );
-  assert.throws(
-    () => resolveTargetContext({}, { zoteroVersion: TARGET_ZOTERO_VERSION }),
-    { code: "SCREENSHOT_BRIDGE_UNAVAILABLE" }
-  );
+}
+
+test("the private Reader bridge supports the verified Zotero 9 and 10 releases", () => {
+  assert.deepEqual(TARGET_ZOTERO_VERSIONS, ["9.0.6", "10.0.4"]);
+  for (const zoteroVersion of ["9.0.6", "10.0.4"]) {
+    const contextDocument = readerContextDocument();
+    const context = resolveTargetContext(contextDocument, { zoteroVersion });
+    assert.equal(context.readerApp, contextDocument.defaultView._reader);
+    assert.equal(context.container, context.document.getElementById("viewerContainer"));
+    assert.deepEqual(context.pageLabels, ["i"]);
+    assert.throws(() => resolveTargetContext({}, { zoteroVersion }), {
+      code: "SCREENSHOT_BRIDGE_UNAVAILABLE"
+    });
+  }
+});
+
+test("unverified Zotero versions fail before any private Reader field is accessed", () => {
+  const doc = { get defaultView() { throw new Error("must not access private bridge"); } };
+  for (const zoteroVersion of ["", "9.0.7", "10.0", "10.0.3", "10.0.5", "10.0.4-beta.1", "10.1", "11.0"]) {
+    assert.throws(
+      () => resolveTargetContext(doc, { zoteroVersion }),
+      (error) => error instanceof PDFScreenshotError && error.code === "SCREENSHOT_BRIDGE_UNAVAILABLE"
+    );
+  }
+});
+
+test("Zotero 10 Reading Mode cannot fall back to a hidden PDF view", () => {
+  const doc = readerContextDocument();
+  const reader = doc.defaultView._reader;
+  reader._primaryView = reader._lastView;
+  reader._lastView = { _iframeWindow: { document: {} } };
+  assert.throws(() => resolveTargetContext(doc, { zoteroVersion: "10.0.4" }), {
+    code: "SCREENSHOT_BRIDGE_UNAVAILABLE"
+  });
 });

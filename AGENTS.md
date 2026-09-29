@@ -8,15 +8,15 @@
 
 `./.agents/skills/develop-zotero-plugins/SKILL.md`
 
-随后按照该 Skill 的路由说明，读取本次任务需要的 references。不得仅凭通用 WebExtension 或旧版 Zotero 经验推断 Zotero 9 API。
+随后按照该 Skill 的路由说明，读取本次任务需要的 references。不得仅凭通用 WebExtension 或旧版 Zotero 经验推断 Zotero 9/10 API；迁移时核对官方对应版本开发文档与本机 `omni.ja`。
 
 ## 项目概要
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.40`
-- 目标平台：macOS Zotero 9.0.6
-- 清单兼容范围：Zotero `9.0`–`9.0.*`
+- 当前版本：`0.1.41`
+- 目标平台：macOS Zotero 10.0.4；保留 Zotero 9.0.6 既有支持
+- 清单兼容范围：Zotero `9.0`–`10.0.*`；私有 PDF.js 截图桥仅开放 `9.0.6` / `10.0.4`
 - 插件源码根目录：`plugin/`
 - 最终 XPI 中只能包含 `plugin/` 下的运行时文件，不得包含 `.agents/`、测试、文档或构建工具。
 - 未经用户明确授权，不得安装插件、修改 Zotero profile、运行真实 npx 下载，或使用真实 API Key/Codex 发起模型请求。
@@ -41,7 +41,7 @@
 - Agents 侧栏模型/思考控件使用单列布局，选中全名可换行；保留原生 select 的菜单和键盘语义，展示副本设为 `aria-hidden`，配置失败同步恢复原值，忙碌状态同时禁用原生控件和更新展示样式。不得以裁切、省略号或仅悬停提示代替完整名称。
 - Agents Item Pane 只能用 `tabID → Zotero.Reader.getByTabID()` 精确解析 Reader PDF 附件；失败时禁用，不得猜测父条目附件。独立 Reader 窗口不注册聊天。
 - PDF 选区加入 Codex 必须再次用 `tabID → Zotero.Reader.getByTabID() → itemID` 精确复核附件，只复制白名单文本与有限数值 PDF 坐标；未发送草稿仅驻留内存并按附件隔离，精确坐标只在用户发送时交给本机 Codex。侧栏自动展开只能操作同一 tab 的 `item-details`，能力缺失时保留草稿并失败关闭。
-- PDF 截图只能通过同一 `tabID → Zotero.Reader.getByTabID() → itemID` 映射加入对应 Codex 草稿。Zotero 9.0.6 的私有 PDF.js 原页渲染桥必须隔离在 `pdf-screenshot.js`、精确版本检查并失败关闭；不得退回屏幕抓图或携带界面/批注。桥接代码不得把特权回调直接传入 PDF.js 内容域数组方法，PDFPageProxy 只能受控解包，`getViewport()`/`render()` 参数必须在目标 iframe 域内创建。跨页框选按页面拆图，图片和可复现 PDF 位置在用户发送时分别作为 ACP 图片块与受边界保护的 JSON 交给 Codex。截图副本只能保存在 ACP 工作区外的 `screenshots/论文标识/本地会话标识`；未发送草稿需可恢复，移除即清理，已发送副本随会话保留，重建会话统一删除。单图和单轮资源上限不得绕过，模型不支持图片时必须原子保留草稿并阻止发送。
+- PDF 截图只能通过同一 `tabID → Zotero.Reader.getByTabID() → itemID` 映射加入对应 Codex 草稿。Zotero 9.0.6 / 10.0.4 的私有 PDF.js 原页渲染桥必须隔离在 `pdf-screenshot.js`；读取私有字段前检查精确版本白名单并失败关闭，不得随清单范围放开。Zotero 10 的 Reading Mode 重排视图没有原页 PDF.js 能力时禁用截图，不得改用后台隐藏的 PDF 视图、屏幕抓图或携带界面/批注。桥接代码不得把特权回调直接传入 PDF.js 内容域数组方法，PDFPageProxy 只能受控解包，`getViewport()`/`render()` 参数必须在目标 iframe 域内创建。跨页框选按页面拆图，图片和可复现 PDF 位置在用户发送时分别作为 ACP 图片块与受边界保护的 JSON 交给 Codex。截图副本只能保存在 ACP 工作区外的 `screenshots/论文标识/本地会话标识`；未发送草稿需可恢复，移除即清理，已发送副本随会话保留，重建会话统一删除。单图和单轮资源上限不得绕过，模型不支持图片时必须原子保留草稿并阻止发送。
 - Codex 消息中的文件引用只能在当前 PDF 的专用工作区内定位；不得让模型输出的路径越过工作区边界。首轮安全前缀和资源链接不得作为用户问题显示。
 - Agents 的 `visualize` 标记只可读取当前论文、当前 Agent、当前本地会话工作区内不超过 1 MiB 的 UTF-8 HTML 常规文件，逐级拒绝软链接；切换论文、Agent、会话、重绘和销毁后丢弃迟到结果并清理预览。HTML 只能交给双层 `sandbox="allow-scripts"` 的不透明源 iframe；外层只运行插件固定桥接代码，以 `frame-src 'none'` 阻止内层导航，内层 CSP 禁止网络、外部资源、表单、弹窗和子资源。不得开放同源权限或把模型 HTML/JS 注入 Zotero 文档或特权 sandbox。固定 D3 7.9.0 随 XPI 内置，脚本和主题必须用 `Zotero.File.getResourceAsync()` 读取 UTF-8 文本并校验返回类型，不得把 `getContentsAsync(jarURI)` 返回的请求对象字符串化。只替换明确支持的固定 CDN 引用，不在运行时联网；其他外部脚本报错并保留原标记。外层在内层开始解析前注册消息监听，只接收精确 child/source 与随机 token 匹配的有界状态/尺寸和关闭通知；Gecko 禁止内容页调用特权窗口的 `postMessage`，原生侧须捕获所属 iframe 的内容 load 事件，再读取并观察外层固定状态属性，复核当前 frame/document/token，限制 JSON 长度并在清理时断开观察器。不得读取内层模型 DOM 作为状态源、向内容域暴露特权回调，或接受工具、文件及链接操作。生成、连接、等待授权和停止期间不创建预览或读取 HTML，回复结束后渲染，避免流式重绘反复启动脚本。当前消息区最多同时预览 4 个图表，放大层最多增加 1 个；加载超时后移除 iframe，关闭支持按钮、背景点击和 Escape（含图表焦点）。
 - Codex 文本与 Web Search 卡片中的外部链接只能接受 HTTP/HTTPS，必须在用户点击后通过 `Zotero.launchURL()` 交给系统默认浏览器；不得在 Item Pane 内导航、自动打开链接或加载远程图片。Codex 文件引用需兼容单冒号 `:codex-file-citation{...}` 与双冒号格式，并继续执行工作区边界检查。
@@ -90,7 +90,7 @@ zotero-translate/
 │       ├── credentials.js            # Mozilla Login Manager 密钥存储
 │       ├── cache.js                  # 译文与智能标签持久化、原子新增/替换/术语删除和损坏恢复
 │       ├── chat-cache.js             # 按 Agent 隔离的 session/镜像、旧 Codex 兼容及工作区/媒体生命周期
-│       ├── pdf-screenshot.js         # Zotero 9.0.6 原页框选/跨页拆图、PDF 坐标映射、PNG 渲染校验与资源保护
+│       ├── pdf-screenshot.js         # Zotero 9.0.6/10.0.4 精确版本桥、原页框选/跨页拆图、PNG 校验与资源保护
 │       ├── api.js                    # OpenAI Chat Completions 客户端与安全错误映射
 │       ├── service.js                # 翻译、摘要、智能标签、缓存探测/强制刷新、术语删除及在途失效
 │       ├── pi-acp-compat.js          # 固定 Pi 适配器哈希校验、Node 内存补丁、按模型读取档位与确认 max
@@ -133,7 +133,7 @@ zotero-translate/
 │   ├── credentials.test.js           # API Key 隔离测试
 │   ├── cache.test.js                 # 缓存新增/替换/术语删除、配置与论文隔离、原子写入和损坏恢复
 │   ├── chat-cache.test.js            # 旧 Codex 兼容与三 Agent 镜像/配置/媒体目录隔离、损坏备份、并发和归档清理
-│   ├── pdf-screenshot.test.js         # 原页截图坐标、跨页拆分、跨上下文桥、PNG/缩放、渲染和版本关闭
+│   ├── pdf-screenshot.test.js         # 原页截图坐标/渲染、跨页/域、9/10 精确版本与 Reading Mode 失败关闭
 │   ├── api.test.js                   # 请求结构、隐私和错误映射
 │   ├── pi-acp-compat.test.js          # max/能力/确认失败/哈希拒绝；可选现成适配器无提示词验证
 │   ├── opencode-acp.test.js         # 原生参数/认证、OSC/长消息、模型收集握手/取消回收、能力与临时数据清理
@@ -154,8 +154,9 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.40.xpi         # 当前版本交付物
-    ├── smart-paper-translator-0.1.39.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.41.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.40.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.39.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.38.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.37.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.36.xpi         # 历史版本归档

@@ -20,7 +20,7 @@
   const Constants = Object.freeze({
     PLUGIN_ID: "smart-paper-translator@zotero.local",
     PLUGIN_NAME: "Smart Paper Translator",
-    VERSION: "0.1.40",
+    VERSION: "0.1.41",
     PREF_PREFIX,
     PREFS: Object.freeze({
       provider: PREF_PREFIX + "provider",
@@ -123,7 +123,7 @@
     ACP_TOOL_IMAGE_MAX_BYTES: 25 * 1024 * 1024,
     ACP_TOOL_IMAGE_HEADER_BYTES: 64,
     PDF_SCREENSHOT_SCHEMA_VERSION: 1,
-    PDF_SCREENSHOT_TARGET_ZOTERO_VERSION: "9.0.6",
+    PDF_SCREENSHOT_TARGET_ZOTERO_VERSIONS: Object.freeze(["9.0.6", "10.0.4"]),
     PDF_SCREENSHOT_MIN_SCALE: 2,
     PDF_SCREENSHOT_MAX_SCALE: 4,
     PDF_SCREENSHOT_MAX_EDGE: 4096,
