@@ -35,6 +35,12 @@ class FakeElement {
   }
 
   focus() { this.focused = true; }
+  get firstElementChild() { return this.children[0] || null; }
+  get lastElementChild() { return this.children[this.children.length - 1] || null; }
+  replaceChildren(...children) {
+    for (const child of this.children.slice()) child.remove();
+    this.append(...children);
+  }
   openPopup() { this.dispatch("popupshown"); }
   hidePopup() { this.dispatch("popuphidden"); }
 
@@ -140,7 +146,10 @@ function makeHarness({ cachePeek } = {}) {
     service,
     getPreference: prefs.get,
     itemTreeManager: manager,
-    items: { get: (id) => itemMap.get(Number(id)) || null },
+    items: {
+      get: (id) => itemMap.get(Number(id)) || null,
+      getAll: async () => Array.from(itemMap.values())
+    },
     stylesheetText: ".spt-smart-tag { border-radius: 999px; }",
     setTimer(callback) {
       scheduled = callback;
@@ -209,7 +218,8 @@ test("smart-tag column registers after title and lazily refreshes local cache da
   assert.equal(cell.children[0].children[1].tagName, "button");
   assert.equal(content.children[0].textContent, "World Model");
   assert.match(content.children[0].className, /spt-smart-tag--tone-[0-4]/u);
-  assert.equal(content.children[0].title, "World Model");
+  assert.equal(content.children[0].tagName, "button");
+  assert.equal(content.children[0].title, "查看同标签文章：World Model");
   assert.match(cell.getAttribute("aria-label"), /World Model/u);
 });
 
@@ -474,4 +484,226 @@ test("manual clearing wins over stale cache probes and automatic events and supp
   });
   assert.deepEqual(JSON.parse(h.ui.dataProvider(h.item)).tags, []);
   assert.equal(assignTagTones(Array.from({ length: 20 }, (_, i) => `Tag ${i}`)).length, 20);
+});
+
+async function openResults(h, tag = "Planning", item = h.item) {
+  await h.ui.openTagResults(h.doc, h.identity(item), tag, h.anchor);
+  return h.ui.tagResults.get(h.win);
+}
+
+test("individual tag buttons use the clicked item identity and preserve native keyboard activation", async () => {
+  const h = editableHarness();
+  await h.service.saveSmartTags(h.ui._descriptor(h.item).paper, ["Planning", "Control"]);
+  const cell = h.ui.renderCell(999, h.ui.dataProvider(h.item), {}, false, h.doc);
+  const chip = cell.children[0].children[0].children[1];
+  let clicked;
+  h.ui.openTagResults = async (...args) => { clicked = args; };
+  h.win.ZoteroPane.getSelectedItems = () => { throw new Error("Must not follow selection"); };
+  let stopped = 0;
+  chip.dispatch("keydown", {
+    key: "Enter", stopPropagation: () => stopped++,
+    preventDefault: () => assert.fail("Do not cancel native button activation")
+  });
+  chip.dispatch("click", { stopPropagation: () => stopped++ });
+  assert.equal(stopped, 2);
+  assert.equal(chip.type, "button");
+  assert.equal(chip.getAttribute("aria-haspopup"), "dialog");
+  assert.deepEqual(clicked[1], { tags: ["Planning", "Control"], ...h.identity(h.item) });
+  assert.equal(clicked[2], "Control");
+  assert.equal(clicked[3], chip);
+  assert.equal(h.ui.editors.size, 0);
+});
+
+test("tag aggregation spans the clicked library with exact normalized matching and manual precedence", async () => {
+  const h = editableHarness();
+  const add = (id, overrides = {}) => {
+    const item = makeItem({ id, key: `KEY${String(id).padStart(5, "0")}`, ...overrides });
+    h.itemMap.set(id, item);
+    return item;
+  };
+  const auto = add(21);
+  const cleared = add(22);
+  const replaced = add(23);
+  const otherLibrary = add(24, { libraryID: 2 });
+  const deleted = add(25);
+  const child = add(26, { parentItemID: h.item.id, isRegularItem: () => false, isPDFAttachment: () => true });
+  const standalone = add(27, { isRegularItem: () => false, isPDFAttachment: () => true });
+  const noAbstract = add(28, { getField: (field) => field === "title" ? "<img src=x>" : "" });
+  const stale = add(29);
+  for (const item of [auto, cleared, replaced, stale]) {
+    const d = h.ui._descriptor(item);
+    await h.cache.append(d.paper, {
+      kind: "smart-tags", normalizedSource: "source", sourceSignature: d.sourceSignature,
+      configSignature: item === stale ? "old-config" : d.configSignature,
+      tags: ["  PLANNING  "], createdAt: "2026-09-30"
+    });
+  }
+  for (const item of [h.item, otherLibrary, deleted, standalone, noAbstract]) {
+    await h.service.saveSmartTags(h.ui._descriptor(item).paper, ["Planning"]);
+  }
+  deleted.deleted = true;
+  await h.service.saveSmartTags(h.ui._descriptor(cleared).paper, []);
+  await h.service.saveSmartTags(h.ui._descriptor(replaced).paper, ["Planning Ahead"]);
+  const writes = h.io.writeJSONCalls.length;
+  let query;
+  h.ui.items.getAll = async (...args) => {
+    query = args;
+    return [...h.itemMap.values(), auto]; // Defensive exclusion and deduplication.
+  };
+  const state = await openResults(h, " planning ");
+  assert.deepEqual(query, [1, true, false]);
+  assert.deepEqual(state.results.map((r) => r.itemID).sort((a, b) => a - b), [20, 21, 27, 28]);
+  assert.equal(state.list.children[0].lastElementChild.textContent, "<img src=x>");
+  assert.equal(state.list.children[0].lastElementChild.children.length, 0);
+  assert.match(state.status.textContent, /共 4 篇/u);
+  assert.equal(state.failures, 0);
+  assert.equal(h.io.writeJSONCalls.length, writes);
+  assert.equal(h.ui._descriptor(child), null);
+});
+
+test("all matches remain reachable across bounded result pages and bounded cache batches", async () => {
+  const h = editableHarness();
+  for (let i = 0; i < 104; i++) {
+    const item = makeItem({ id: 100 + i, key: `PAGE${String(i).padStart(4, "0")}` });
+    h.itemMap.set(item.id, item);
+  }
+  let active = 0;
+  let maximum = 0;
+  h.cache.peekSmartTags = async () => {
+    active++;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setImmediate(resolve));
+    active--;
+    return { tags: ["Planning"] };
+  };
+  const state = await openResults(h);
+  assert.equal(state.results.length, 105);
+  assert.equal(state.list.children.length, 50);
+  assert.ok(maximum <= 8);
+  state.next.dispatch("click");
+  assert.equal(state.list.getAttribute("start"), "51");
+  state.next.dispatch("click");
+  assert.equal(state.list.children.length, 5);
+  assert.equal(state.next.disabled, true);
+  assert.match(state.status.textContent, /共 105 篇 · 第 3 \/ 3 页/u);
+  state.previous.dispatch("click");
+  assert.equal(state.list.children.length, 50);
+  assert.equal(h.io.writeJSONCalls.length, 0);
+});
+
+test("closed, replaced, changed-view and destroyed result panels discard late cache reads", async () => {
+  for (const change of ["escape", "replace", "tab", "view", "identity", "window", "shutdown"]) {
+    const h = editableHarness();
+    let resolve;
+    h.cache.peekSmartTags = () => new Promise((done) => { resolve = done; });
+    const pending = openResults(h);
+    await new Promise((done) => setImmediate(done));
+    const stale = h.ui.tagResults.get(h.win);
+    if (change === "escape") stale.panel.dispatch("keydown", { key: "Escape" });
+    if (change === "tab") h.win.Zotero_Tabs.selectedID = "reader-tab";
+    if (change === "view") h.win.ZoteroPane.itemsView = {};
+    if (change === "identity") h.itemMap.set(h.item.id, makeItem({ key: "OTHERKEY" }));
+    if (change === "window") h.ui.removeFromWindow(h.win);
+    if (change === "shutdown") h.ui.shutdown();
+    let replacement;
+    if (change === "replace") {
+      h.cache.peekSmartTags = async () => ({ tags: ["Control"] });
+      replacement = await openResults(h, "Control");
+    }
+    resolve({ tags: ["Planning"] });
+    await pending;
+    assert.equal(stale.list.children.length, 0, change);
+    assert.equal(stale.panel.isConnected, false, change);
+    assert.equal(h.ui.tagResults.get(h.win), replacement, change);
+  }
+});
+
+test("tag edits invalidate in-flight aggregation and refresh uses the new local state", async () => {
+  const h = editableHarness();
+  let resolve;
+  const peek = h.cache.peekSmartTags.bind(h.cache);
+  h.cache.peekSmartTags = () => new Promise((done) => { resolve = done; });
+  const pending = openResults(h);
+  await new Promise((done) => setImmediate(done));
+  const state = h.ui.tagResults.get(h.win);
+  await h.service.saveSmartTags(h.ui._descriptor(h.item).paper, []);
+  assert.match(state.status.textContent, /已更新/u);
+  h.cache.peekSmartTags = peek;
+  await h.ui._loadTagResults(state);
+  resolve({ tags: ["Planning"] });
+  await pending;
+  assert.equal(state.results.length, 0);
+  assert.match(state.status.textContent, /没有找到/u);
+  assert.equal(state.refresh.disabled, false);
+  assert.equal(state.list.getAttribute("aria-busy"), "false");
+});
+
+test("cache failures show incomplete results without changing damaged files and allow retry", async () => {
+  const h = editableHarness();
+  const broken = makeItem({ id: 21, key: "BROKEN01" });
+  h.itemMap.set(broken.id, broken);
+  await h.service.saveSmartTags(h.ui._descriptor(h.item).paper, ["Planning"]);
+  h.io.setText("/records/1--BROKEN01.json", "{broken");
+  const writes = h.io.writeJSONCalls.length;
+  const state = await openResults(h);
+  assert.equal(state.results.length, 1);
+  assert.equal(state.failures, 1);
+  assert.match(state.status.textContent, /结果可能不完整/u);
+  assert.equal(h.io.writeJSONCalls.length, writes);
+  assert.equal(h.io.files.size, 2);
+  const getAll = h.ui.items.getAll;
+  h.ui.items.getAll = async () => { throw new Error("Library not available"); };
+  await h.ui._loadTagResults(state);
+  assert.equal(state.list.children.length, 0);
+  assert.match(state.status.textContent, /无法读取/u);
+  assert.equal(state.refresh.disabled, false);
+  h.ui.items.getAll = getAll;
+  await h.ui._loadTagResults(state);
+  assert.equal(state.results.length, 1);
+});
+
+test("locating a result revalidates its identity and tag and selects it in the library root", async () => {
+  const h = editableHarness();
+  await h.service.saveSmartTags(h.ui._descriptor(h.item).paper, ["Planning"]);
+  const selected = [];
+  h.win.ZoteroPane.selectItem = async (...args) => { selected.push(args); return true; };
+  let state = await openResults(h);
+  await h.ui._locateTagResult(state, state.results[0]);
+  assert.deepEqual(selected, [[h.item.id, { inLibraryRoot: true }]]);
+  assert.equal(h.ui.tagResults.size, 0);
+  state = await openResults(h);
+  h.cache.peekSmartTags = async () => ({ tags: [] });
+  await h.ui._locateTagResult(state, state.results[0]);
+  assert.equal(selected.length, 1);
+  assert.match(state.status.textContent, /已更新/u);
+  h.cache.peekSmartTags = async () => ({ tags: ["Planning"] });
+  await h.ui._loadTagResults(state);
+  const stale = state.results[0];
+  h.item.deleted = true;
+  await h.ui._locateTagResult(state, stale);
+  assert.equal(selected.length, 1);
+});
+
+test("late location requests cannot act after closing; result and editor panels clean up each other", async () => {
+  const h = editableHarness();
+  h.cache.peekSmartTags = async () => ({ tags: ["Planning"] });
+  let state = await openResults(h);
+  const selected = [];
+  h.win.ZoteroPane.selectItem = async (...args) => { selected.push(args); return true; };
+  let resolve;
+  h.cache.peekSmartTags = () => new Promise((done) => { resolve = done; });
+  const locate = h.ui._locateTagResult(state, state.results[0]);
+  h.ui.closeTagResults(h.win);
+  resolve({ tags: ["Planning"] });
+  await locate;
+  assert.deepEqual(selected, []);
+  h.cache.peekSmartTags = async () => ({ tags: ["Planning"] });
+  state = await openResults(h);
+  const editor = await h.open();
+  assert.equal(state.panel.isConnected, false);
+  await openResults(h);
+  assert.equal(editor.panel.isConnected, false);
+  h.ui.shutdown();
+  assert.equal(h.ui.tagResults.size, 0);
+  assert.equal(h.ui.editors.size, 0);
 });

@@ -41,8 +41,8 @@ XPI 是 ZIP 文件，但 `manifest.json` 和 `bootstrap.js` 必须位于归档�
     "zotero": {
       "id": "example@example.org",
       "update_url": "https://example.invalid/example/updates.json",
-      "strict_min_version": "7.0",
-      "strict_max_version": "9.0.*"
+      "strict_min_version": "10.0",
+      "strict_max_version": "10.0.*"
     }
   }
 }
@@ -51,10 +51,10 @@ XPI 是 ZIP 文件，但 `manifest.json` 和 `bootstrap.js` 必须位于归档�
 执行以下规则：
 
 - 保持插件 ID 永久稳定；升级版本必须沿用同一 ID。
-- 只声明实际测试过的兼容范围。发布前检查当前 Zotero 主版本和最新版本迁移说明。
-- 为正式发行提供真实、可访问的 HTTPS `updates.json`。
-- 仅在本地开发且不提供自动更新时，才使用保留的 `.invalid` HTTPS 地址，并在交付说明中明确它不会更新。
+- 上例是新插件的 Zotero 10 清单示例，实际范围需按目标客户端验证；已有插件不要照抄示例而丢掉旧版本支持。版本迁移先读对应官方说明；Zotero 10 见 [迁移参考](zotero-10-migration.md)。
+- 自动更新需要真实、可访问的 HTTPS `updates.json`。若项目明确采用手动 XPI 更新，可保留 `.invalid` HTTPS 占位地址并说明不会自动更新，不必额外部署服务。
 - Zotero 9.0.6 的实际安装解析器会拒绝缺少 `applications.zotero.update_url` 的清单；其他版本仍应通过目标客户端复核。
+- 清单兼容范围不代替私有 API 的功能门控。截图等脆弱桥接独立维护实测精确版本与能力检查，未验证时禁用该功能并保留用户草稿。
 
 ## 生命周期与窗口状态
 
@@ -143,7 +143,7 @@ Zotero.Reader.registerEventListener(
 - 设置 `title`、`aria-label` 和 `aria-pressed`。
 - 把 `pluginID` 传给注册函数，使 Zotero 在禁用或卸载插件时自动移除监听器。
 - `reader.itemID` 是当前附件 ID；`reader.tabID` 只适用于标签页阅读器。
-- `_window`、`_iframeWindow` 等下划线字段是内部实现。仅在没有公开替代方案且已对目标版本源码和运行时验证后使用，并提供回退路径。
+- `_window`、`_iframeWindow` 等下划线字段是内部实现。仅在没有公开替代方案且已对目标版本源码和运行时验证后使用；桥接缺失时保留用户状态并禁用该功能。截图不能退回屏幕抓图或其他 Reader。
 
 如果插件在一个已经打开的阅读器中被热启用，`renderToolbar` 可能已经触发。可以要求用户重新打开标签页；若必须即时补按钮，应把直接 DOM 注入限制为版本化回退，并防止重复按钮。
 
@@ -246,4 +246,4 @@ Zotero.Prefs.unregisterObserver(symbol);
 - 对官方支持 `pluginID` 自动清理的注册 API，仍要清理自己创建的 DOM 和状态。
 - 不要写 Zotero SQLite 数据库；通过 Zotero 数据 API 读写条目，并在写操作前建立测试数据与备份。
 - 对网络、文件写入、密钥或论文内容上传做显式披露；默认保持本地、最小权限。
-- Zotero 8 起 Mozilla 平台继续演进，模块导入和窗口作用域会变化。涉及 ESM/JSM、Firefox/XPCOM 或内部字段时，必须读取目标版本迁移说明和实际源码。
+- Mozilla 平台升级与 Zotero 自身 API 升级分别核对。Zotero 9/10 都基于 Firefox 140 ESR，仍有 Zotero 层面的破坏性变化；涉及 ESM/JSM、Firefox/XPCOM 或内部字段时，读取目标版本迁移说明和实际源码。

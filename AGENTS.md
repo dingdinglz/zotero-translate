@@ -14,7 +14,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.43`
+- 当前版本：`0.1.45`
 - 目标平台：macOS Zotero 10.0.4；保留 Zotero 9.0.6 既有支持
 - 清单兼容范围：Zotero `9.0`–`10.0.*`；私有 PDF.js 截图桥仅开放 `9.0.6` / `10.0.4`
 - 插件源码根目录：`plugin/`
@@ -52,6 +52,7 @@
 - 悬浮面板术语删除仅清理当前论文中同一规范化原文的全部 selection 缓存配置变体；原子写入成功后更新列表与计数，不改摘要、智能标签或其他论文。删除必须使此前在途的对应划线请求及缓存探测失效，防止旧结果恢复缓存；异步列表刷新和删除回调复核 Reader、论文与请求序号，失败保留术语并允许重试。
 - 当前 PDF 的划线翻译禁用开关默认关闭，禁用附件 ID 列表仅持久化在本机 Zotero 偏好中；命中禁用状态时不得追加插件划线翻译 UI、查询划线缓存或发起翻译请求，且不得影响其他 PDF 或独立的“添加到 Agents”入口。
 - 列表页智能标签的编辑、添加、删除和清空只写插件当前论文缓存；手动标签最多 20 个、每个最多 64 字符，允许多语言和无摘要条目。`manual: true` 记录及空数组优先于所有自动配置，迟到生成不得覆盖；写入按论文串行且原子提交，用修订号拒绝其他窗口的陈旧保存，成功后才刷新。单元格绑定条目 ID 和论文标识，不按行号或当前选择猜测目标；异步编辑复核窗口、条目和视图，关闭后清理浮层并丢弃迟到结果。保留 `.cell-text` 包装，防止 Zotero 重建首列时丢失编辑监听器。
+- 单个智能标签的文章汇总限定为被点击条目所在文库，跨分类读取已有标签，排除回收站、子附件和笔记；完整名称按既有空白/大小写规则匹配，沿用手动标签和手动清空优先级。查询不得生成新标签或修改缓存；损坏记录显示不完整结果提示，全部结果分页可达。点击结果定位前复核条目身份、标签及当前视图；关闭、切换和销毁丢弃迟到结果，标签或文库变化使旧结果失效。
 
 - visualize 文件逐级检查必须保留原生绝对路径根：Windows 盘符从 `C:\` 开始，UNC 从完整的 `\\server\share` 开始，并检查共享根、各级目录与最终文件，读取前后均不得跳过软链接或类型校验。D3 的固定哈希以仓库 LF 字节为准，`.gitattributes` 固定该 bundle 的 LF 换行，不得用本机 CRLF 转换后的哈希替换。
 
@@ -69,7 +70,19 @@ zotero-translate/
 ├── .gitignore
 ├── .agents/
 │   └── skills/
-│       └── develop-zotero-plugins/   # Zotero 插件开发 Skill 及参考资料
+│       └── develop-zotero-plugins/   # 插件开发、版本迁移与原生验证指南
+│           ├── SKILL.md              # 按任务路由与交付/授权边界
+│           ├── agents/
+│           │   └── openai.yaml       # Skill 发现与界面元数据
+│           ├── references/
+│           │   ├── implementation-patterns.md    # 生命周期、Reader 与设置模式
+│           │   ├── source-and-debugging.md       # 官方来源、XPI 解析、隔离探针与跨域调试
+│           │   ├── zotero-10-migration.md        # 9→10 API 检查、Reading Mode 与精确版本桥
+│           │   └── abstract-popup-case-study.md  # 历史悬浮窗/兼容报错案例
+│           └── scripts/
+│               ├── scaffold_zotero_plugin.py     # 显式指定版本的插件骨架
+│               ├── inspect_zotero_source.py      # 本机 omni.ja 字面/正则搜索
+│               └── build_xpi.py                  # Skill 通用可复现打包器
 ├── docs/
 │   ├── screenshots/                 # 中英文 README 共用的 Zotero 实际界面截图
 │   │   ├── agent-settings.png       # 公共运行环境与 Pi 模型、适配器准备状态
@@ -120,7 +133,7 @@ zotero-translate/
 │       │       ├── mermaid.min.js    # Mermaid 11.16.1 离线浏览器运行时
 │       │       ├── LICENSE.txt       # Mermaid MIT 许可证
 │       │       └── README.md         # 版本、来源、哈希与安全集成边界
-│       ├── item-tree-ui.js           # 主页智能标签列、本地编辑浮层、条目绑定/迟到隔离与列刷新
+│       ├── item-tree-ui.js           # 智能标签列、同标签文章汇总/定位、本地编辑、条目绑定/迟到隔离与列刷新
 │       ├── item-tree.css             # 智能标签列、编辑浮层/原生控件对齐、主题色胶囊与无障碍模式样式
 │       ├── reader-ui.js              # Agents 选区/截图、划线缓存/重译/禁用、工具栏及悬浮面板术语删除/拖拽缩放
 │       ├── reader.css                # Reader 工具栏/截图、Agents 选区、悬浮面板/悬停删除、缩放和划线弹窗样式
@@ -148,15 +161,17 @@ zotero-translate/
 │   ├── main.test.js                  # ACP/Agent 设置桥接、只读发现、FilePicker 选取/取消与偏好作用域
 │   ├── preferences.test.js           # 路径下拉/编辑/刷新/空路径发现/迟到结果、Tab/表单保留与检测锁
 │   ├── service.test.js               # 摘要、手动标签/迟到生成、缓存探测、术语删除/在途失效、并发与取消
-│   ├── item-tree-ui.test.js          # 智能标签编辑/增删/失败重试、异步隔离、渲染安全与清理
+│   ├── item-tree-ui.test.js          # 标签编辑/聚合/分页/定位、手动优先、失败重试、异步隔离与清理
 │   └── reader-ui.test.js             # 选区/截图 Agents 入口、划线翻译/禁用、术语删除/重试、Tabs、拖拽缩放和陈旧 UI 防护
 ├── scripts/
 │   ├── build.sh                      # 完整 XPI 构建与归档检查入口
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.43.xpi         # 当前版本交付物
-    ├── smart-paper-translator-0.1.42.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.45.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.44.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.43.xpi         # 历史版本归档
+    ├── smart-paper-translator-0.1.42.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.41.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.40.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.39.xpi         # 历史版本归档

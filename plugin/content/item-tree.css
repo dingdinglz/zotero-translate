@@ -207,6 +207,7 @@
 .spt-smart-tag {
   --spt-smart-tag-accent: var(--tag-blue, #2ea8e5);
 
+  appearance: none;
   align-items: center;
   background: color-mix(
     in srgb,
@@ -230,9 +231,13 @@
   );
   display: inline-flex;
   flex: 0 1 auto;
+  font: inherit;
   font-size: 0.9em;
   font-weight: 500;
   height: 19px;
+  max-height: none;
+  min-height: 0;
+  margin: 0;
   letter-spacing: 0.005em;
   line-height: 17px;
   max-width: 200px;
@@ -241,6 +246,94 @@
   padding: 0 7px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+button.spt-smart-tag {
+  cursor: pointer;
+}
+
+button.spt-smart-tag:hover {
+  filter: brightness(0.95);
+  text-decoration: underline;
+}
+
+button.spt-smart-tag:focus-visible {
+  outline: 2px solid var(--color-focus-border, var(--color-accent, #2869cb));
+  outline-offset: -2px;
+}
+
+.spt-smart-tag-results {
+  width: 560px;
+}
+
+.spt-smart-tag-results h3 {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.spt-smart-tag-results > .spt-smart-tags-editor-status {
+  /* The editor footer uses a horizontal 160px flex basis. Here the
+     status is a row in a column, so it must only occupy its text height. */
+  flex: 0 0 auto;
+}
+
+.spt-smart-tag-results-list {
+  flex: 0 1 auto;
+  list-style: none;
+  margin: 0;
+  max-height: min(400px, 45vh);
+  min-height: 0;
+  overflow: auto;
+  padding: 3px;
+}
+
+.spt-smart-tag-results-list:empty {
+  display: none;
+}
+
+.spt-smart-tag-results-list li {
+  align-items: first baseline;
+  display: grid;
+  grid-template-columns: 2.5em minmax(0, 1fr);
+}
+
+.spt-smart-tag-results-list li + li {
+  margin-top: 5px;
+}
+
+.spt-smart-tag-result-number {
+  /* Match the title button's first line, including its border and padding. */
+  border: 1px solid transparent;
+  box-sizing: border-box;
+  line-height: 1.5;
+  padding-block: 5px;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.spt-smart-tag-results .spt-smart-tag-result-title {
+  background: transparent;
+  border-color: transparent;
+  display: block;
+  height: auto;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  padding: 5px 8px;
+  text-align: start;
+  white-space: normal;
+  width: 100%;
+}
+
+.spt-smart-tag-results .spt-smart-tag-result-title:hover {
+  background: var(--material-button, #eee);
+  text-decoration: underline;
+}
+
+.spt-smart-tag-results-actions {
+  flex-wrap: wrap;
+  border-top: 1px solid var(--fill-quinary, #e4e4e4);
+  padding-top: 12px;
+  width: 100%;
 }
 
 .spt-smart-tag--tone-1 {

@@ -8,6 +8,12 @@
   const Logic = modules.Logic || (
     typeof require === "function" ? require("./logic.js") : null
   );
+  const TAG_RESULTS_PAGE_SIZE = 50;
+  const TAG_READ_BATCH_SIZE = 8;
+
+  function tagMatchKey(tag) {
+    return Logic.normalizeText(tag).toLocaleLowerCase("en-US");
+  }
 
   function decodeTags(data) {
     if (!data) return [];
@@ -71,6 +77,7 @@
       this.revisions = new Map();
       this.windowStyles = new Map();
       this.editors = new Map();
+      this.tagResults = new Map();
       this.globalRevision = 0;
       this.refreshTimer = null;
       this.registeredDataKey = null;
@@ -232,18 +239,31 @@
       cell.title = description;
       if (tags.length) cell.setAttribute("aria-label", `智能标签：${description}`);
       const tones = assignTagTones(tags);
-      for (let index = 0; index < tags.length; index++) {
-        const tag = tags[index];
-        const chip = doc.createElement("span");
-        chip.className = `spt-smart-tag spt-smart-tag--tone-${tones[index]}`;
-        chip.textContent = tag;
-        chip.title = tag;
-        chips.append(chip);
-      }
       let identity;
       try { identity = JSON.parse(data); }
       catch (_error) {}
-      if (this._editableDescriptor(identity)) {
+      const editable = Boolean(this._editableDescriptor(identity));
+      for (let index = 0; index < tags.length; index++) {
+        const tag = tags[index];
+        const chip = doc.createElementNS("http://www.w3.org/1999/xhtml", editable ? "button" : "span");
+        chip.className = `spt-smart-tag spt-smart-tag--tone-${tones[index]}`;
+        chip.textContent = tag;
+        chip.title = editable ? `查看同标签文章：${tag}` : tag;
+        if (editable) {
+          chip.type = "button";
+          chip.setAttribute("aria-label", chip.title);
+          chip.setAttribute("aria-haspopup", "dialog");
+          for (const type of ["mousedown", "mouseup", "dblclick", "keydown", "keyup"]) {
+            chip.addEventListener(type, (event) => event.stopPropagation());
+          }
+          chip.addEventListener("click", (event) => {
+            event.stopPropagation();
+            this.openTagResults(doc, identity, tag, chip);
+          });
+        }
+        chips.append(chip);
+      }
+      if (editable) {
         const button = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
         button.type = "button";
         button.className = `spt-smart-tags-edit${tags.length ? "" : " spt-smart-tags-edit--empty"}`;
@@ -280,6 +300,261 @@
       return !this.destroyed && !state.win.closed && this.editors.get(state.win) === state &&
         state.panel.isConnected && state.view === state.win.ZoteroPane?.itemsView &&
         state.tabID === state.win.Zotero_Tabs?.selectedID && Boolean(this._editableDescriptor(state.identity));
+    }
+
+    _tagResultsCurrent(state) {
+      return !this.destroyed && !state.win.closed && this.tagResults.get(state.win) === state &&
+        state.panel.isConnected && state.view === state.win.ZoteroPane?.itemsView &&
+        state.tabID === state.win.Zotero_Tabs?.selectedID &&
+        this._editableDescriptor(state.identity)?.paper.libraryID === state.libraryID;
+    }
+
+    closeTagResults(win) {
+      const state = this.tagResults.get(win);
+      if (!state) return;
+      this.tagResults.delete(win);
+      state.serial++;
+      state.panel.hidePopup?.();
+      state.panel.remove();
+    }
+
+    invalidateTagResults() {
+      for (const state of this.tagResults.values()) {
+        state.serial++;
+        state.results = [];
+        state.list.replaceChildren();
+        state.loading = false;
+        state.busy = false;
+        state.list.setAttribute("aria-busy", "false");
+        state.refresh.disabled = false;
+        state.previous.disabled = true;
+        state.next.disabled = true;
+        state.status.textContent = "标签或文库内容已更新，请刷新。";
+      }
+    }
+
+    async openTagResults(doc, identity, tag, anchor) {
+      const win = doc.defaultView;
+      const descriptor = this._editableDescriptor(identity);
+      const matchKey = tagMatchKey(tag);
+      if (this.destroyed || !descriptor || !matchKey || !anchor.isConnected || !this.windowStyles.has(win)) return;
+      this.closeEditor(win);
+      this.closeTagResults(win);
+      const create = (name, className = "") => {
+        const element = doc.createElementNS("http://www.w3.org/1999/xhtml", name);
+        element.className = className;
+        return element;
+      };
+      const panel = doc.createXULElement("panel");
+      panel.setAttribute("class", "spt-smart-tags-popup");
+      panel.setAttribute("type", "arrow");
+      panel.setAttribute("consumeoutsideclicks", "true");
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-label", `同标签文章：${tag}`);
+      const content = create("div", "spt-smart-tags-editor spt-smart-tag-results");
+      const heading = create("h3");
+      heading.textContent = `同标签文章：${tag}`;
+      const hint = create("p", "spt-smart-tags-editor-hint");
+      hint.textContent = "此条目所在文库的全部分类 · 点击标题在文库中定位";
+      const status = create("div", "spt-smart-tags-editor-status");
+      status.setAttribute("role", "status");
+      const list = create("ol", "spt-smart-tag-results-list");
+      const actions = create("div", "spt-smart-tags-editor-actions spt-smart-tag-results-actions");
+      const previous = create("button");
+      previous.textContent = "上一页";
+      const next = create("button");
+      next.textContent = "下一页";
+      const refresh = create("button");
+      refresh.textContent = "刷新";
+      const close = create("button");
+      close.textContent = "关闭";
+      for (const button of [previous, next, refresh, close]) button.type = "button";
+      actions.append(previous, next, refresh, close);
+      content.append(heading, hint, status, list, actions);
+      panel.append(content);
+      const state = {
+        win, panel, create, list, status, previous, next, refresh, close,
+        identity: { itemID: identity.itemID, paperStorageKey: identity.paperStorageKey },
+        libraryID: descriptor.paper.libraryID, matchKey,
+        view: win.ZoteroPane?.itemsView, tabID: win.Zotero_Tabs?.selectedID,
+        serial: 0, results: [], page: 0, failures: 0, loading: false, busy: false
+      };
+      this.tagResults.set(win, state);
+      panel.addEventListener("popuphidden", (event) => {
+        if (event.target === panel && this.tagResults.get(win) === state) this.closeTagResults(win);
+      });
+      panel.addEventListener("popupshown", () => {
+        if (this._tagResultsCurrent(state)) close.focus();
+      });
+      panel.addEventListener("keydown", (event) => {
+        event.stopPropagation();
+        if (event.key === "Escape" && this.tagResults.get(win) === state) {
+          event.preventDefault();
+          this.closeTagResults(win);
+        }
+      });
+      close.addEventListener("click", () => {
+        if (this.tagResults.get(win) === state) this.closeTagResults(win);
+      });
+      refresh.addEventListener("click", () => {
+        if (!refresh.disabled) this._loadTagResults(state);
+      });
+      for (const [button, direction] of [[previous, -1], [next, 1]]) {
+        button.addEventListener("click", () => {
+          if (button.disabled || !this._tagResultsCurrent(state)) return;
+          state.page += direction;
+          this._renderTagResults(state);
+          (state.list.firstElementChild?.lastElementChild || close).focus();
+        });
+      }
+      doc.documentElement.append(panel);
+      try {
+        panel.openPopup(anchor, "after_start", 0, 0, false, false);
+        await this._loadTagResults(state);
+      }
+      catch (error) {
+        if (this.tagResults.get(win) === state) this.closeTagResults(win);
+        this.log("打开同标签文章失败", error);
+      }
+    }
+
+    async _loadTagResults(state) {
+      if (!this._tagResultsCurrent(state) || state.loading || state.busy) return;
+      const serial = ++state.serial;
+      const current = () => serial === state.serial && this._tagResultsCurrent(state);
+      state.loading = true;
+      state.results = [];
+      state.list.replaceChildren();
+      state.list.setAttribute("aria-busy", "true");
+      state.previous.disabled = true;
+      state.next.disabled = true;
+      state.refresh.disabled = true;
+      state.status.textContent = "正在查找同标签文章…";
+      try {
+        // Query the clicked item's library, including other collections. Never
+        // infer the library from a selection (Zotero 10 supports multiple libraries).
+        const items = await this.items.getAll(state.libraryID, true, false);
+        if (!current()) return;
+        const results = [];
+        let failures = 0;
+        const seen = new Set();
+        for (let offset = 0; offset < items.length; offset += TAG_READ_BATCH_SIZE) {
+          const batch = await Promise.all(items.slice(offset, offset + TAG_READ_BATCH_SIZE).map(async (item) => {
+            if (!current() || item.libraryID !== state.libraryID) return null;
+            const descriptor = this._descriptor(item);
+            if (!descriptor) return null;
+            try {
+              const entry = await this.cache.peekSmartTags(descriptor.paper, { ...descriptor, strict: true });
+              if (!current() || !entry?.tags.some((value) => typeof value === "string" && tagMatchKey(value) === state.matchKey)) return null;
+              return {
+                itemID: item.id, paperStorageKey: descriptor.paper.storageKey,
+                title: descriptor.paper.title
+              };
+            }
+            catch (error) {
+              failures++;
+              this.log("读取同标签文章缓存失败", error);
+              return null;
+            }
+          }));
+          if (!current()) return;
+          for (const result of batch) {
+            if (!result || seen.has(result.itemID)) continue;
+            seen.add(result.itemID);
+            results.push(result);
+          }
+        }
+        results.sort((a, b) => a.title.localeCompare(b.title) || a.itemID - b.itemID);
+        state.results = results;
+        state.failures = failures;
+        state.page = 0;
+        this._renderTagResults(state);
+      }
+      catch (error) {
+        if (current()) {
+          state.status.textContent = "无法读取同标签文章，请点击刷新重试。";
+          this.log("查询同标签文章失败", error);
+        }
+      }
+      finally {
+        if (current()) {
+          state.loading = false;
+          state.refresh.disabled = false;
+          state.list.setAttribute("aria-busy", "false");
+        }
+        else if (this.tagResults.get(state.win) === state && !this._tagResultsCurrent(state)) {
+          this.closeTagResults(state.win);
+        }
+      }
+    }
+
+    _renderTagResults(state) {
+      state.list.replaceChildren();
+      const start = state.page * TAG_RESULTS_PAGE_SIZE;
+      state.list.setAttribute("start", String(start + 1));
+      state.list.scrollTop = 0;
+      for (const [index, result] of state.results.slice(start, start + TAG_RESULTS_PAGE_SIZE).entries()) {
+        const row = state.create("li");
+        const number = state.create("span", "spt-smart-tag-result-number");
+        number.textContent = `${start + index + 1}.`;
+        number.setAttribute("aria-hidden", "true");
+        const button = state.create("button", "spt-smart-tag-result-title");
+        button.type = "button";
+        button.textContent = result.title;
+        button.title = "在文库中定位此文章";
+        button.addEventListener("click", () => this._locateTagResult(state, result));
+        row.append(number, button);
+        state.list.append(row);
+      }
+      state.previous.disabled = state.page === 0;
+      state.next.disabled = start + TAG_RESULTS_PAGE_SIZE >= state.results.length;
+      const pages = Math.max(1, Math.ceil(state.results.length / TAG_RESULTS_PAGE_SIZE));
+      state.status.textContent = state.results.length
+        ? `共 ${state.results.length} 篇 · 第 ${state.page + 1} / ${pages} 页`
+        : "没有找到同标签文章。仅匹配已有智能标签。";
+      if (state.failures) state.status.textContent += `（${state.failures} 篇标签读取失败，结果可能不完整，请刷新重试。）`;
+    }
+
+    async _locateTagResult(state, result) {
+      if (!this._tagResultsCurrent(state) || state.loading || state.busy || !state.results.includes(result)) return;
+      const descriptor = this._editableDescriptor(result);
+      if (descriptor?.paper.libraryID !== state.libraryID) {
+        this.invalidateTagResults();
+        return;
+      }
+      const serial = state.serial;
+      state.busy = true;
+      state.refresh.disabled = true;
+      state.status.textContent = "正在定位文章…";
+      try {
+        const entry = await this.cache.peekSmartTags(descriptor.paper, { ...descriptor, strict: true });
+        if (!this._tagResultsCurrent(state) || serial !== state.serial) return;
+        const latest = this._editableDescriptor(result);
+        if (!latest || latest.sourceSignature !== descriptor.sourceSignature ||
+          latest.configSignature !== descriptor.configSignature ||
+          !entry?.tags.some((tag) => typeof tag === "string" && tagMatchKey(tag) === state.matchKey)) {
+          this.invalidateTagResults();
+          return;
+        }
+        const selected = await state.win.ZoteroPane.selectItem(result.itemID, { inLibraryRoot: true });
+        if (selected === false) throw new Error("Item is no longer available");
+        if (this.tagResults.get(state.win) === state && serial === state.serial) this.closeTagResults(state.win);
+      }
+      catch (error) {
+        if (this._tagResultsCurrent(state) && serial === state.serial) {
+          state.status.textContent = "定位失败，请重试或刷新文章列表。";
+          this.log("定位同标签文章失败", error);
+        }
+      }
+      finally {
+        if (this._tagResultsCurrent(state) && serial === state.serial) {
+          state.busy = false;
+          state.refresh.disabled = false;
+        }
+        else if (this.tagResults.get(state.win) === state && !this._tagResultsCurrent(state)) {
+          this.closeTagResults(state.win);
+        }
+      }
     }
 
     closeEditor(win) {
@@ -333,6 +608,7 @@
       const win = doc.defaultView;
       const descriptor = this._editableDescriptor(identity);
       if (this.destroyed || !descriptor || !anchor.isConnected || !this.windowStyles.has(win)) return;
+      this.closeTagResults(win);
       this.closeEditor(win);
       const panel = doc.createXULElement("panel");
       panel.setAttribute("class", "spt-smart-tags-popup");
@@ -463,6 +739,7 @@
 
     _handleServiceEvent(event) {
       if (event.type !== "smart-tags" || !event.paper?.storageKey || !event.entry) return;
+      this.invalidateTagResults();
       const storageKey = event.paper.storageKey;
       if (event.entry.manual) {
         this._invalidateStorageKey(storageKey);
@@ -522,6 +799,7 @@
     }
 
     invalidateModifiedItems(itemIDs) {
+      this.invalidateTagResults();
       let changed = false;
       for (const itemID of itemIDs.map(Number).filter(Number.isFinite)) {
         let item;
@@ -541,6 +819,7 @@
     }
 
     onPreferencesChanged() {
+      this.invalidateTagResults();
       this.globalRevision++;
       this.values.clear();
       this.manualValues.clear();
@@ -575,6 +854,7 @@
 
     removeFromWindow(win) {
       this.closeEditor(win);
+      this.closeTagResults(win);
       const style = this.windowStyles.get(win);
       if (!style) return;
       style.remove();

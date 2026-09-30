@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.43 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.45 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -16,6 +16,7 @@ Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio �
 - Reader 工具栏可单独禁用当前 PDF 的划线翻译；禁用开关默认关闭并按 PDF 持久化，禁用后不显示插件的划线翻译入口、不查询划线缓存，也不调用翻译 API。
 - 根据标题与 Zotero 摘要生成 3–5 个英文智能标签，在主页独立列中显示，但不写入 Zotero 原生 Tags。
 - 列表页标签列提供本地编辑浮层，支持添加、改名、删除及清空；手动标签支持多语言、无摘要条目，最多 20 个、每个最多 64 字符。手动版本按论文保存，优先于任意自动生成配置。
+- 点击单个智能标签，汇总该条目所在文库的同标签文章，覆盖其他分类并排除回收站、子附件和笔记；独立 PDF 可参与。结果支持分页及点击标题定位，只读取已有标签缓存，沿用手动标签优先和当前自动配置匹配规则。
 - Reader 工具栏保留论文智译悬浮窗；摘要译文和术语分 Tab 展示，窗口支持拖动、缩放与持久化。术语行在鼠标悬停或键盘聚焦时显示小号“删除”按钮，点击后清除当前论文中该术语的所有配置版本缓存，并更新术语计数；删除失败保留原项，可重试。此前在途的翻译结果不能将已删除术语恢复，之后可重新划选翻译。
 - 每篇论文独立缓存；模型、目标语言、摘要或提示词变化后生成新的缓存版本。
 
@@ -150,10 +151,30 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.43.xpi
+unzip -t dist/smart-paper-translator-0.1.45.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.45：同标签文章浮层对齐
+
+修复少量结果时数量说明与文章列表间的大块留白：汇总面板的状态行按文字高度布局，不再继承编辑页横向 footer 的 `160px` flex 基础尺寸。文章行使用独立序号和标题两列，序号与标题采用相同的行高、边框和上下内边距，长标题换行时仍与序号首行对齐。保留列表语义、分页编号和翻页后标题按钮的键盘焦点。
+
+2026-09-30，335 项测试、语法和静态检查通过。在 Zotero 10.0.4 文库窗口隔离加载最终 XPI 副本，以两条合成结果复现并对照：面板内容高度由 391px 降为约 249px，状态行由 160px 降为约 18px；序号与标题首行基线差不超过 0.25px。300px 宽度的中英文长标题没有横向溢出，首行基线差为 0；54 条结果的第二页编号为 51–54，翻页后焦点落在第一篇标题按钮上。Run JavaScript 窗口有独有的 15px 按钮字号规则，因此上述最终布局数据均取自文库窗口，未以调试窗口样式替代文库验证。没有安装插件或修改真实文库、缓存、偏好；Zotero 9 未重做原生验证。
+
+最终文件 `dist/smart-paper-translator-0.1.45.xpi` 为 1,328,730 字节，SHA-256：`edcb56b2323843cadd0a80c20e801fd071f37c5265b9fcadea00eb9f257c7450`。归档 44 个文件与运行时源码一致；原生解析返回正确 ID/版本、`error=0`、`isCompatible=true`、`appDisabled=false`，原生读取大小与哈希一致。
+
+## 0.1.44：从单个智能标签汇总文章
+
+智能标签胶囊使用原生按钮，点击后打开同标签文章浮层；「编辑」及空标签格的「+ 标签」仍用于修改标签。聚合范围取自被点击条目的文库 ID，而非当前选中行、分类或 Zotero 10 的多选文库。名称沿用手动标签的空白规范化及大小写规则，完整匹配；手动清空不会匹配历史自动记录。查询使用 `Zotero.Items.getAll(libraryID, true, false)`，逐项只读 `peekSmartTags(..., { strict: true })`，缓存损坏时保留文件并明确提示结果可能不完整。每批最多读取 8 篇，每页显示 50 篇，全部匹配结果均可翻页访问。
+
+点击结果前复核条目 ID、论文标识、文库、标签和当前视图，再调用 `ZoteroPane.selectItem(itemID, { inLibraryRoot: true })` 定位。关闭、替换浮层、切换标签页/视图、窗口退出和插件卸载后丢弃迟到结果；标签、偏好或文库内容变动使旧结果失效，用户可刷新。查询与定位不调用模型、不写标签缓存或 Zotero 文库。
+
+接口依据：[Zotero 10 开发说明](https://www.zotero.org/support/dev/zotero_10_for_developers)、官方 9.0.6/10.0.4 `items.js` 与本机 10.0.4 `app/omni.ja` 中的 `items.js` / `zoteroPane.js`。保留原清单范围，Zotero 9 本轮未做原生 UI 验证。
+
+2026-09-30，`npm run check` 的 **335 项测试**、JavaScript 语法及静态检查通过。Zotero **10.0.4** 从最终 XPI 隔离加载模块，以 54 篇合成条目及内存缓存验证原生浮层：第一页 50 篇、第二页 4 篇、第二页编号从 51 开始；560 像素与 300 像素布局均无横向溢出，长标题正常换行，标签按钮维持 19 像素高度。定位回调传递准确 ID 和 `inLibraryRoot: true`，成功后关闭浮层；原生点击单个标签、下一页及 Escape 关闭通过。验证后浮层、样式与临时窗口状态全部清理。没有安装插件或修改用户文库、缓存及偏好；实际安装后的文库定位与 Zotero 9 UI 仍需用户验收。
+
+最终文件：`dist/smart-paper-translator-0.1.44.xpi`，**1,328,467 字节**，SHA-256：`de85712a152c7204dc7884dc3a432bd53dfb5ea2c59fbcdfaa9c3ef0ce53f8d3`。归档中 44 个文件与运行时源码逐字节一致，仅过滤 `.DS_Store`；原生 `AddonManager.getInstallForFile()` 返回正确 ID/版本、`error=0`、`isCompatible=true`、`appDisabled=false`，大小和哈希也一致。
 
 ## 0.1.43：智能标签编辑浮层对齐
 

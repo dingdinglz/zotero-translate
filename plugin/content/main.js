@@ -434,7 +434,9 @@ var SmartPaperTranslatorPlugin = {
     this.notifierID = Zotero.Notifier.registerObserver(
       {
         notify: (event, type, ids) => {
-          if (event !== "modify" || type !== "item") return;
+          if (type !== "item") return;
+          if (["add", "delete", "trash", "restore"].includes(event)) this.itemTreeUI?.invalidateTagResults();
+          if (event !== "modify") return;
           const flattened = ids.flat ? ids.flat(Infinity) : ids;
           this.readerUI?.refreshModifiedItems(flattened);
           this.itemTreeUI?.invalidateModifiedItems(flattened);

@@ -8,6 +8,7 @@
 - 搜索本机 Zotero 源码
 - 常见源码位置
 - 用 Zotero 原生安装器解析 XPI
+- 不安装插件的模块与资源探针
 - 安装失败的分层诊断
 - 开发环境与提问渠道
 
@@ -28,7 +29,9 @@
 
 - 插件开发环境：<https://www.zotero.org/support/dev/client_coding/plugin_development>
 - Zotero 7 插件结构、偏好和阅读器事件：<https://www.zotero.org/support/dev/zotero_7_for_developers>
-- Zotero 8+ Mozilla 平台迁移：<https://www.zotero.org/support/dev/zotero_8_for_developers>
+- Zotero 8 Mozilla 平台迁移：<https://www.zotero.org/support/dev/zotero_8_for_developers>
+- Zotero 9 开发说明：<https://www.zotero.org/support/dev/zotero_9_for_developers>
+- Zotero 10 API/存储迁移：<https://www.zotero.org/support/dev/zotero_10_for_developers>；本地按需指引见 [zotero-10-migration.md](zotero-10-migration.md)。
 - JavaScript API 与 Run JavaScript：<https://www.zotero.org/support/dev/client_coding/javascript_api>
 - 官方示例插件：<https://github.com/zotero/make-it-red>
 - Zotero 客户端源码：<https://github.com/zotero/zotero>
@@ -48,7 +51,7 @@ return {
 };
 ```
 
-含 `await` 或 `return` 的诊断代码要勾选“作为异步函数执行”。使用独立开发 profile，避免实验影响真实文库。
+含 `await` 或 `return` 的诊断代码要勾选“作为异步函数执行”。只读版本查询和 XPI 解析可使用当前客户端；安装、启停生命周期或修改偏好的实验应在已获授权的开发 profile 中进行。不要为了读版本号自动创建或修改 profile。
 
 ## 搜索本机 Zotero 源码
 
@@ -76,11 +79,15 @@ unzip -p /Applications/Zotero.app/Contents/Resources/app/omni.ja \
 python3 scripts/inspect_zotero_source.py renderToolbar
 python3 scripts/inspect_zotero_source.py PreferencePanes \
   --file-regex 'preferencePanes\.js$'
+python3 scripts/inspect_zotero_source.py 'getByTabID|registerEventListener' \
+  --regex --file-regex 'xpcom/reader\.js$' --max-results 20
 python3 scripts/inspect_zotero_source.py 'update_url not provided' \
   --omni /Applications/Zotero.app/Contents/Resources/omni.ja
 ```
 
-如果脚本找不到安装位置，显式传 `--omni`。Windows/Linux 在 Zotero 安装目录附近寻找 `app/omni.ja`，不要假设固定路径。
+以上脚本路径相对于 Skill 目录。搜索模式默认是字面文本，使用 `|` 等正则语法时必须传 `--regex`；不要将漏传选项导致的零命中解释成 API 已删除。大型 Reader bundle 应缩小文件/符号范围，输出到达上限时继续做定向搜索。
+
+如果脚本找不到安装位置，显式传 `--omni`。Windows/Linux 在 Zotero 安装目录附近寻找 `app/omni.ja`，不要假设固定路径。安装包内源码可能经过格式化或构建转换，与 GitHub 标签的字节哈希不同不等于版本不符；对照相关符号、调用方和实际客户端版本。
 
 ## 常见源码位置
 
@@ -125,7 +132,36 @@ return JSON.stringify({
 }, null, 2);
 ```
 
-这只解析 XPI，不调用 `install.install()`，不会安装插件。不要把数值状态码当成跨版本常量；以 `error === 0`、`addon` 非空、`isCompatible === true` 为主要验收信号，并用目标版本源码解释异常状态。
+这只解析 XPI，不调用 `install.install()`，不会安装插件。不要把数值状态码当成跨版本常量；检查 `error === 0`、ID/版本正确、`isCompatible === true` 和 `appDisabled === false`，并用目标版本源码解释异常状态。记录最终文件的 SHA-256；重建导致字节变化后，应对新文件重新解析。字节完全一致的重建可沿用既有解析证据。
+
+## 不安装插件的模块与资源探针
+
+先读待测模块，确认加载顶层不会注册插件 UI、写偏好、启动 Agent 或联网。仅运行受控功能，不调用完整 `bootstrap.startup()`；“未安装”本身不保证代码没有副作用。
+
+在 Run JavaScript 中，可为使用 `globalThis` 导出命名空间的 IIFE 模块建立显式作用域。以下是加载方式，模块路径需替换为实际的依赖和目标模块：
+
+```javascript
+const win = Zotero.getMainWindow();
+const scope = { Zotero, Services, ChromeUtils, require: undefined, module: undefined };
+scope.globalThis = scope;
+// 按模块需要提供宿主 API；裸对象不会自动获得插件的全部全局绑定。
+scope.btoa = win.btoa.bind(win);
+scope.atob = win.atob.bind(win);
+const rootURI = "jar:file:///ABSOLUTE/PATH/plugin.xpi!/";
+Services.scriptloader.loadSubScriptWithOptions(rootURI + "content/constants.js", {
+  target: scope, ignoreCache: true
+});
+Services.scriptloader.loadSubScriptWithOptions(rootURI + "content/feature.js", {
+  target: scope, ignoreCache: true
+});
+// 通过 scope 下的真实模块导出调用受控探针。
+```
+
+这是命名空间隔离，不是安全沙箱；加载的代码仍具有提供给它的 Zotero 特权，只用于已检查的插件代码。若模块导出未出现在 `scope`，先核对 `globalThis` 和 CommonJS 探测；若编码失败，检查 `btoa`/`atob` 等探针绑定，避免把不完整的测试环境误判成插件不兼容。
+
+Reader 事件传入的 `doc` 与从特权窗口重新取得的文档可能带不同的 Xray 包装，`await` 后的 PDF.js 对象也可能重新被包装。先复现实际事件的域边界，再判断属性是否缺失。只对已核实的目标 PDF.js 对象做受控解包；不得向内容域数组方法传入特权回调，不得全局放宽包装或向论文/模型内容提供特权函数。`getViewport()`/`render()` 的参数对象在对应 PDF.js iframe 域中创建。
+
+读取 XPI 内 UTF-8 文本优先用 `Zotero.File.getResourceAsync(uri)`，并验证返回值确为字符串。9.0.6 的 `getContentsAsync(jarURI)` 曾返回请求对象，不能直接字符串化后当成脚本；10.0.4 上已验证 `getResourceAsync()` 的 D3/主题读取。每个探针记录实际测到的行为与清理结果；版本/API 存在性、合成渲染、安装后 UI 冒烟是不同证据。
 
 ## 安装失败的分层诊断
 

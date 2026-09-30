@@ -5,12 +5,13 @@ description: Develop, modify, migrate, debug, package, and validate bootstrapped
 
 # Develop Zotero Plugins
 
-Build against the user's actual Zotero version, prefer public plugin APIs, and finish with an XPI parsed by that Zotero version—not merely a ZIP that looks correct.
+Build against the user's actual Zotero version and prefer public plugin APIs. For a runtime deliverable, finish with an XPI parsed by that Zotero version. Documentation-only work needs documentation validation, not a plugin installation or rebuild.
 
 ## Load only the needed references
 
 - Read [references/implementation-patterns.md](references/implementation-patterns.md) before implementing lifecycle, reader UI, item access, events, or settings.
 - Read [references/source-and-debugging.md](references/source-and-debugging.md) whenever an API, version rule, install error, DOM surface, or Mozilla behavior is uncertain.
+- Read [references/zotero-10-migration.md](references/zotero-10-migration.md) for Zotero 9 → 10 migration, compatibility-range changes, or Reader/PDF.js behavior in Zotero 10.
 - Read [references/abstract-popup-case-study.md](references/abstract-popup-case-study.md) for floating reader UI, auto/manual open state, or a misleading compatibility error.
 
 ## Follow the workflow
@@ -30,7 +31,7 @@ Do not infer compatibility from the latest Zotero release alone. Read the instal
 
 ### 2. Establish evidence before coding
 
-Check official documentation and the official `make-it-red` sample. For under-documented behavior, inspect the user's installed `app/omni.ja` and the matching `zotero/zotero` source.
+Check the developer migration page for the target major version and the official `make-it-red` sample. The sample demonstrates plugin structure; its manifest may target an older client. For under-documented behavior, inspect the user's installed `app/omni.ja` and the matching `zotero/zotero` source.
 
 Run the bundled source searcher when Zotero is installed locally:
 
@@ -50,11 +51,11 @@ For a new minimal plugin, run:
 python3 <skill-dir>/scripts/scaffold_zotero_plugin.py ./my-plugin \
   --name "My Plugin" \
   --id "my-plugin@example.org" \
-  --min-version "7.0" \
-  --max-version "9.0.*"
+  --min-version "10.0" \
+  --max-version "10.0.*"
 ```
 
-Pass the actual tested versions; the example is not a blanket compatibility claim. Replace the generated `.invalid` update URL with a real HTTPS update manifest before distribution.
+Choose the range from target-version verification; this example is not a blanket compatibility claim. For an existing plugin, preserve its established minimum version unless the implementation requires raising it. If automatic updates are in scope, configure a real HTTPS update manifest. A deliberately manual-update plugin can retain an explicitly disclosed `.invalid` placeholder; do not invent or deploy an update service just to finish a migration.
 
 For an existing plugin, inspect `manifest.json`, `bootstrap.js`, root `prefs.js`, resource layout, build scripts, tests, and dirty worktree state before editing. Preserve unrelated user changes.
 
@@ -67,7 +68,7 @@ Maintain per-window state in a `Map`. Store observer IDs, event handlers, DOM no
 Prefer official managers and event registration APIs over monkey patches or arbitrary DOM injection. If a version-specific fallback is unavoidable:
 
 1. isolate it behind a small helper;
-2. guard it by capability detection;
+2. guard it by capability detection, and keep an explicit tested-version gate for fragile private bridges such as PDF.js capture;
 3. prevent duplicate UI;
 4. document the exact Zotero version verified;
 5. remove it cleanly on disable or upgrade.
@@ -86,16 +87,19 @@ Handle empty or unavailable data explicitly. Do not fabricate metadata, silently
 
 ### 7. Test by risk layer
 
-Run at least:
+For runtime changes, validate the affected behavior and final package:
 
 1. JavaScript syntax checks for every executable script.
-2. Unit tests with mocked Zotero APIs for state transitions and async cancellation.
+2. Relevant regression tests for state transitions, async cancellation, and compatibility boundaries; add tests when existing coverage misses the changed behavior.
 3. XML parsing for preference fragments and SVG assets.
 4. Manifest and XPI structure checks.
 5. Native AddonManager parsing in the exact target Zotero version.
-6. Manual smoke tests in a separate development profile.
 
-For UI plugins, cover open, close, repeated toggle, tab switch, empty data, modified item, preference change, plugin disable, and restart. Verify accessibility names and selected state for buttons.
+Targeted native probes can check isolated features without installing the plugin; see [references/source-and-debugging.md](references/source-and-debugging.md). A successful parser result does not verify startup or UI behavior.
+
+When installation and UI testing are authorized, use a separate development profile where practical. Cover open/close, repeated toggle, tab switch, empty data, preference change, disable cleanup, and restart as relevant. Verify accessibility names and selected state. If those actions are outside the task's authorization, deliver the completed non-installing checks and label UI smoke testing as unperformed.
+
+For Skill/reference-only edits, validate frontmatter, links, examples, and the documented directory layout. Do not bump the plugin version or rebuild an unchanged XPI.
 
 ### 8. Build the XPI reproducibly
 
@@ -105,9 +109,9 @@ Run:
 python3 <skill-dir>/scripts/build_xpi.py ./my-plugin
 ```
 
-The builder validates required manifest fields, rejects symlinks, excludes development directories, puts files at the archive root, and writes a deterministic XPI. Also run `unzip -t` and inspect `unzip -Z1` before delivery.
+Use the repository's build entry point when one exists. Pass only the runtime source directory (for this repository, `plugin/`) to the builder. It validates required manifest fields, rejects symlinks, filters common development metadata, puts files at the archive root, and writes a deterministic XPI. Also run `unzip -t` and inspect `unzip -Z1`; no Skill files, tests, or build tools belong in the final package.
 
-Never broaden `strict_max_version` merely to silence an install dialog. Declare only tested ranges.
+Never broaden `strict_max_version` merely to silence an install dialog. Base the declared range on verification and report the exact client version tested. The manifest range and a private feature's exact-version allowlist are separate decisions.
 
 ### 9. Let Zotero parse the final artifact
 
@@ -135,6 +139,8 @@ Provide:
 - one short manual acceptance checklist.
 
 Point users to the new versioned file when older XPIs remain nearby. Never claim live installation if only static or parser validation was performed.
+
+When publishing is requested, inspect the last published release so the notes cover any intervening unreleased changes. Commit only the intended files, push the verified commit, and target that commit when creating the release. Confirm the remote tag, release state, uploaded asset sizes and hashes before reporting publication. Existing installation or publishing authorization remains scoped to the user's request.
 
 ## Handle uncertainty explicitly
 
