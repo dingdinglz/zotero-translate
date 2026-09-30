@@ -12,9 +12,10 @@
   function decodeTags(data) {
     if (!data) return [];
     try {
-      const tags = JSON.parse(data);
+      const parsed = JSON.parse(data);
+      const tags = Array.isArray(parsed) ? parsed : parsed?.tags;
       return Array.isArray(tags)
-        ? tags.filter((tag) => typeof tag === "string").slice(0, Constants.SMART_TAGS_MAX_COUNT)
+        ? tags.filter((tag) => typeof tag === "string").slice(0, Constants.SMART_TAGS_MANUAL_MAX_COUNT)
         : [];
     }
     catch (_error) {
@@ -36,7 +37,7 @@
     const used = new Set();
     return tags.map((tag) => {
       let tone = tagTone(tag);
-      while (used.has(tone)) tone = (tone + 1) % 5;
+      while (used.size < 5 && used.has(tone)) tone = (tone + 1) % 5;
       used.add(tone);
       return tone;
     });
@@ -64,10 +65,12 @@
       this.clearTimer = clearTimer || ((timerID) => global.clearTimeout(timerID));
       this.log = log || (() => {});
       this.values = new Map();
+      this.manualValues = new Map();
       this.loaded = new Set();
       this.pending = new Map();
       this.revisions = new Map();
       this.windowStyles = new Map();
+      this.editors = new Map();
       this.globalRevision = 0;
       this.refreshTimer = null;
       this.registeredDataKey = null;
@@ -115,7 +118,7 @@
     }
 
     _isDisplayItem(item) {
-      if (!item) return false;
+      if (!item || item.deleted) return false;
       if (item.isRegularItem?.()) return true;
       return Boolean(item.isPDFAttachment?.() && !item.parentItemID);
     }
@@ -125,16 +128,21 @@
       const libraryID = Number(item.libraryID);
       const itemKey = item.key;
       const title = Logic.normalizeText(item.getField?.("title")) || "未命名论文";
-      const abstract = String(item.getField?.("abstractNote") || "").trim();
-      if (!Logic.normalizeText(abstract)) return null;
+      const abstract = item.isRegularItem?.() ? String(item.getField?.("abstractNote") || "").trim() : "";
       const storageKey = Logic.makePaperIdentity({
         libraryID,
         itemKey,
         attachmentKey: item.key
       });
       const sourceSignature = Logic.makeSmartTagsSourceSignature({ title, abstract });
-      const config = Logic.getProviderConfig(this.getPreference);
-      const configSignature = Logic.makeSmartTagsConfigSignature({ sourceSignature, config });
+      let configSignature = "";
+      try {
+        const config = Logic.getProviderConfig(this.getPreference);
+        configSignature = Logic.makeSmartTagsConfigSignature({ sourceSignature, config });
+      }
+      catch (_error) {
+        // Manual tags work without a configured translation provider.
+      }
       return {
         paper: {
           storageKey,
@@ -166,10 +174,11 @@
       const descriptor = this._descriptor(item);
       if (!descriptor) return "";
       const key = this._valueKey(descriptor.paper.storageKey, descriptor.configSignature);
-      const value = this.values.get(key);
-      if (value) return JSON.stringify(value.tags);
-      if (!this.loaded.has(key) && !this.pending.has(key)) this._loadDescriptor(descriptor, key);
-      return "";
+      const value = this.manualValues.get(descriptor.paper.storageKey) || this.values.get(key);
+      if (!value && !this.loaded.has(key) && !this.pending.has(key)) this._loadDescriptor(descriptor, key);
+      // Keep the tags first for column sorting. Bind controls to an item identity,
+      // never a virtual row index or whichever item happens to be selected later.
+      return JSON.stringify({ tags: value?.tags || [], itemID: item.id, paperStorageKey: descriptor.paper.storageKey });
     }
 
     _loadDescriptor(descriptor, key) {
@@ -187,6 +196,7 @@
         ) return;
         this.loaded.add(key);
         if (entry) {
+          if (entry.manual) this.manualValues.set(storageKey, { tags: entry.tags.slice() });
           this.values.set(key, {
             sourceSignature: entry.sourceSignature,
             configSignature: entry.configSignature,
@@ -206,14 +216,21 @@
       const classNames = ["cell", column?.className, "spt-smart-tags-cell"].filter(Boolean);
       const cell = doc.createElement("span");
       cell.className = classNames.join(" ");
+      // Zotero otherwise rebuilds first-column children through innerHTML and
+      // drops their listeners when the user moves this column to the first slot.
+      const content = doc.createElement("span");
+      content.className = "cell-text spt-smart-tags-content";
+      cell.append(content);
+      const chips = doc.createElement("span");
+      chips.className = "spt-smart-tags-chips";
+      content.append(chips);
       const tags = decodeTags(data);
       if (!tags.length) {
         cell.setAttribute("aria-label", "无智能标签");
-        return cell;
       }
       const description = tags.join(" · ");
       cell.title = description;
-      cell.setAttribute("aria-label", `智能标签：${description}`);
+      if (tags.length) cell.setAttribute("aria-label", `智能标签：${description}`);
       const tones = assignTagTones(tags);
       for (let index = 0; index < tags.length; index++) {
         const tag = tags[index];
@@ -221,14 +238,239 @@
         chip.className = `spt-smart-tag spt-smart-tag--tone-${tones[index]}`;
         chip.textContent = tag;
         chip.title = tag;
-        cell.append(chip);
+        chips.append(chip);
+      }
+      let identity;
+      try { identity = JSON.parse(data); }
+      catch (_error) {}
+      if (this._editableDescriptor(identity)) {
+        const button = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
+        button.type = "button";
+        button.className = `spt-smart-tags-edit${tags.length ? "" : " spt-smart-tags-edit--empty"}`;
+        button.textContent = tags.length ? "编辑" : "+ 标签";
+        button.title = "编辑智能标签";
+        button.setAttribute("aria-label", "编辑智能标签");
+        for (const type of ["mousedown", "mouseup", "dblclick", "keydown", "keyup"]) {
+          button.addEventListener(type, (event) => event.stopPropagation());
+        }
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          this.openEditor(doc, identity, button);
+        });
+        content.addEventListener("dblclick", (event) => {
+          event.stopPropagation();
+          event.preventDefault();
+          this.openEditor(doc, identity, button);
+        });
+        content.append(button);
       }
       return cell;
+    }
+
+    _editableDescriptor(identity) {
+      if (!Number.isInteger(identity?.itemID) || identity.itemID <= 0) return null;
+      try {
+        const descriptor = this._descriptor(this.items.get(identity.itemID));
+        return descriptor?.paper.storageKey === identity.paperStorageKey ? descriptor : null;
+      }
+      catch (_error) { return null; }
+    }
+
+    _editorCurrent(state) {
+      return !this.destroyed && !state.win.closed && this.editors.get(state.win) === state &&
+        state.panel.isConnected && state.view === state.win.ZoteroPane?.itemsView &&
+        state.tabID === state.win.Zotero_Tabs?.selectedID && Boolean(this._editableDescriptor(state.identity));
+    }
+
+    closeEditor(win) {
+      const state = this.editors.get(win);
+      if (!state) return;
+      this.editors.delete(win);
+      state.panel.hidePopup?.();
+      state.panel.remove();
+    }
+
+    _editorControls(state) {
+      const disabled = state.loading || state.busy;
+      state.save.disabled = disabled || state.loadFailed;
+      state.add.disabled = disabled || state.loadFailed || state.rows.length >= Constants.SMART_TAGS_MANUAL_MAX_COUNT;
+      for (const row of state.rows) {
+        row.input.disabled = disabled;
+        row.remove.disabled = disabled;
+      }
+    }
+
+    _addEditorRow(state, value = "", focus = false) {
+      if (state.rows.length >= Constants.SMART_TAGS_MANUAL_MAX_COUNT) return;
+      const row = state.create("div", "spt-smart-tags-editor-row");
+      const input = state.create("input");
+      input.type = "text";
+      input.value = value;
+      input.setAttribute("aria-label", "标签名称");
+      input.placeholder = "输入标签名称";
+      const remove = state.create("button");
+      remove.type = "button";
+      remove.textContent = "删除";
+      remove.setAttribute("aria-label", "删除此标签");
+      const entry = { row, input, remove };
+      remove.addEventListener("click", () => {
+        if (!this._editorCurrent(state) || state.busy || state.loading) return;
+        const index = state.rows.indexOf(entry);
+        if (index < 0) return;
+        state.rows.splice(index, 1);
+        row.remove();
+        this._editorControls(state);
+        (state.rows[index]?.input || state.rows[index - 1]?.input || state.add).focus();
+      });
+      row.append(input, remove);
+      state.list.append(row);
+      state.rows.push(entry);
+      this._editorControls(state);
+      if (focus) input.focus();
+    }
+
+    async openEditor(doc, identity, anchor) {
+      const win = doc.defaultView;
+      const descriptor = this._editableDescriptor(identity);
+      if (this.destroyed || !descriptor || !anchor.isConnected || !this.windowStyles.has(win)) return;
+      this.closeEditor(win);
+      const panel = doc.createXULElement("panel");
+      panel.setAttribute("class", "spt-smart-tags-popup");
+      panel.setAttribute("type", "arrow");
+      panel.setAttribute("consumeoutsideclicks", "true");
+      panel.setAttribute("aria-label", "编辑智能标签");
+      const create = (tag, className = "") => {
+        const element = doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
+        element.className = className;
+        return element;
+      };
+      const content = create("div", "spt-smart-tags-editor");
+      const heading = create("h3");
+      heading.textContent = "编辑智能标签";
+      const title = create("div", "spt-smart-tags-editor-title");
+      title.textContent = descriptor.paper.title;
+      const hint = create("p", "spt-smart-tags-editor-hint");
+      hint.textContent = `最多 ${Constants.SMART_TAGS_MANUAL_MAX_COUNT} 个标签，每个 ${Constants.SMART_TAG_MAX_LENGTH} 字符。保存后优先使用手动标签，可删除全部标签。`;
+      const list = create("div", "spt-smart-tags-editor-list");
+      const add = create("button", "spt-smart-tags-editor-add");
+      add.type = "button";
+      add.textContent = "+ 添加标签";
+      const status = create("div", "spt-smart-tags-editor-status");
+      status.setAttribute("role", "status");
+      status.textContent = "正在读取本地标签…";
+      const actions = create("div", "spt-smart-tags-editor-actions");
+      const footer = create("div", "spt-smart-tags-editor-footer");
+      const cancel = create("button");
+      cancel.type = "button";
+      cancel.textContent = "取消";
+      const save = create("button");
+      save.type = "button";
+      save.className = "spt-smart-tags-save";
+      save.textContent = "保存";
+      actions.append(cancel, save);
+      footer.append(status, actions);
+      content.append(heading, title, hint, list, add, footer);
+      panel.append(content);
+      const state = {
+        win, panel, identity: { itemID: identity.itemID, paperStorageKey: identity.paperStorageKey },
+        view: win.ZoteroPane?.itemsView, tabID: win.Zotero_Tabs?.selectedID,
+        create, list, add, save, status, rows: [], loading: true, busy: false, loadFailed: false,
+        expectedRevision: null
+      };
+      this.editors.set(win, state);
+      this._editorControls(state);
+      panel.addEventListener("popuphidden", (event) => {
+        if (event.target === panel && this.editors.get(win) === state) this.closeEditor(win);
+      });
+      panel.addEventListener("popupshown", () => {
+        if (this._editorCurrent(state)) (state.rows[0]?.input || cancel).focus();
+      });
+      panel.addEventListener("keydown", (event) => {
+        event.stopPropagation();
+        if (this.editors.get(win) !== state) return;
+        if (event.key === "Escape") {
+          event.preventDefault();
+          this.closeEditor(win);
+        }
+        else if (event.key === "Enter" && !event.isComposing && event.target?.localName === "input") {
+          event.preventDefault();
+          this._saveEditor(state);
+        }
+      });
+      cancel.addEventListener("click", () => {
+        if (this.editors.get(win) === state) this.closeEditor(win);
+      });
+      add.addEventListener("click", () => {
+        if (this._editorCurrent(state) && !add.disabled) this._addEditorRow(state, "", true);
+      });
+      save.addEventListener("click", () => this._saveEditor(state));
+      doc.documentElement.append(panel);
+      try {
+        panel.openPopup(anchor, "after_start", 0, 0, false, false);
+        const entry = await this.cache.peekSmartTags(descriptor.paper, { ...descriptor, strict: true });
+        if (!this._editorCurrent(state)) {
+          if (this.editors.get(win) === state) this.closeEditor(win);
+          return;
+        }
+        state.expectedRevision = entry?.manual ? entry.revision || null : null;
+        state.loading = false;
+        for (const tag of decodeTags(JSON.stringify(entry?.tags || []))) this._addEditorRow(state, tag);
+        if (!state.rows.length) this._addEditorRow(state);
+        status.textContent = "仅保存在插件本机缓存中。";
+        this._editorControls(state);
+        state.rows[0].input.focus();
+      }
+      catch (error) {
+        if (!this._editorCurrent(state)) {
+          if (this.editors.get(win) === state) this.closeEditor(win);
+          return;
+        }
+        state.loading = false;
+        state.loadFailed = true;
+        status.textContent = "无法读取标签，请关闭后重试。";
+        this._editorControls(state);
+        this.log("读取待编辑智能标签失败", error);
+      }
+    }
+
+    async _saveEditor(state) {
+      if (!this._editorCurrent(state)) {
+        if (this.editors.get(state.win) === state) this.closeEditor(state.win);
+        return;
+      }
+      if (state.loading || state.busy || state.loadFailed) return;
+      const descriptor = this._editableDescriptor(state.identity);
+      state.busy = true;
+      state.status.textContent = "正在保存…";
+      this._editorControls(state);
+      try {
+        const tags = Logic.normalizeManualSmartTags(state.rows.map((row) => row.input.value));
+        await this.service.saveSmartTags(descriptor.paper, tags, { expectedRevision: state.expectedRevision });
+        if (this.editors.get(state.win) === state) this.closeEditor(state.win);
+      }
+      catch (error) {
+        if (!this._editorCurrent(state)) {
+          if (this.editors.get(state.win) === state) this.closeEditor(state.win);
+          return;
+        }
+        state.busy = false;
+        state.status.textContent = error instanceof Logic.SmartTranslatorError
+          ? error.message : "保存失败，输入已保留，请重试。";
+        this._editorControls(state);
+        this.log("保存智能标签失败", error);
+      }
     }
 
     _handleServiceEvent(event) {
       if (event.type !== "smart-tags" || !event.paper?.storageKey || !event.entry) return;
       const storageKey = event.paper.storageKey;
+      if (event.entry.manual) {
+        this._invalidateStorageKey(storageKey);
+        this.manualValues.set(storageKey, { tags: event.tags.slice() });
+        this._scheduleRefresh();
+        return;
+      }
+      if (this.manualValues.has(storageKey)) return;
       const key = this._valueKey(storageKey, event.entry.configSignature);
       this.revisions.set(storageKey, (this.revisions.get(storageKey) || 0) + 1);
       this.values.set(key, {
@@ -265,6 +507,7 @@
     }
 
     _invalidateStorageKey(storageKey) {
+      this.manualValues.delete(storageKey);
       this.revisions.set(storageKey, (this.revisions.get(storageKey) || 0) + 1);
       const prefix = `${storageKey}|`;
       for (const key of this.values.keys()) {
@@ -300,6 +543,7 @@
     onPreferencesChanged() {
       this.globalRevision++;
       this.values.clear();
+      this.manualValues.clear();
       this.loaded.clear();
       this.pending.clear();
       this._scheduleRefresh();
@@ -330,6 +574,7 @@
     }
 
     removeFromWindow(win) {
+      this.closeEditor(win);
       const style = this.windowStyles.get(win);
       if (!style) return;
       style.remove();
@@ -349,6 +594,7 @@
       this.registeredDataKey = null;
       for (const win of Array.from(this.windowStyles.keys())) this.removeFromWindow(win);
       this.values.clear();
+      this.manualValues.clear();
       this.loaded.clear();
       this.pending.clear();
       this.initialized = false;

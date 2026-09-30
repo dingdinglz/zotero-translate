@@ -328,6 +328,29 @@
     return tags;
   }
 
+  function normalizeManualSmartTags(values) {
+    if (!Array.isArray(values) || values.length > Constants.SMART_TAGS_MANUAL_MAX_COUNT) {
+      throw new SmartTranslatorError("TAG_LIMIT", `最多添加 ${Constants.SMART_TAGS_MANUAL_MAX_COUNT} 个标签`);
+    }
+    const tags = [];
+    const seen = new Set();
+    for (const value of values) {
+      if (typeof value !== "string" || /[\u0000-\u001f\u007f]/u.test(value)) {
+        throw new SmartTranslatorError("TAG_INVALID", "标签不能包含换行或控制字符");
+      }
+      const tag = normalizeText(value);
+      if (!tag) continue;
+      if ([...tag].length > Constants.SMART_TAG_MAX_LENGTH) {
+        throw new SmartTranslatorError("TAG_LIMIT", `单个标签最多 ${Constants.SMART_TAG_MAX_LENGTH} 个字符`);
+      }
+      const key = tag.toLocaleLowerCase("en-US");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      tags.push(tag);
+    }
+    return tags;
+  }
+
   function isRenderCurrent(state, serial, itemID) {
     return Boolean(
       state && !state.destroyed && state.requestSerial === serial && state.itemID === itemID
@@ -351,6 +374,7 @@
     makeSmartTagsConfigSignature,
     createSmartTagsPrompt,
     parseSmartTagsResponse,
+    normalizeManualSmartTags,
     isRenderCurrent
   };
 

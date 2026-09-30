@@ -7,11 +7,13 @@ const {
   assignTagTones,
   tagTone
 } = require("../plugin/content/item-tree-ui.js");
-const { makePreferenceStore } = require("./helpers.js");
+const { makePreferenceStore, makeCache } = require("./helpers.js");
+const { TranslationService } = require("../plugin/content/service.js");
 
 class FakeElement {
   constructor(tag) {
     this.tagName = tag;
+    this.localName = tag;
     this.children = [];
     this.dataset = {};
     this.attributes = new Map();
@@ -19,7 +21,22 @@ class FakeElement {
     this.textContent = "";
     this.title = "";
     this.isConnected = true;
+    this.listeners = new Map();
   }
+
+  addEventListener(type, listener) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(listener);
+  }
+
+  dispatch(type, extras = {}) {
+    const event = { target: this, stopPropagation() {}, preventDefault() {}, ...extras };
+    for (const listener of this.listeners.get(type) || []) listener(event);
+  }
+
+  focus() { this.focused = true; }
+  openPopup() { this.dispatch("popupshown"); }
+  hidePopup() { this.dispatch("popuphidden"); }
 
   append(...children) {
     for (const child of children) {
@@ -65,6 +82,8 @@ class FakeDocument {
   createElementNS(_namespaceURI, tag) {
     return new FakeElement(tag);
   }
+
+  createXULElement(tag) { return new FakeElement(tag); }
 }
 
 function makeItem(overrides = {}) {
@@ -162,8 +181,8 @@ test("smart-tag column registers after title and lazily refreshes local cache da
   assert.deepEqual(harness.manager.registered.defaultIn, ["default"]);
   assert.deepEqual(harness.manager.registered.enabledTreeIDs, ["main"]);
 
-  assert.equal(harness.manager.registered.dataProvider(harness.item), "");
-  assert.equal(harness.manager.registered.dataProvider(harness.item), "");
+  assert.deepEqual(JSON.parse(harness.manager.registered.dataProvider(harness.item)).tags, []);
+  assert.deepEqual(JSON.parse(harness.manager.registered.dataProvider(harness.item)).tags, []);
   assert.equal(cacheReads, 1);
   resolveCache({
     sourceSignature: "source",
@@ -176,7 +195,7 @@ test("smart-tag column registers after title and lazily refreshes local cache da
   assert.equal(harness.manager.refreshes, 1);
 
   const data = harness.manager.registered.dataProvider(harness.item);
-  assert.deepEqual(JSON.parse(data), ["World Model", "Planning", "Reinforcement Learning"]);
+  assert.deepEqual(JSON.parse(data).tags, ["World Model", "Planning", "Reinforcement Learning"]);
   const cell = harness.manager.registered.renderCell(
     0,
     data,
@@ -184,10 +203,13 @@ test("smart-tag column registers after title and lazily refreshes local cache da
     false,
     new FakeDocument()
   );
-  assert.equal(cell.children.length, 3);
-  assert.equal(cell.children[0].textContent, "World Model");
-  assert.match(cell.children[0].className, /spt-smart-tag--tone-[0-4]/u);
-  assert.equal(cell.children[0].title, "World Model");
+  assert.match(cell.children[0].className, /cell-text/u);
+  const content = cell.children[0].children[0];
+  assert.equal(content.children.length, 3);
+  assert.equal(cell.children[0].children[1].tagName, "button");
+  assert.equal(content.children[0].textContent, "World Model");
+  assert.match(content.children[0].className, /spt-smart-tag--tone-[0-4]/u);
+  assert.equal(content.children[0].title, "World Model");
   assert.match(cell.getAttribute("aria-label"), /World Model/u);
 });
 
@@ -226,7 +248,7 @@ test("child attachment rows never probe cache while standalone PDFs remain eligi
     isRegularItem: () => false,
     isPDFAttachment: () => true
   });
-  assert.equal(harness.manager.registered.dataProvider(standalone), "");
+  assert.deepEqual(JSON.parse(harness.manager.registered.dataProvider(standalone)).tags, []);
   assert.equal(cacheReads, 1);
 });
 
@@ -260,7 +282,7 @@ test("fresh service events win over stale asynchronous cache reads", async () =>
   });
   await new Promise((resolve) => setImmediate(resolve));
   const data = harness.manager.registered.dataProvider(harness.item);
-  assert.deepEqual(JSON.parse(data), ["Fresh Tag", "Planning", "Control"]);
+  assert.deepEqual(JSON.parse(data).tags, ["Fresh Tag", "Planning", "Control"]);
 });
 
 test("item modifications invalidate rendered tags and trigger a fresh local probe", async () => {
@@ -281,7 +303,7 @@ test("item modifications invalidate rendered tags and trigger a fresh local prob
   assert.match(harness.manager.registered.dataProvider(harness.item), /World Model/u);
 
   harness.ui.invalidateModifiedItems([harness.item.id]);
-  assert.equal(harness.manager.registered.dataProvider(harness.item), "");
+  assert.deepEqual(JSON.parse(harness.manager.registered.dataProvider(harness.item)).tags, []);
   assert.equal(cacheReads, 2);
 });
 
@@ -295,9 +317,9 @@ test("cell rendering treats cached tag text as text rather than markup", () => {
     false,
     doc
   );
-  assert.equal(cell.children[0].tagName, "span");
-  assert.equal(cell.children[0].textContent, "<img src=x>");
-  assert.equal(cell.children[0].children.length, 0);
+  assert.equal(cell.children[0].children[0].children[0].tagName, "span");
+  assert.equal(cell.children[0].children[0].children[0].textContent, "<img src=x>");
+  assert.equal(cell.children[0].children[0].children[0].children.length, 0);
 });
 
 test("window styles and registered columns are removed symmetrically", () => {
@@ -313,4 +335,143 @@ test("window styles and registered columns are removed symmetrically", () => {
   harness.ui.shutdown();
   assert.deepEqual(harness.manager.unregistered, ["smart-paper-translator-smart-tags"]);
   assert.equal(harness.wasUnsubscribed(), true);
+});
+
+function editableHarness() {
+  const harness = makeHarness();
+  const { cache, io } = makeCache();
+  const service = new TranslationService({
+    cache,
+    credentials: { get() { throw new Error("Editor must not read credentials"); } },
+    apiClient: { complete() { throw new Error("Editor must remain local"); } }
+  });
+  harness.ui.cache = cache;
+  harness.ui.service = service;
+  harness.ui.init("smart-paper-translator@zotero.local");
+  const doc = new FakeDocument();
+  const win = { document: doc, ZoteroPane: { itemsView: {} }, Zotero_Tabs: { selectedID: "zotero-pane" } };
+  doc.defaultView = win;
+  harness.ui.addToWindow(win);
+  const anchor = doc.createElement("button");
+  const identity = (item) => ({ itemID: item.id, paperStorageKey: `${item.libraryID}--${item.key}` });
+  return {
+    ...harness, cache, io, service, win, doc, anchor, identity,
+    async open(item = harness.item) {
+      await harness.ui.openEditor(doc, identity(item), anchor);
+      return harness.ui.editors.get(win);
+    }
+  };
+}
+
+test("library editor adds, renames and removes tags locally, including papers without an abstract", async () => {
+  const h = editableHarness();
+  const item = makeItem({ getField: (field) => field === "title" ? "No abstract" : "" });
+  h.itemMap.set(item.id, item);
+  let state = await h.open(item);
+  state.rows[0].input.value = "  中文主题  ";
+  state.add.dispatch("click");
+  state.rows[1].input.value = "Research";
+  await h.ui._saveEditor(state);
+  assert.equal(h.ui.editors.size, 0);
+  assert.deepEqual(JSON.parse(h.ui.dataProvider(item)).tags, ["中文主题", "Research"]);
+
+  state = await h.open(item);
+  state.rows[0].input.value = "Renamed";
+  const deletedRow = state.rows[1];
+  deletedRow.remove.dispatch("click");
+  deletedRow.remove.dispatch("click");
+  assert.equal(state.rows.length, 1);
+  await h.ui._saveEditor(state);
+  assert.deepEqual(JSON.parse(h.ui.dataProvider(item)).tags, ["Renamed"]);
+  state = await h.open(item);
+  state.rows[0].remove.dispatch("click");
+  await h.ui._saveEditor(state);
+  assert.deepEqual((await h.cache.peekSmartTags(h.ui._descriptor(item).paper)).tags, []);
+  h.ui.onPreferencesChanged();
+  h.ui.dataProvider(item);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(h.ui.dataProvider(item)).tags, []);
+  assert.equal(h.ui.manualValues.has("1--ABCDEFGH"), true);
+});
+
+test("save failures keep input and allow retry; concurrent clicks cannot duplicate writes", async () => {
+  const h = editableHarness();
+  const state = await h.open();
+  state.rows[0].input.value = "Mine";
+  const write = h.io.writeJSON.bind(h.io);
+  h.io.writeJSON = async () => { throw new Error("disk full"); };
+  await h.ui._saveEditor(state);
+  assert.equal(state.rows[0].input.value, "Mine");
+  assert.equal(state.busy, false);
+  assert.equal(state.save.disabled, false);
+  assert.match(state.status.textContent, /保存失败/u);
+  assert.equal(h.ui.manualValues.size, 0);
+  h.io.writeJSON = write;
+  await Promise.all([h.ui._saveEditor(state), h.ui._saveEditor(state)]);
+  assert.equal(h.io.writeJSONCalls.length, 1);
+});
+
+test("cancel and late reads cannot replace a newly opened paper editor", async () => {
+  const h = editableHarness();
+  const originalPeek = h.cache.peekSmartTags.bind(h.cache);
+  let resolve;
+  h.cache.peekSmartTags = () => new Promise((done) => { resolve = done; });
+  const firstOpen = h.open();
+  const oldState = h.ui.editors.get(h.win);
+  oldState.panel.dispatch("keydown", { key: "Escape" });
+  assert.equal(h.ui.editors.size, 0);
+  h.cache.peekSmartTags = originalPeek;
+  const other = makeItem({ id: 21, key: "OTHERKEY" });
+  h.itemMap.set(other.id, other);
+  const current = await h.open(other);
+  resolve({ tags: ["Stale"] });
+  await firstOpen;
+  assert.equal(h.ui.editors.get(h.win), current);
+  assert.equal(current.rows[0].input.value, "");
+  assert.equal(h.io.writeJSONCalls.length, 0);
+  h.ui.removeFromWindow(h.win);
+  assert.equal(h.ui.editors.size, 0);
+});
+
+test("editor identity never follows selection or a changed view, and removed items cannot be saved", async () => {
+  const h = editableHarness();
+  let state = await h.open();
+  state.rows[0].input.value = "Must not save";
+  h.win.ZoteroPane.itemsView = {};
+  await h.ui._saveEditor(state);
+  assert.equal(h.io.writeJSONCalls.length, 0);
+  state = await h.open();
+  h.itemMap.set(h.item.id, makeItem({ key: "OTHERKEY" }));
+  await h.ui._saveEditor(state);
+  assert.equal(h.io.writeJSONCalls.length, 0);
+  h.ui.closeEditor(h.win);
+  await h.open();
+  assert.equal(h.ui.editors.size, 0);
+});
+
+test("unreadable editor data blocks saving and does not recover or overwrite corrupt records", async () => {
+  const h = editableHarness();
+  h.io.setText("/records/1--ABCDEFGH.json", "{broken");
+  const state = await h.open();
+  assert.equal(state.loadFailed, true);
+  assert.equal(state.save.disabled, true);
+  await h.ui._saveEditor(state);
+  assert.equal(h.io.writeJSONCalls.length, 0);
+  assert.equal(h.io.files.size, 1);
+});
+
+test("manual clearing wins over stale cache probes and automatic events and supports more than five tones", async () => {
+  const h = editableHarness();
+  let resolve;
+  h.cache.peekSmartTags = () => new Promise((done) => { resolve = done; });
+  h.ui.dataProvider(h.item);
+  await h.service.saveSmartTags(h.ui._descriptor(h.item).paper, []);
+  resolve({ tags: ["Stale"], configSignature: "old" });
+  await new Promise((done) => setImmediate(done));
+  h.ui._handleServiceEvent({
+    type: "smart-tags", paper: { storageKey: "1--ABCDEFGH" },
+    entry: { configSignature: "old" }, tags: ["Stale event"]
+  });
+  assert.deepEqual(JSON.parse(h.ui.dataProvider(h.item)).tags, []);
+  assert.equal(assignTagTones(Array.from({ length: 20 }, (_, i) => `Tag ${i}`)).length, 20);
 });

@@ -34,6 +34,12 @@
     );
   }
 
+  function manualSmartTags(record) {
+    return record.entries.find((entry) =>
+      entry.kind === Constants.SMART_TAGS_KIND && entry.manual === true && Array.isArray(entry.tags)
+    ) || null;
+  }
+
   class TranslationCache {
     constructor({ rootPath, io, joinPath, now, randomID, onError } = {}) {
       this.rootPath = rootPath;
@@ -125,6 +131,7 @@
 
     async getCached(paper, { kind, normalizedSource, configSignature }) {
       const record = await this._loadUnsafe(paper);
+      if (kind === Constants.SMART_TAGS_KIND && manualSmartTags(record)) return manualSmartTags(record);
       return record.entries.find((entry) =>
         entry.kind === kind &&
         entry.normalizedSource === normalizedSource &&
@@ -135,6 +142,8 @@
     async append(paper, entry) {
       return this._enqueue(paper.storageKey, async () => {
         const record = await this._loadUnsafe(paper);
+        // A generation already in flight must not replace a user's edit or clear.
+        if (entry.kind === Constants.SMART_TAGS_KIND && manualSmartTags(record)) return manualSmartTags(record);
         const existing = record.entries.find((candidate) =>
           candidate.kind === entry.kind &&
           candidate.normalizedSource === entry.normalizedSource &&
@@ -173,6 +182,7 @@
         const record = await this._loadUnsafe(paper);
         const entry = record.entries.find((candidate) => candidate.id === entryID);
         if (!entry) return null;
+        if (entry.kind === Constants.SMART_TAGS_KIND && manualSmartTags(record)) return manualSmartTags(record);
         entry.lastUsedAt = this.now();
         entry.cacheHits = Number(entry.cacheHits || 0) + 1;
         await this._writeUnsafe(paper, record);
@@ -214,12 +224,47 @@
       );
     }
 
-    async peekSmartTags(paper, { sourceSignature, configSignature }) {
+    async setManualSmartTags(paper, values, { expectedRevision = null } = {}) {
+      const tags = Logic.normalizeManualSmartTags(values);
+      return this._enqueue(paper.storageKey, async () => {
+        const record = await this._loadUnsafe(paper);
+        const previous = manualSmartTags(record);
+        if ((previous?.revision || null) !== expectedRevision) {
+          throw new Logic.SmartTranslatorError("TAGS_CONFLICT", "标签已在其他窗口修改，请取消后重新打开编辑");
+        }
+        const timestamp = this.now();
+        const stored = {
+          id: previous?.id || this.randomID(),
+          kind: Constants.SMART_TAGS_KIND,
+          manual: true,
+          revision: this.randomID(),
+          normalizedSource: "manual",
+          sourceSignature: "",
+          configSignature: "manual",
+          tags,
+          createdAt: previous?.createdAt || timestamp,
+          updatedAt: timestamp
+        };
+        record.entries = record.entries.filter((entry) =>
+          !(entry.kind === Constants.SMART_TAGS_KIND && entry.manual === true)
+        );
+        record.entries.push(stored);
+        await this._writeUnsafe(paper, record);
+        return stored;
+      });
+    }
+
+    async peekSmartTags(paper, { sourceSignature, configSignature, strict = false } = {}) {
       const path = this._pathForPaper(paper);
       if (!(await this.io.exists(path))) return null;
       try {
         const record = await this.io.readJSON(path);
-        if (!validateRecord(record, paper)) return null;
+        if (!validateRecord(record, paper)) {
+          throw new Logic.SmartTranslatorError("CACHE_SCHEMA", "智能标签缓存结构无效");
+        }
+        const manual = manualSmartTags(record);
+        if (manual) return manual;
+        if (!sourceSignature || !configSignature) return null;
         const matches = record.entries.filter((entry) =>
           entry.kind === Constants.SMART_TAGS_KIND &&
           entry.sourceSignature === sourceSignature &&
@@ -230,6 +275,7 @@
         return matches[0] || null;
       }
       catch (error) {
+        if (strict) throw error;
         this.onError("无法读取智能标签缓存：" + path, error);
         return null;
       }

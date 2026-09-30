@@ -50,6 +50,7 @@
       this.now = now || (() => new Date().toISOString());
       this.inFlight = new Map();
       this.selectionRequests = new Set();
+      this.smartTagEdits = new Map();
       this.cancelers = new Set();
       this.listeners = new Set();
       this.stopped = false;
@@ -315,7 +316,7 @@
       const cached = await this.cache.getCached(context.paper, prepared.cacheQuery);
       if (!cached || !Array.isArray(cached.tags)) return null;
       const touched = await this.cache.touch(context.paper, cached.id);
-      const entry = touched || cached;
+      const entry = this.smartTagEdits.get(context.paper.storageKey) || touched || cached;
       const result = {
         status: "ready",
         fromCache: true,
@@ -329,6 +330,17 @@
 
     async ensureSmartTags(itemID) {
       const context = await this.paperRepository.get(itemID);
+      if (this.stopped) throw new Logic.SmartTranslatorError("PLUGIN_STOPPED", "插件已停止");
+      const cachedManual = await this.cache.peekSmartTags(context.paper);
+      const manual = this.smartTagEdits.get(context.paper.storageKey) || cachedManual;
+      if (manual) {
+        const result = {
+          status: "ready", fromCache: true, paper: context.paper,
+          entry: manual, tags: manual.tags.slice()
+        };
+        if (!this.stopped) this._emit({ type: "smart-tags", ...result });
+        return result;
+      }
       if (!Logic.normalizeText(context.abstract)) {
         return { status: "missing", paper: context.paper, tags: [], entry: null };
       }
@@ -358,7 +370,7 @@
           throw new Logic.SmartTranslatorError("PLUGIN_STOPPED", "插件已停止");
         }
         const timestamp = this.now();
-        const entry = await this.cache.append(context.paper, {
+        const stored = await this.cache.append(context.paper, {
           kind: Constants.SMART_TAGS_KIND,
           normalizedSource: prepared.sourceSignature,
           sourceSignature: prepared.sourceSignature,
@@ -371,6 +383,7 @@
           lastUsedAt: timestamp,
           cacheHits: 0
         });
+        const entry = this.smartTagEdits.get(context.paper.storageKey) || stored;
         const result = {
           status: "ready",
           fromCache: false,
@@ -387,6 +400,19 @@
       };
       operation.then(cleanup, cleanup);
       return operation;
+    }
+
+    async saveSmartTags(paper, tags, { expectedRevision = null } = {}) {
+      if (this.stopped) throw new Logic.SmartTranslatorError("PLUGIN_STOPPED", "插件已停止");
+      const entry = await this.cache.setManualSmartTags(paper, tags, { expectedRevision });
+      const result = { status: "ready", paper, entry, tags: entry.tags.slice() };
+      if (!this.stopped) {
+        // Cache reads that began before this save may still return an older
+        // manual revision. Keep their eventual notifications on the saved value.
+        this.smartTagEdits.set(paper.storageKey, { ...entry, tags: entry.tags.slice() });
+        this._emit({ type: "smart-tags", ...result });
+      }
+      return result;
     }
 
     async getGlossaryForItem(itemID) {
@@ -449,6 +475,7 @@
         catch (_error) {}
       }
       this.cancelers.clear();
+      this.smartTagEdits.clear();
       this.listeners.clear();
     }
   }

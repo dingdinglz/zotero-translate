@@ -49,7 +49,7 @@ An interactive chart from the conversation, shown beside the passage it explains
 
 ## Get started
 
-The current version is **0.1.41**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
+The current version is **0.1.43**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
 
 PDF screenshots are enabled on the individually verified **9.0.6 and 10.0.4** versions. Use the original PDF view for screenshots; Zotero 10's reflowed Reading Mode is not supported for capture. Other patch versions keep screenshots disabled until their private PDF.js bridge has been checked.
 
@@ -100,7 +100,7 @@ The reader also has selection translation and an abstract/glossary panel. These 
 - Translate a selected passage and reuse its cached translation. Automatic selection translation is optional and off by default.
 - Read the translated abstract and saved terms in a floating panel. Uncached abstracts are translated when you open a PDF, once the translation service is configured.
 - Delete terms you no longer need, or disable selection translation for one PDF while keeping **Add to Agents** available.
-- View generated English smart tags in a separate library column. They stay in the plugin's local cache and do not change Zotero's native tags.
+- View generated English smart tags in a separate library column. Click **编辑** (Edit), double-click the tags, or click **+ 标签** in an empty cell to add, rename, or delete tags, then save. Manual tags support any language, up to 20 tags of 64 characters each, including items without an abstract. Saved edits take priority over automatic generation; clearing all tags keeps the list empty. They stay in the plugin's local cache and do not change Zotero's native tags.
 
 You can use the Agents sidebar without configuring the translation API.
 
@@ -124,7 +124,7 @@ Read [AGENTS.md](AGENTS.md) before changing plugin code. Runtime files live in `
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.41.xpi
+unzip -t dist/smart-paper-translator-0.1.43.xpi
 ```
 
 Build output goes to `dist/`. Runtime changes also require non-installing XPI parsing in the target Zotero version. The [technical reference (Chinese)](docs/technical-reference.zh-CN.md) covers adapter behavior, storage, rendering limits, and historical validation results.

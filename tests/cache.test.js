@@ -215,3 +215,48 @@ test("homepage smart-tag probes skip corrupt records without recovery writes", a
   assert.equal(io.writeJSONCalls.length, 0);
   assert.deepEqual([...io.files.keys()], ["/records/1--ABCDEFGH.json"]);
 });
+
+test("manual tags persist across configurations and empty overrides survive late generation", async () => {
+  const { cache, io } = makeCache();
+  const paper = makePaper();
+  const otherPaper = makePaper({ storageKey: "2--ABCDEFGH", libraryID: 2 });
+  const original = await cache.append(paper, entry());
+  const generated = await cache.append(paper, entry({
+    kind: "smart-tags", tags: ["Model", "Planning", "Control"],
+    sourceSignature: "s", configSignature: "c"
+  }));
+  const manual = await cache.setManualSmartTags(paper, ["  世界模型  ", "Planning", "planning"]);
+  assert.deepEqual(manual.tags, ["世界模型", "Planning"]);
+  const reloaded = makeCache({ io }).cache;
+  assert.deepEqual((await reloaded.peekSmartTags(paper, {
+    sourceSignature: "changed-title", configSignature: "changed-model"
+  })).tags, manual.tags);
+  assert.equal(await cache.peekSmartTags(otherPaper), null);
+  const cleared = await cache.setManualSmartTags(paper, [], { expectedRevision: manual.revision });
+  assert.deepEqual((await cache.append(paper, { ...generated, configSignature: "late" })).tags, []);
+  assert.deepEqual((await cache.touch(paper, generated.id)).tags, []);
+  assert.deepEqual((await reloaded.peekSmartTags(paper)).tags, []);
+  assert.deepEqual(await cache.getAllEntries(paper), [original, generated, cleared]);
+  assert.deepEqual(io.writeJSONCalls.at(-1).options, { tmpPath: "/records/1--ABCDEFGH.json.tmp" });
+});
+
+test("manual saves validate limits, serialize conflicts, and preserve saved data after failure", async () => {
+  const { cache, io } = makeCache();
+  const paper = makePaper();
+  await assert.rejects(cache.setManualSmartTags(paper, ["x".repeat(65)]), { code: "TAG_LIMIT" });
+  await assert.rejects(cache.setManualSmartTags(paper, Array(21).fill("x")), { code: "TAG_LIMIT" });
+  await assert.rejects(cache.setManualSmartTags(paper, ["x\ny"]), { code: "TAG_INVALID" });
+  const [first, stale] = await Promise.allSettled([
+    cache.setManualSmartTags(paper, ["First"]),
+    cache.setManualSmartTags(paper, ["Stale"])
+  ]);
+  assert.equal(first.status, "fulfilled");
+  assert.equal(stale.reason.code, "TAGS_CONFLICT");
+  const write = io.writeJSON.bind(io);
+  io.writeJSON = async () => { throw new Error("disk full"); };
+  const options = { expectedRevision: first.value.revision };
+  await assert.rejects(cache.setManualSmartTags(paper, [], options), /disk full/u);
+  assert.deepEqual((await cache.peekSmartTags(paper)).tags, ["First"]);
+  io.writeJSON = write;
+  assert.deepEqual((await cache.setManualSmartTags(paper, [], options)).tags, []);
+});

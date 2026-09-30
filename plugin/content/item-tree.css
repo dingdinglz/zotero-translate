@@ -9,6 +9,201 @@
   white-space: nowrap;
 }
 
+.spt-smart-tags-content {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+  width: 100%;
+}
+
+.spt-smart-tags-chips {
+  align-items: center;
+  display: flex;
+  flex: 1;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.spt-smart-tags-edit {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 0.85em;
+  margin-inline-start: auto;
+  opacity: 0;
+  padding: 1px 5px;
+}
+
+.spt-smart-tags-cell:hover .spt-smart-tags-edit,
+.spt-smart-tags-cell:focus-within .spt-smart-tags-edit,
+[aria-selected="true"] .spt-smart-tags-edit,
+.spt-smart-tags-edit--empty {
+  opacity: 1;
+}
+
+.spt-smart-tags-edit:hover,
+.spt-smart-tags-edit:focus-visible {
+  background: var(--material-button, #ddd);
+  border-color: var(--fill-secondary, #777);
+}
+
+.spt-smart-tags-popup {
+  --panel-padding: 0;
+}
+
+.spt-smart-tags-popup::part(content) {
+  --panel-background: var(--material-background, #fff);
+}
+
+.spt-smart-tags-editor {
+  background: transparent;
+  box-sizing: border-box;
+  color: var(--fill-primary, #222);
+  display: flex;
+  flex-direction: column;
+  font: menu;
+  gap: 10px;
+  line-height: 1.5;
+  padding: 16px;
+  width: 420px;
+  max-width: 90vw;
+}
+
+.spt-smart-tags-editor h3 {
+  font-size: 1.1em;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.spt-smart-tags-editor-title {
+  margin-top: -6px;
+  max-height: 3.6em;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.spt-smart-tags-editor-hint,
+.spt-smart-tags-editor-status {
+  color: var(--fill-secondary, #666);
+  font-size: 0.9em;
+  line-height: 1.5;
+  margin: 0;
+  white-space: normal;
+}
+
+.spt-smart-tags-editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(320px, 40vh);
+  overflow: auto;
+  padding: 3px;
+  margin: -3px;
+}
+
+.spt-smart-tags-editor-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 56px;
+}
+
+.spt-smart-tags-editor input,
+.spt-smart-tags-editor button {
+  /* Zotero's macOS chrome sets button max-height:25px and negative
+     margins. Reset both controls before sizing the rows consistently. */
+  appearance: none;
+  box-sizing: border-box;
+  color: inherit;
+  font: inherit;
+  height: 32px;
+  line-height: 20px;
+  margin: 0;
+  max-height: none;
+  min-height: 32px;
+  min-width: 0;
+  padding: 5px 10px;
+}
+
+.spt-smart-tags-editor input {
+  background: var(--material-background, #fff);
+  border: 1px solid var(--fill-quaternary, #aaa);
+  border-radius: 5px;
+  width: 100%;
+}
+
+.spt-smart-tags-editor button {
+  background: var(--material-button, #eee);
+  border: 1px solid var(--fill-quaternary, #aaa);
+  align-items: center;
+  border-radius: 5px;
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.spt-smart-tags-editor input:focus-visible,
+.spt-smart-tags-editor button:focus-visible {
+  outline: 2px solid var(--color-focus-border, var(--color-accent, #2869cb));
+  outline-offset: 1px;
+}
+
+.spt-smart-tags-editor button:hover:not(:disabled) {
+  filter: brightness(0.96);
+}
+
+.spt-smart-tags-editor-add {
+  align-self: flex-start;
+}
+
+.spt-smart-tags-editor button:disabled,
+.spt-smart-tags-editor input:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.spt-smart-tags-editor-footer {
+  align-items: center;
+  border-top: 1px solid var(--fill-quinary, #e4e4e4);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  margin-top: 2px;
+  padding-top: 12px;
+}
+
+.spt-smart-tags-editor-status {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.spt-smart-tags-editor-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-inline-start: auto;
+}
+
+.spt-smart-tags-editor-actions button {
+  min-width: 56px;
+}
+
+.spt-smart-tags-editor .spt-smart-tags-save {
+  background: var(--color-accent, #2869cb);
+  border-color: transparent;
+  color: white;
+}
+
 .spt-smart-tag {
   --spt-smart-tag-accent: var(--tag-blue, #2ea8e5);
 

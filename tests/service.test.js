@@ -162,6 +162,54 @@ test("invalid smart-tag output does not affect abstract translation", async () =
   assert.equal(tagsResult.reason.code, "API_TAG_FORMAT");
 });
 
+test("manual tags need neither abstract nor provider and are emitted only after a successful save", async () => {
+  const { service, cache, prefs, getAPICalls } = createService({ abstract: "" });
+  prefs.set(Constants.PREFS.provider, "custom");
+  const events = [];
+  service.subscribe((event) => events.push(event));
+  const first = await service.saveSmartTags(makePaper(), ["自定义主题"]);
+  assert.deepEqual((await service.ensureSmartTags(10)).tags, ["自定义主题"]);
+  const count = events.length;
+  await assert.rejects(service.saveSmartTags(makePaper(), ["Stale"]), { code: "TAGS_CONFLICT" });
+  assert.equal(events.length, count);
+  await service.saveSmartTags(makePaper(), [], { expectedRevision: first.entry.revision });
+  assert.deepEqual((await service.ensureSmartTags(10)).tags, []);
+  assert.deepEqual((await cache.peekSmartTags(makePaper())).tags, []);
+  assert.equal(getAPICalls(), 0);
+});
+
+test("saving while generation is in flight keeps manual tags in storage and completion events", async () => {
+  let finish;
+  const response = new Promise((resolve) => { finish = resolve; });
+  const { service, cache } = createService({ apiComplete: () => response });
+  const events = [];
+  service.subscribe((event) => events.push(event));
+  const pending = service.ensureSmartTags(10);
+  await new Promise((resolve) => setImmediate(resolve));
+  await service.saveSmartTags(makePaper(), []);
+  finish('["Model","Planning","Control"]');
+  assert.deepEqual((await pending).tags, []);
+  assert.deepEqual(events.at(-1).tags, []);
+  assert.deepEqual((await cache.peekSmartTags(makePaper())).tags, []);
+});
+
+test("a late read of an old manual revision cannot roll back a newer saved edit", async () => {
+  const { service, cache } = createService();
+  const first = await service.saveSmartTags(makePaper(), ["Old"]);
+  const originalPeek = cache.peekSmartTags.bind(cache);
+  let resolveRead;
+  cache.peekSmartTags = () => new Promise((resolve) => { resolveRead = resolve; });
+  const pending = service.ensureSmartTags(10);
+  await new Promise((resolve) => setImmediate(resolve));
+  await service.saveSmartTags(makePaper(), ["New"], { expectedRevision: first.entry.revision });
+  const events = [];
+  service.subscribe((event) => events.push(event));
+  resolveRead(first.entry);
+  assert.deepEqual((await pending).tags, ["New"]);
+  assert.deepEqual(events.at(-1).tags, ["New"]);
+  cache.peekSmartTags = originalPeek;
+});
+
 test("selection cache probe is local-only and returns a matching cached translation", async () => {
   const { service, prefs, getAPICalls } = createService();
   const miss = await service.getCachedSelection(10, "model", 1);
