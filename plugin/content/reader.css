@@ -332,6 +332,19 @@
   overflow-wrap: anywhere;
 }
 
+.spt-summary,
+.spt-selection-result {
+  -moz-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
+.spt-panel.spt-dragging .spt-summary,
+.spt-panel.spt-resizing .spt-summary {
+  -moz-user-select: none;
+  user-select: none;
+}
+
 .spt-status-tag {
   min-height: 19px;
   box-sizing: border-box;
@@ -535,7 +548,6 @@
   color: var(--fill-primary, rgba(0, 0, 0, .85));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  user-select: text;
 }
 
 @media (max-width: 520px) {

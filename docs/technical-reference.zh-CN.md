@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.45 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.46 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -151,10 +151,20 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.45.xpi
+unzip -t dist/smart-paper-translator-0.1.46.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.46：划线译文和摘要译文选择复制
+
+划线弹窗和摘要面板中的译文显式启用原生文字选择，并让译文区域可获得焦点。本机 Zotero 10.0.4 的 Reader `FocusManager` 会在窗口层取消普通 `div` 的 `pointerdown` 默认行为；插件仅在这两个译文节点停止事件冒泡，保留浏览器的原生选择行为。复制时检查每个选区的起止节点均位于当前译文内，清除 Reader 捕获阶段可能写入的 PDF 批注格式，只复制所选纯文本。其他区域的复制、面板拖动和缩放沿用现有行为。
+
+2026-09-30，338 项测试、JavaScript 语法和静态检查通过。最终 XPI 的 44 个文件与 `plugin/` 运行时源码逐字节一致；Zotero 10.0.4 / Gecko 140.15.0 原生解析返回正确 ID、版本 `0.1.46`、`error=0`、`isCompatible=true`、`appDisabled=false`。未安装插件或修改真实文库、缓存、偏好，未发起模型请求；Zotero 9 未重做原生验证。
+
+从最终 XPI 隔离加载的合成界面中，两处译文的原生计算样式均为 `user-select: text` 和 `cursor: text`。模拟 Reader 的窗口级焦点拦截和捕获阶段批注复制后，摘要中的真实鼠标与复制事件仍成功选择并复制 `English`，剪贴板事件仅保留 `text/plain`。后续窗口自动化出现 `noWindowsAvailable` / 超时，因此未将这次局部验证记为完整的安装后界面验收。
+
+最终文件 `dist/smart-paper-translator-0.1.46.xpi` 为 1,329,198 字节，SHA-256：`ea03c22c03b8afd2350cfda618f1e9c49c047861ec9206271fcb1363507f2415`。手动安装后，在两处分别拖选一段译文，用 macOS `⌘C`（Windows/Linux `Ctrl+C`）复制并粘贴，确认内容与选区一致；再检查面板标题拖动和右下角缩放。
 
 ## 0.1.45：同标签文章浮层对齐
 

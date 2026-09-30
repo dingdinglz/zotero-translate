@@ -49,7 +49,7 @@ OpenCode 还可以在「运行模式」中选择 **Build、Plan 和本机自定�
 
 ## 开始使用
 
-当前版本为 **0.1.45**，目标环境是 **macOS 上的 Zotero 10.0.4**，保留 Zotero 9 支持，插件清单兼容范围为 Zotero 9.0–10.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
+当前版本为 **0.1.46**，目标环境是 **macOS 上的 Zotero 10.0.4**，保留 Zotero 9 支持，插件清单兼容范围为 Zotero 9.0–10.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
 
 PDF 原页截图仅在逐项验证过的 **9.0.6 和 10.0.4** 开放。截图时请使用 PDF 原页视图，Zotero 10 的重排阅读模式（Reading Mode）不支持截图；其他补丁版本需核对私有 PDF.js 桥后再开放。
 
@@ -125,7 +125,7 @@ OpenCode 图片提问要求检测目录明确声明当前模型支持图片；�
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.45.xpi
+unzip -t dist/smart-paper-translator-0.1.46.xpi
 ```
 
 构建产物输出到 `dist/`。涉及运行时代码的修改，还需要在目标 Zotero 版本中对 XPI 做非安装式解析。适配器行为、存储结构、渲染限制和历史验证结果见[配置与实现参考](docs/technical-reference.zh-CN.md)。

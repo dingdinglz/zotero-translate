@@ -58,6 +58,7 @@ class FakeElement {
   removeEventListener(name) { this.listeners.delete(name); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
+  contains(node) { return node === this || this.children.some((child) => child.contains(node)); }
   querySelectorAll(selector) {
     return this.children.flatMap((child) => [
       ...(selector.startsWith(".") && String(child.className || "").split(/\s+/u).includes(selector.slice(1)) ? [child] : []),
@@ -103,7 +104,7 @@ class FakeDocument {
     this.listeners = new Map();
   }
   querySelector() { return null; }
-  createElement(tag) { return new FakeElement(tag); }
+  createElement(tag) { return Object.assign(new FakeElement(tag), { ownerDocument: this }); }
   createElementNS(namespaceURI, tag) { return new FakeElement(tag, namespaceURI); }
   addEventListener(name, handler) { this.listeners.set(name, handler); }
   removeEventListener(name) { this.listeners.delete(name); }
@@ -120,6 +121,95 @@ const readerStylesheet = fs.readFileSync(
   path.join(__dirname, "../plugin/content/reader.css"),
   "utf8"
 );
+
+function createSelectableTranslations() {
+  const doc = new FakeDocument();
+  const ui = new ReaderUI();
+  const state = {};
+  doc.body.append(ui._createPanel(doc, state));
+  let popup;
+  ui.handleSelectionPopup({
+    reader: { itemID: 10 }, doc, params: {},
+    append(node) { popup = node; doc.body.append(node); }
+  });
+  return { doc, state, nodes: [state.summaryNode, popup.children.at(-1)] };
+}
+
+test("both translations preserve native pointer selection against Reader focus cancellation", async () => {
+  const { state, nodes } = createSelectableTranslations();
+  for (const node of nodes) {
+    let stopped = false;
+    let prevented = false;
+    await node.dispatch("pointerdown", {
+      stopPropagation() { stopped = true; },
+      preventDefault() { prevented = true; }
+    });
+    // Zotero 10.0.4 FocusManager would preventDefault at the window if reached.
+    if (!stopped) prevented = true;
+    assert.equal(prevented, false);
+    assert.equal(node.tabIndex, 0);
+    assert.equal(node.getAttribute("role"), "region");
+    assert.ok(node.getAttribute("aria-label"));
+    assert.equal(node.getAttribute("contenteditable"), null);
+  }
+  assert.equal(state.panelHeader.listeners.has("copy"), false);
+  assert.equal(state.tabButtons.summary.listeners.has("pointerdown"), false);
+});
+
+test("copy uses only selected translation text and removes Reader annotation clipboard formats", async () => {
+  const { doc, nodes } = createSelectableTranslations();
+  for (const node of nodes) {
+    node.textContent = "完整译文：只复制这一段\n第二行 🧠，保留剩余内容。";
+    const selected = "只复制这一段\n第二行 🧠";
+    const child = doc.createElement("span");
+    node.append(child);
+    doc.defaultView = {
+      getSelection: () => ({
+        isCollapsed: false, rangeCount: 1,
+        getRangeAt: () => ({ startContainer: child, endContainer: child }),
+        toString: () => selected
+      })
+    };
+    const clipboard = new Map([
+      ["text/plain", "PDF source text"], ["text/html", "<p>PDF annotation</p>"],
+      ["application/x-zotero-annotations", "annotation metadata"]
+    ]);
+    let prevented = false;
+    let stopped = false;
+    await node.dispatch("copy", {
+      clipboardData: {
+        clearData() { clipboard.clear(); },
+        setData(type, value) { clipboard.set(type, value); }
+      },
+      preventDefault() { prevented = true; },
+      stopPropagation() { stopped = true; }
+    });
+    assert.deepEqual([...clipboard], [["text/plain", selected]]);
+    assert.equal(prevented, true);
+    assert.equal(stopped, true);
+    assert.match(node.textContent, /保留剩余内容/u);
+  }
+});
+
+test("translation copy leaves empty, outside, cross-region, and mixed-range selections alone", async () => {
+  const { doc, nodes } = createSelectableTranslations();
+  const [summary, popup] = nodes;
+  const inside = { startContainer: summary, endContainer: summary };
+  const outside = { startContainer: popup, endContainer: popup };
+  for (const ranges of [[], [outside], [{ ...inside, endContainer: popup }], [inside, outside]]) {
+    doc.defaultView = {
+      getSelection: () => ({
+        isCollapsed: !ranges.length, rangeCount: ranges.length,
+        getRangeAt: (index) => ranges[index], toString: () => "其他内容"
+      })
+    };
+    const unexpected = () => assert.fail("must preserve native copy outside this translation");
+    await summary.dispatch("copy", {
+      clipboardData: { clearData: unexpected, setData: unexpected },
+      preventDefault: unexpected, stopPropagation: unexpected
+    });
+  }
+});
 
 function createGlossaryUI(service) {
   const doc = new FakeDocument();

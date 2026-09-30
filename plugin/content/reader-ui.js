@@ -21,6 +21,31 @@
     return element;
   }
 
+  function enableTranslationSelection(node, label) {
+    node.tabIndex = 0;
+    node.setAttribute("role", "region");
+    node.setAttribute("aria-label", label);
+    // Reader's window-level FocusManager cancels pointerdown on ordinary divs.
+    // Keep the native focus and selection defaults within our translated text.
+    node.addEventListener("pointerdown", (event) => event.stopPropagation());
+    node.addEventListener("copy", (event) => {
+      const selection = node.ownerDocument.defaultView?.getSelection();
+      if (!event.clipboardData || !selection || selection.isCollapsed || !selection.rangeCount) return;
+      for (let index = 0; index < selection.rangeCount; index++) {
+        const range = selection.getRangeAt(index);
+        if (!node.contains(range.startContainer) || !node.contains(range.endContainer)) return;
+      }
+      const text = selection.toString();
+      if (!text) return;
+      // Reader's capture-phase copy handler may already have added a selected
+      // PDF annotation. Copy only this DOM selection, without annotation data.
+      event.clipboardData.clearData();
+      event.clipboardData.setData("text/plain", text);
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  }
+
   function normalizeSelectionRects(value) {
     if (!Array.isArray(value) || !value.length) return null;
     const rects = [];
@@ -310,6 +335,7 @@
       abstractSection.tabIndex = 0;
       const summaryCacheTag = createCacheTag(doc, "spt-summary-cache-tag");
       const abstractBody = createElement(doc, "div", "spt-summary spt-muted", "正在读取摘要…");
+      enableTranslationSelection(abstractBody, "摘要译文");
       abstractSection.append(summaryCacheTag, abstractBody);
 
       const glossarySection = createElement(doc, "section", "spt-tab-panel");
@@ -1189,6 +1215,7 @@
       const status = createElement(doc, "div", "spt-selection-status");
       status.setAttribute("role", "status");
       const resultNode = createElement(doc, "div", "spt-selection-result");
+      enableTranslationSelection(resultNode, "划线译文");
       const text = String(params?.annotation?.text || "").trim();
       const pageIndex = params?.annotation?.position?.pageIndex;
       const pageNumber = Number.isInteger(pageIndex) ? pageIndex + 1 : null;

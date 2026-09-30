@@ -14,7 +14,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.45`
+- 当前版本：`0.1.46`
 - 目标平台：macOS Zotero 10.0.4；保留 Zotero 9.0.6 既有支持
 - 清单兼容范围：Zotero `9.0`–`10.0.*`；私有 PDF.js 截图桥仅开放 `9.0.6` / `10.0.4`
 - 插件源码根目录：`plugin/`
@@ -50,6 +50,7 @@
 - Codex Mermaid 固定使用 XPI 内置 Mermaid `11.16.1`，只在出现 `mermaid` fenced code block 时按窗口延迟加载，不得使用 CDN 或运行时下载。由于 Zotero Item Pane 属于无 `body` 的 XUL 文档，运行时必须留在同窗口的本地 `about:blank` HTML iframe 与专用 Gecko sandbox 中；sandbox 必须以该 HTML 窗口为原型继承只读的 `window`/`document`，不得再次赋值，关闭插件时移除 iframe 并丢弃 sandbox 引用；不得在 Zotero 9.0.6 调用 `Cu.nukeSandbox()`。必须保持 `securityLevel: strict`、`htmlLabels: false`、安全配置锁定、源文本/边数/超时/SVG 大小与节点数上限。返回 SVG 只允许 Mermaid flowchart 生成的本地 `feDropShadow` 滤镜，不得放行其他滤镜原语，并继续拒绝活动元素、HTML、链接和非本地资源引用；结果需写入最长边不超过 4096 像素的固有尺寸并序列化为隔离的数据图片，宽图在侧栏横向滚动，不得作为活动 SVG 注入 Item Pane。解析、超限或安全校验失败时必须保留原始源码。
 - Codex 开发者模式必须默认关闭；关闭时不得采集或保留额外的可复制诊断日志，也不得显示复制入口。开启后仅允许在内存中有界记录当前实时 turn 的工具与思考诊断事件，脱敏常见密钥和用户主目录，不得自动落盘或上传；关闭模式、重建会话和插件退出必须清空。
 - 悬浮面板术语删除仅清理当前论文中同一规范化原文的全部 selection 缓存配置变体；原子写入成功后更新列表与计数，不改摘要、智能标签或其他论文。删除必须使此前在途的对应划线请求及缓存探测失效，防止旧结果恢复缓存；异步列表刷新和删除回调复核 Reader、论文与请求序号，失败保留术语并允许重试。
+- 划线译文和摘要译文必须支持原生拖选与复制；仅在译文节点阻止 Reader 的 pointerdown 冒泡，不取消默认选择。复制只接受完全位于当前译文节点内的选区，清除 Reader 可能添加的批注格式后仅写入所选纯文本，不修改译文或全局复制行为。
 - 当前 PDF 的划线翻译禁用开关默认关闭，禁用附件 ID 列表仅持久化在本机 Zotero 偏好中；命中禁用状态时不得追加插件划线翻译 UI、查询划线缓存或发起翻译请求，且不得影响其他 PDF 或独立的“添加到 Agents”入口。
 - 列表页智能标签的编辑、添加、删除和清空只写插件当前论文缓存；手动标签最多 20 个、每个最多 64 字符，允许多语言和无摘要条目。`manual: true` 记录及空数组优先于所有自动配置，迟到生成不得覆盖；写入按论文串行且原子提交，用修订号拒绝其他窗口的陈旧保存，成功后才刷新。单元格绑定条目 ID 和论文标识，不按行号或当前选择猜测目标；异步编辑复核窗口、条目和视图，关闭后清理浮层并丢弃迟到结果。保留 `.cell-text` 包装，防止 Zotero 重建首列时丢失编辑监听器。
 - 单个智能标签的文章汇总限定为被点击条目所在文库，跨分类读取已有标签，排除回收站、子附件和笔记；完整名称按既有空白/大小写规则匹配，沿用手动标签和手动清空优先级。查询不得生成新标签或修改缓存；损坏记录显示不完整结果提示，全部结果分页可达。点击结果定位前复核条目身份、标签及当前视图；关闭、切换和销毁丢弃迟到结果，标签或文库变化使旧结果失效。
@@ -168,8 +169,9 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.45.xpi         # 当前版本交付物
-    ├── smart-paper-translator-0.1.44.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.46.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.45.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.44.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.43.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.42.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.41.xpi         # 历史版本归档
