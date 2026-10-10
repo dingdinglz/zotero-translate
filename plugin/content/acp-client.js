@@ -240,6 +240,7 @@
       this.authStatus = null;
       this.closed = false;
       this.cleanupTasks = new Set();
+      this.unreapedProcesses = new Set();
       this.generation = 0;
     }
 
@@ -411,7 +412,7 @@
     }
 
     async _start({ allowUnprepared, allowDownload = false, cwd }) {
-      if (this.process) await this.stop();
+      if (this.process || this.unreapedProcesses.size) await this.stop();
       if (this.cleanupTasks.size) await Promise.allSettled(this.cleanupTasks);
       if (this.provider.runtime === "native") {
         const generation = this.generation;
@@ -596,13 +597,11 @@
         rejectPending = reject;
       });
       this.pending.set(id, { resolve: resolvePending, reject: rejectPending, method });
-      try {
-        await this._write({ jsonrpc: "2.0", id, method, params });
-      }
-      catch (error) {
-        this.pending.delete(id);
-        throw error;
-      }
+      // Observe the write without awaiting it: stop() and the request deadline
+      // must also reject requests stuck behind a full stdin pipe.
+      void this._write({ jsonrpc: "2.0", id, method, params }).catch(error => {
+        if (this.pending.delete(id)) rejectPending(error);
+      });
       return withTimeout(
         result,
         timeoutMs,
@@ -693,35 +692,43 @@
       this.pending.clear();
       for (const entry of this.incoming.values()) entry.settled = true;
       this.incoming.clear();
-      if (process) {
-        this._emit({ type: "stopped" });
-        await this._terminateProcess(process);
-      }
+      if (process) this._emit({ type: "stopped" });
+      const stopping = [...new Set([process, ...this.unreapedProcesses].filter(Boolean))];
+      const results = await Promise.allSettled(stopping.map(child => this._terminateProcess(child)));
       await Promise.allSettled(this.cleanupTasks);
+      const failure = results.find(result => result.status === "rejected");
+      if (failure) throw failure.reason;
       await this.nativeRuntime?.cleanup();
     }
 
     async _terminateProcess(process) {
-      try { await process.stdin?.close?.(); }
-      catch (_error) {}
+      this.unreapedProcesses.add(process);
+      // Closing a blocked pipe is not a prerequisite for killing its child.
+      void Promise.resolve().then(() => process.stdin?.close?.()).catch(() => {});
       if (this.provider.id === "pi") {
         try {
           await withTimeout(process.wait(), 1500, () => new Error("ACP shutdown timeout"), this.timers);
+          this.unreapedProcesses.delete(process);
           return;
         }
         catch (_error) {}
       }
-      try { await process.kill?.(1000); }
-      catch (_error) {}
-      if (this.provider.runtime === "native" && !this.process) await this.nativeRuntime?.cleanup();
+      await process.kill?.(1000);
+      this.unreapedProcesses.delete(process);
+      if (this.provider.runtime === "native" && !this.process && !this.unreapedProcesses.size) await this.nativeRuntime?.cleanup();
     }
 
     async shutdown() {
       this.closed = true;
       this.listeners.clear();
       this.requestHandlers.clear();
-      await this.stop();
-      if (this.starting) await Promise.allSettled([this.starting]);
+      const starting = this.starting;
+      let failure = null;
+      try { await this.stop(); }
+      catch (error) { failure = error; }
+      if (starting) await Promise.allSettled([starting]);
+      // Reap a late spawn or retry a failed termination before reporting success.
+      if (starting || failure || this.unreapedProcesses.size) await this.stop();
     }
   }
 
@@ -879,10 +886,12 @@
     };
   }
 
-  async function createSubprocess(paths, { purpose, allowDownload }, agentId = "codex") {
+  async function createSubprocess(paths, { purpose, allowDownload, cwd }, agentId = "codex") {
     const provider = Agents.getProvider(agentId);
     paths = normalizeRuntimePaths(paths);
     validateRuntimePaths(paths);
+    const workdir = cwd == null ? null : toNativeAbsolutePath(cwd);
+    if (cwd != null && !workdir) throw new ACPError("ACP_PATH_INVALID", "Invalid Agent working directory");
     const { Subprocess } = global.ChromeUtils.importESModule(
       "resource://gre/modules/Subprocess.sys.mjs"
     );
@@ -897,6 +906,7 @@
     return Subprocess.call({
       command: paths.nodePath,
       arguments: argumentsList,
+      ...(workdir ? { workdir } : {}),
       environmentAppend: true,
       environment: createEnvironment(paths, { allowDownload }, agentId),
       stderr: "pipe"
@@ -1029,7 +1039,7 @@
     };
   }
 
-  function createZoteroACPClient({ getPreference, setPreference, log, agentId = "codex", probe = false } = {}) {
+  function createZoteroACPClient({ getPreference, setPreference, log, agentId = "codex", probe = false, temporary = false } = {}) {
     const provider = Agents.getProvider(agentId);
     const readPaths = () => ({
       nodePath: String(getPreference(Constants.PREFS.codexNodePath) || "").trim(),
@@ -1037,7 +1047,7 @@
       [`${provider.id}Path`]: String(getPreference(provider.executablePref) || "").trim()
     });
     const fingerprint = () => JSON.stringify(provider.runtime === "native" ? { opencodePath: readPaths().opencodePath } : readPaths());
-    const nativeRuntime = provider.runtime === "native" ? OpenCode.createRuntime({ readPaths, probe }) : null;
+    const nativeRuntime = provider.runtime === "native" ? OpenCode.createRuntime({ readPaths, probe, temporary }) : null;
     return new ACPClient({
       agentId,
       nativeRuntime,

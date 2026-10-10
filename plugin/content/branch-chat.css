@@ -1,0 +1,115 @@
+:root {
+  color-scheme: light dark;
+  background: Canvas;
+  color: CanvasText;
+  font: menu;
+}
+
+html,
+#spt-branch-chat-body {
+  margin: 0;
+  min-width: 280px;
+  min-height: 100%;
+}
+
+#spt-branch-chat-body {
+  -moz-user-select: text;
+  user-select: text;
+}
+
+.spt-branch-chat {
+  --spt-codex-muted: color-mix(in srgb, CanvasText 70%, Canvas);
+  height: 100vh;
+  padding: 16px;
+  gap: 12px;
+  overflow: visible;
+}
+
+.spt-branch-chat h1,
+.spt-branch-chat h2,
+.spt-branch-chat p {
+  margin: 0;
+}
+
+.spt-branch-header {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.spt-branch-header h1 {
+  font-size: 1.2em;
+}
+
+.spt-branch-paper-title {
+  font-size: 1em;
+  font-weight: 600;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.spt-branch-chat .spt-codex-messages {
+  flex: 1 1 180px;
+  min-height: 180px;
+  max-height: none;
+  -moz-user-select: text;
+  user-select: text;
+}
+
+.spt-branch-errors {
+  color: CanvasText;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.spt-branch-errors:not(:empty) {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, #d92d20 55%, CanvasText);
+  border-radius: 8px;
+  background: color-mix(in srgb, #d92d20 8%, Canvas);
+}
+
+.spt-branch-interactions:empty,
+.spt-branch-errors:empty {
+  display: none;
+}
+
+.spt-branch-status {
+  color: var(--spt-codex-muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.spt-branch-chat .spt-codex-composer textarea {
+  min-height: 76px;
+  max-height: 40vh;
+  resize: vertical;
+  background: Canvas;
+  color: CanvasText;
+  -moz-user-select: text;
+  user-select: text;
+}
+
+.spt-branch-key-hint {
+  color: var(--spt-codex-muted);
+  font-size: 0.82em;
+}
+
+.spt-branch-actions {
+  justify-content: flex-end;
+}
+
+.spt-branch-actions > :first-child {
+  margin-inline-end: auto;
+}
+
+.spt-branch-chat [hidden] {
+  display: none !important;
+}
+
+.spt-branch-chat textarea:focus-visible,
+.spt-branch-interactions input:focus-visible,
+.spt-branch-interactions select:focus-visible {
+  outline: 2px solid var(--spt-codex-accent);
+  outline-offset: 2px;
+}

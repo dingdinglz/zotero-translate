@@ -14,6 +14,7 @@ const {
   resolveReaderAttachmentID,
   openExternalURL,
   renderSafeMarkdown,
+  selectedReplyText,
   appendMermaidBlock,
   captureTranscriptViewport,
   restoreTranscriptViewport,
@@ -21,6 +22,77 @@ const {
   describeToolImage,
   appendToolDetails
 } = require("../plugin/content/codex-chat-ui.js");
+
+test("branch selection stays inside one completed reply and opening preserves main transcript/draft/scroll", async () => {
+  const savedZotero = global.Zotero;
+  global.Zotero = { locale: "zh-CN", Reader: { getByTabID: id => id === "branch-tab" ? { itemID: 10 } : null } };
+  const opened = [];
+  const ui = new CodexChatUI({ service: { configurationCatalog: { configOptions: [] } }, openBranch: async (...args) => opened.push(args) });
+  const doc = new Document();
+  const body = doc.createElement("div");
+  doc.body.append(body);
+  body.closestValues = { "item-details": { tabID: "branch-tab" } };
+  try {
+    ui._renderShell({ doc, body });
+    const view = ui.views.get(body);
+    view.attachmentID = 10;
+    view.state = {
+      agentId: "codex", attachmentID: 10,
+      paper: { attachmentID: 10, storageKey: "1--ABCDEFGH", attachmentKey: "HGFEDCBA", title: "Paper" },
+      configOptions: [], status: "generating", record: { session: { localID: "local", config: {} }, transcript: [
+        { id: "q", kind: "message", role: "user", text: "Explain paper" },
+        { id: "a", kind: "message", role: "agent", status: "complete", text: "Some term" },
+        { id: "q2", kind: "message", role: "user", text: "Another question" },
+        { id: "a2", kind: "message", role: "agent", status: "streaming", text: "Incomplete" }
+      ] }
+    };
+    ui._renderTranscript(view, view.state);
+    const messages = view.elements.messages;
+    messages.scrollTop = 37;
+    view.elements.input.value = "unsent draft";
+    const content = messages.children[1].children[1];
+    const range = { startContainer: content, endContainer: content, toString: () => "term", getBoundingClientRect: () => ({ left: 22, bottom: 40 }), intersectsNode: node => node === messages };
+    doc.defaultView.getSelection = () => ({ isCollapsed: false, rangeCount: 1, getRangeAt: () => range });
+    ui._updateBranchButton(view);
+    assert.equal(view.branchButton.hidden, false);
+    assert.equal(view.branchButton.textContent, "分支提问");
+    assert.deepEqual(selectedReplyText(messages).text, "term");
+    let prevented = false;
+    view.branchButton.dispatchEvent({ type: "pointerdown", preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true);
+    const before = JSON.stringify(view.state);
+    await ui._openSelectedBranch(view);
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0][0], doc.defaultView);
+    assert.equal(opened[0][1].selectionText, "term");
+    assert.equal(opened[0][1].questionText, "Explain paper");
+    assert.equal(opened[0][1].answerText, "Some term");
+    assert.equal(JSON.stringify(view.state), before);
+    assert.equal(messages.scrollTop, 37);
+    assert.equal(view.elements.input.value, "unsent draft");
+    // Mixed messages/header/body selections and currently streaming replies fail closed.
+    range.endContainer = messages.children[2].children[1];
+    assert.equal(selectedReplyText(messages), null);
+    ui._updateBranchButton(view);
+    assert.equal(view.branchButton.hidden, true);
+    range.endContainer = content;
+    range.startContainer = messages.children[1].children[0];
+    assert.equal(selectedReplyText(messages), null);
+    range.startContainer = range.endContainer = messages.children[3].children[1];
+    ui._updateBranchButton(view);
+    assert.equal(view.branchButton.hidden, true);
+    // Even a previously captured valid selection cannot outlive a reload/session switch.
+    range.startContainer = range.endContainer = content;
+    ui._updateBranchButton(view);
+    view.requestSerial++;
+    await ui._openSelectedBranch(view);
+    assert.equal(opened.length, 1);
+    ui._destroyView(body);
+    assert.equal(view.branchButton.parentNode, null);
+    assert.equal(doc.listeners.has("selectionchange"), false);
+  }
+  finally { await ui.shutdown(); global.Zotero = savedZotero; }
+});
 
 class Node {
   constructor(localName, text = "") {

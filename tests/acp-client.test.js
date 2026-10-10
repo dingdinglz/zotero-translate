@@ -137,6 +137,37 @@ test("client correlates concurrent requests and routes streaming notifications",
   assert.equal(process.killed, true);
 });
 
+test("shutdown rejects requests stuck in stdin and kills without waiting for stdin.close", async () => {
+  const process = serveProcess();
+  const client = new ACPClient({ processFactory: async () => process, getPreparedVersion: () => "1.6.2" });
+  await client.start();
+  process.stdin.write = () => new Promise(() => {});
+  process.stdin.close = () => new Promise(() => {});
+  const pending = assert.rejects(client.request("session/prompt", {}, { timeoutMs: 0 }), { code: "ACP_STOPPED" });
+  await client.shutdown();
+  await pending;
+  assert.equal(process.killed, true);
+  assert.equal(client.pending.size, 0);
+  assert.equal(client.unreapedProcesses.size, 0);
+});
+
+test("failed process termination is retained and blocks restarting until it can be reaped", async () => {
+  const process = serveProcess();
+  let spawned = 0;
+  const client = new ACPClient({ processFactory: async () => { spawned++; return process; }, getPreparedVersion: () => "1.6.2" });
+  await client.start();
+  const kill = process.kill.bind(process);
+  process.kill = async () => { throw new Error("cannot kill yet"); };
+  await assert.rejects(client.stop(), /cannot kill/);
+  assert.equal(client.unreapedProcesses.size, 1);
+  await assert.rejects(client.start(), /cannot kill/);
+  assert.equal(spawned, 1);
+  process.kill = kill;
+  await client.shutdown();
+  assert.equal(client.unreapedProcesses.size, 0);
+  assert.equal(process.killed, true);
+});
+
 test("cancelling a session cancels its pending permission request", async () => {
   const process = serveProcess();
   const client = new ACPClient({
@@ -406,7 +437,10 @@ test("Windows runtime inspection and spawning normalize paths without changing t
   try {
     await inspectSharedRuntime(paths);
     await inspectLocalRuntime(paths);
-    await createSubprocess(paths, { purpose: "serve", allowDownload: false });
+    await createSubprocess(paths, { purpose: "serve", allowDownload: false, cwd: "C:/temp/branch" });
+    assert.equal(calls.at(-1).workdir, "C:\\temp\\branch");
+    assertNativeWindowsPath(calls.at(-1).workdir);
+    await assert.rejects(createSubprocess(paths, { purpose: "serve", allowDownload: false, cwd: "C:relative" }), { code: "ACP_PATH_INVALID" });
     assert.equal(calls.at(-1).arguments[0], "C:\\node\\npm\\npx-cli.js");
     assert.equal(calls.at(-1).environment.CODEX_PATH, "C:\\codex\\codex.exe");
     assert.equal(calls.at(-1).environment.PATH, "C:\\node;C:\\codex;C:\\Windows\\System32;D:\\tools");

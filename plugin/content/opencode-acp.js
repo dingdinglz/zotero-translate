@@ -209,9 +209,10 @@ exit "$spt_exit"`;
     }
   }
 
-  function createRuntime({ readPaths, probe = false }) {
+  function createRuntime({ readPaths, probe = false, temporary = false }) {
     let context = null;
     let cleaning = null;
+    let cleanupRequired = false;
     const processes = new Set();
     const uuid = () => global.Services.uuid.generateUUID().toString().replace(/[{}]/gu, "");
     const settings = () => ({
@@ -221,6 +222,7 @@ exit "$spt_exit"`;
     });
     const call = async options => {
       if (cleaning) await cleaning;
+      if (cleanupRequired) await cleanup();
       const { Subprocess } = global.ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
       const process = await Subprocess.call(options);
       processes.add(process);
@@ -228,11 +230,14 @@ exit "$spt_exit"`;
     };
     const ensureContext = async cwd => {
       if (cleaning) await cleaning;
+      if (cleanupRequired) await cleanup();
       if (context) return context;
-      if (probe) {
-        const root = global.PathUtils.join(global.Services.dirsvc.get("TmpD", global.Ci.nsIFile).path, "spt-opencode-probe-" + uuid());
+      if (probe || temporary) {
+        if (temporary && !probe && !absolutePath(cwd)) throw fail("ACP_PATH_INVALID", "临时 OpenCode 需要独立工作区");
+        const root = global.PathUtils.join(global.Services.dirsvc.get("TmpD", global.Ci.nsIFile).path,
+          (probe ? "spt-opencode-probe-" : "spt-opencode-branch-") + uuid());
         await global.IOUtils.makeDirectory(root, { permissions: 0o700 });
-        context = { root, cwd: root, dbPath: global.PathUtils.join(root, "probe.sqlite"), password: uuid() + uuid() };
+        context = { root, cwd: probe ? root : cwd, dbPath: global.PathUtils.join(root, probe ? "probe.sqlite" : "session.sqlite"), password: uuid() + uuid() };
       }
       else {
         if (!absolutePath(cwd)) throw fail("ACP_PATH_INVALID", "OpenCode 需要当前论文的独立工作区");
@@ -259,23 +264,29 @@ exit "$spt_exit"`;
         try { return parseModelCatalog(await collect(process, MAX_MODEL_BYTES, global, marker)); }
         finally { processes.delete(process); }
       },
-      async cleanup() {
-        if (cleaning) return cleaning;
-        const currentProcesses = [...processes];
-        for (const process of currentProcesses) processes.delete(process);
-        const current = context;
-        context = null;
-        cleaning = (async () => {
-          await Promise.allSettled(currentProcesses.map(async process => {
-            try { await process.stdin?.close?.(); } catch (_error) {}
-            await process.kill?.(1000);
-          }));
-          if (current?.root) await global.IOUtils.remove(current.root, { recursive: true, ignoreAbsent: true });
-        })();
-        try { await cleaning; }
-        finally { cleaning = null; }
-      }
+      cleanup
     };
+
+    async function cleanup() {
+      if (cleaning) return cleaning;
+      cleanupRequired = true;
+      const currentProcesses = [...processes];
+      const current = context;
+      cleaning = (async () => {
+        const results = await Promise.allSettled(currentProcesses.map(async process => {
+          void Promise.resolve().then(() => process.stdin?.close?.()).catch(() => {});
+          await process.kill?.(1000);
+          processes.delete(process);
+        }));
+        const failure = results.find(result => result.status === "rejected");
+        if (failure) throw failure.reason;
+        if (current?.root) await global.IOUtils.remove(current.root, { recursive: true, ignoreAbsent: true });
+        if (context === current) context = null;
+        cleanupRequired = false;
+      })();
+      try { await cleaning; }
+      finally { cleaning = null; }
+    }
   }
 
   modules.OpenCodeACP = { MIN_VERSION, REVISION, MAX_MODEL_BYTES, TerminalTitleFilter, parseVersion, isSupportedVersion, parseModelCatalog, launchOptions, modelLaunchOptions, collect, createRuntime };

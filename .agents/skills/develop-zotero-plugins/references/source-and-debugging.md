@@ -5,6 +5,7 @@
 - 证据优先级
 - 官方入口
 - 检查目标版本
+- 无 Computer Use 时的 CLI 原生验证
 - 搜索本机 Zotero 源码
 - 常见源码位置
 - 用 Zotero 原生安装器解析 XPI
@@ -52,6 +53,12 @@ return {
 ```
 
 含 `await` 或 `return` 的诊断代码要勾选“作为异步函数执行”。只读版本查询和 XPI 解析可使用当前客户端；安装、启停生命周期或修改偏好的实验应在已获授权的开发 profile 中进行。不要为了读版本号自动创建或修改 profile。
+
+## 无 Computer Use 时的 CLI 原生验证
+
+不把 Computer Use 工具当作验证前提。macOS 上默认按 [cli-native-probes.md](cli-native-probes.md) 使用终端、Swift/osascript 与 Accessibility 定位本轮新建的 Run JavaScript 窗口；完整探针保存在自有临时文件中，保留剪贴板后整段粘贴短包装，再从本轮 JSON 结果确认执行与最终 XPI 哈希。
+
+该路线已在 Zotero 10.0.6 / Gecko 140.17.0 完成非安装解析与模拟后端窗口验证。每次重新确认 PID/版本，不覆盖用户已有脚本，不打印真实文库的 AX 树。找不到窗口或没有执行结果是自动化未完成，不应误判插件 API/兼容性；系统权限不足时请用户授权或手动执行，不更改 profile、TCC 或远程调试设置。
 
 ## 搜索本机 Zotero 源码
 

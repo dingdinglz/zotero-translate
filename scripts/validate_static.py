@@ -18,13 +18,14 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.46"
+    assert manifest["version"] == "0.1.48"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "10.0.*"
     assert zotero["update_url"].startswith("https://")
 
     ElementTree.parse(PLUGIN / "content" / "preferences.xhtml")
+    ElementTree.parse(PLUGIN / "content" / "branch-chat.xhtml")
     xhtml = (PLUGIN / "content" / "preferences.xhtml").read_text(encoding="utf-8")
     assert "<!DOCTYPE" not in xhtml
 
@@ -49,6 +50,16 @@ def main() -> None:
     mermaid_renderer = (PLUGIN / "content" / "mermaid-renderer.js").read_text(encoding="utf-8")
     visualize_renderer = (PLUGIN / "content" / "visualize-renderer.js").read_text(encoding="utf-8")
     bootstrap = (PLUGIN / "bootstrap.js").read_text(encoding="utf-8")
+    branch = (PLUGIN / "content" / "branch-chat.js").read_text(encoding="utf-8")
+    branch_ui = (PLUGIN / "content" / "branch-chat-ui.js").read_text(encoding="utf-8")
+    assert f'VERSION: "{manifest["version"]}"' in constants
+    assert "class MemoryBranchCache" in branch
+    assert 'this.acp.request("session/delete"' not in branch
+    assert "IOUtils.writeJSON" not in branch
+    assert ".innerHTML" not in branch_ui
+    assert '"content/branch-chat.js"' in bootstrap
+    assert '"content/branch-chat-ui.js"' in bootstrap
+    assert "registerChrome" in bootstrap and "destruct()" in bootstrap
     assert 'ACP_PACKAGE_SPEC: "@agentclientprotocol/codex-acp@1.6.2"' in constants
     assert 'ACP_MODE: "agent"' in constants
     assert 'ACP_TOOL_IMAGES_DIRECTORY: "tool-images"' in constants

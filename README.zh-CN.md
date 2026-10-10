@@ -36,6 +36,14 @@ Smart Paper Translator 把你电脑上已经配置好的 Codex、Pi 和 OpenCode
 
 OpenCode 还可以在「运行模式」中选择 **Build、Plan 和本机自定义模式**。每篇论文分别记住选择，新会话默认跟随本机 OpenCode 配置；收到 OpenCode 确认后才保存变更。
 
+### 不打断主对话的临时追问
+
+在 Agent 已完成的回复正文中选中文字，点击「分支提问」，会打开可调整大小的独立窗口，只保留标题、对话和输入区，不自动发送。输入问题，或点击「解释这段内容」，就能在窗口内继续追问；主对话、草稿和阅读位置保持不变。
+
+分支沿用打开时的 Agent、模型和思考强度。首条问题会带上选中文字、所在回复及对应原问题，并提供独立的论文副本，不复制整个聊天。每个 Zotero 主窗口同时保留一个分支，替换前会确认；切换论文不会改变已打开的分支。
+
+关闭后丢弃插件内存中的分支聊天并删除临时工作区。**这不代表本机 Agent 或模型服务商零留存。** 分支不继承 Codex Full Access，临时工作区也不是安全沙箱。
+
 ### 回答就在原文旁边
 
 回答支持表格、代码、数学公式和 Mermaid 图表。文字可以直接选择和复制，回复生成过程中也能复制已经读到的内容。工具调用会显示为可展开的卡片，展开时才构建内容，更新时保留阅读位置。每个工具保存的原始输出最多 64 KiB，超限保留尾部；旧历史加载时也会按此上限裁剪。
@@ -49,7 +57,7 @@ OpenCode 还可以在「运行模式」中选择 **Build、Plan 和本机自定�
 
 ## 开始使用
 
-当前版本为 **0.1.46**，目标环境是 **macOS 上的 Zotero 10.0.4**，保留 Zotero 9 支持，插件清单兼容范围为 Zotero 9.0–10.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
+当前版本为 **0.1.48**，目标环境是 **macOS 上的 Zotero 10.0.4**，保留 Zotero 9 支持，插件清单兼容范围为 Zotero 9.0–10.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
 
 PDF 原页截图仅在逐项验证过的 **9.0.6 和 10.0.4** 开放。截图时请使用 PDF 原页视图，Zotero 10 的重排阅读模式（Reading Mode）不支持截图；其他补丁版本需核对私有 PDF.js 桥后再开放。
 
@@ -115,7 +123,7 @@ Codex 新会话默认使用审批模式。可以为当前对话开启 **Full Acc
 
 OpenCode 图片提问要求检测目录明确声明当前模型支持图片；模型不支持原生 PDF 输入时，首轮会提供工作区内的文本快照引用。
 
-对话历史、PDF 副本和截图分别保存在 Zotero 数据目录下 `smart-paper-translator/` 的 `codex-acp/`、`pi-acp/` 和 `opencode-acp/` 中，不加密，也不参与 Zotero 同步。文字和选区草稿只在本次 Zotero 运行期间保留，截图草稿可在重启后恢复。翻译 API Key 保存在 Mozilla Login Manager 中。
+常规对话历史、PDF 副本和截图分别保存在 Zotero 数据目录下 `smart-paper-translator/` 的 `codex-acp/`、`pi-acp/` 和 `opencode-acp/` 中，不加密，也不参与 Zotero 同步。文字和选区草稿只在本次 Zotero 运行期间保留，截图草稿可在重启后恢复。翻译 API Key 保存在 Mozilla Login Manager 中。
 
 ## 开发
 
@@ -125,7 +133,7 @@ OpenCode 图片提问要求检测目录明确声明当前模型支持图片；�
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.46.xpi
+unzip -t dist/smart-paper-translator-0.1.48.xpi
 ```
 
 构建产物输出到 `dist/`。涉及运行时代码的修改，还需要在目标 Zotero 版本中对 XPI 做非安装式解析。适配器行为、存储结构、渲染限制和历史验证结果见[配置与实现参考](docs/technical-reference.zh-CN.md)。

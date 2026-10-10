@@ -135,7 +135,42 @@ test("native probe output is bounded and failures do not expose model stdout", a
   assert.equal(killed, 2);
 });
 
-test("probe runtimes clean only owned temporary data and serialize cleanup before a new connection", async () => {
+test("native cleanup retains failed kills/database removals for retry, never reuses their old context", async () => {
+  const fs = require("node:fs"), vm = require("node:vm");
+  const folders = new Set(), launches = [];
+  let counter = 0, failKill = true, failRemove = true;
+  const context = vm.createContext({ TextEncoder, setTimeout, clearTimeout,
+    Services: { uuid: { generateUUID: () => String(++counter) }, env: { get: () => "" }, dirsvc: { get: () => ({ path: "/tmp" }) } },
+    Ci: { nsIFile: {} }, PathUtils: { join: (...parts) => parts.join("/") },
+    IOUtils: { makeDirectory: async path => folders.add(path), remove: async path => {
+      if (failRemove) throw new Error("remove failed"); folders.delete(path);
+    } },
+    ChromeUtils: { importESModule: () => ({ Subprocess: { call: async options => {
+      launches.push(options);
+      return { stdin: { close: () => new Promise(() => {}) }, kill: async () => { if (failKill) throw new Error("kill failed"); } };
+    } } }) }
+  });
+  vm.runInContext(fs.readFileSync(require.resolve("../plugin/content/opencode-acp.js"), "utf8"), context);
+  const runtime = context.SmartPaperTranslatorModules.OpenCodeACP.createRuntime({ readPaths: () => ({ opencodePath: "/local/opencode" }), temporary: true });
+  await runtime.spawn({ cwd: "/branch/first" });
+  await assert.rejects(runtime.cleanup(), /kill failed/);
+  assert.equal(folders.size, 1);
+  await assert.rejects(runtime.spawn({ cwd: "/branch/second" }), /kill failed/);
+  assert.equal(launches.length, 1);
+  failKill = false;
+  await assert.rejects(runtime.cleanup(), /remove failed/);
+  assert.equal(folders.size, 1);
+  failRemove = false;
+  await runtime.spawn({ cwd: "/branch/second" });
+  assert.equal(launches.length, 2);
+  assert.notEqual(launches[0].environment.OPENCODE_DB, launches[1].environment.OPENCODE_DB);
+  assert.equal(launches[1].workdir, "/branch/second");
+  assert.equal(folders.size, 1);
+  await runtime.cleanup();
+  assert.equal(folders.size, 0);
+});
+
+test("probe and branch runtimes clean only owned temporary data and serialize cleanup before a new connection", async () => {
   const fs = require("node:fs");
   const vm = require("node:vm");
   const folders = new Set(), removed = [], launches = [];
@@ -150,7 +185,7 @@ test("probe runtimes clean only owned temporary data and serialize cleanup befor
     } } }) }
   });
   vm.runInContext(fs.readFileSync(require.resolve("../plugin/content/opencode-acp.js"), "utf8"), context);
-  const make = probe => context.SmartPaperTranslatorModules.OpenCodeACP.createRuntime({ readPaths: () => ({ opencodePath: "/local/opencode" }), probe });
+  const make = (probe, temporary = false) => context.SmartPaperTranslatorModules.OpenCodeACP.createRuntime({ readPaths: () => ({ opencodePath: "/local/opencode" }), probe, temporary });
   const probe = make(true);
   await probe.spawn({});
   const original = launches[0];
@@ -168,5 +203,14 @@ test("probe runtimes clean only owned temporary data and serialize cleanup befor
   assert.equal(launches.at(-1).environment.OPENCODE_DB, undefined);
   await paper.cleanup();
   assert.equal(removed.includes("/paper/persistent-workspace"), false);
+  const branch = make(false, true);
+  await assert.rejects(branch.spawn({}), { code: "ACP_PATH_INVALID" });
+  await branch.spawn({ cwd: "/tmp/branch/workspaces/paper/session" });
+  const temporaryLaunch = launches.at(-1);
+  assert.equal(temporaryLaunch.workdir, "/tmp/branch/workspaces/paper/session");
+  assert.match(temporaryLaunch.environment.OPENCODE_DB, /^\/tmp\/spt-opencode-branch-[0-9]+\/session\.sqlite$/u);
+  assert.equal(JSON.stringify(temporaryLaunch.arguments).includes(temporaryLaunch.environment.OPENCODE_SERVER_PASSWORD), false);
+  await branch.cleanup();
+  assert.equal(removed.includes(temporaryLaunch.workdir), false);
   assert.equal(folders.size, 0);
 });

@@ -112,8 +112,16 @@ var SmartPaperTranslatorPlugin = {
       opencodeProbeService: this.opencodeProbeService, createOpenCodeService,
       paperRepository: this.paperRepository, getPreference, setPreference
     });
+    this.branchChatUI = new modules.BranchChatUI.BranchChatUI({
+      rootURI,
+      stylesheetText: codexChatStylesheet,
+      createService: (context) => modules.BranchChat.createZoteroBranchService({
+        context, getPreference, catalog: context.configurationCatalog
+      })
+    });
     this.codexChatUI = new modules.CodexChatUI.CodexChatUI({
       service: this.agentsChatService,
+      openBranch: (win, context) => this.branchChatUI.open(win, context),
       isScreenshotPending: (attachmentID) => this.readerUI.isScreenshotPending(attachmentID),
       stylesheetText: codexChatStylesheet,
       rootURI,
@@ -464,6 +472,7 @@ var SmartPaperTranslatorPlugin = {
   },
 
   removeFromWindow(win) {
+    void this.branchChatUI?.closeForWindow(win).catch(() => this.log("Temporary branch cleanup failed"));
     const state = this.windowStates.get(win);
     if (!state) return;
     for (const cleanup of state.cleanups) {
@@ -486,6 +495,9 @@ var SmartPaperTranslatorPlugin = {
     if (!this.initialized) return;
     if (this.preferenceRefreshTimer) clearTimeout(this.preferenceRefreshTimer);
     this.preferenceRefreshTimer = null;
+    // Close chrome child windows before unrelated UI cleanup can fail and the
+    // bootstrap finally block unregisters their local resource mapping.
+    await this.branchChatUI?.shutdown().catch(() => this.log("Temporary branch shutdown failed"));
     this.readerUI?.shutdown();
     this.itemTreeUI?.shutdown();
     await this.codexChatUI?.shutdown().catch((error) => this.log("Codex UI shutdown failed", error));

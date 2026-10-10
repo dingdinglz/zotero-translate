@@ -69,6 +69,52 @@ function loadMainPlugin() {
   return { plugin: context.SmartPaperTranslatorPlugin, context, values, preferenceCalls, detectCalls, detected };
 }
 
+test("bootstrap registers the local branch chrome document and tears it down after window cleanup", async () => {
+  const events = [], scripts = [];
+  const plugin = { init: async () => events.push("init"), addToAllWindows: () => events.push("windows"), shutdown: async () => events.push("closed-windows") };
+  const context = vm.createContext({
+    Zotero: { uiReadyPromise: Promise.resolve(), debug() {}, logError() {} },
+    Ci: { amIAddonManagerStartup: {} },
+    Cc: { "@mozilla.org/addons/addon-manager-startup;1": { getService: () => ({ registerChrome: (manifest, entries) => {
+      assert.equal(manifest, "jar:file:///plugin.xpi!/manifest.json");
+      assert.deepEqual(JSON.parse(JSON.stringify(entries)), [["content", "smart-paper-translator", "content/"]]);
+      events.push("register");
+      return { destruct: () => events.push("destruct") };
+    } }) } },
+    Services: { io: { newURI: uri => uri }, scriptloader: { loadSubScript: uri => { scripts.push(uri); context.SmartPaperTranslatorPlugin = plugin; } } }
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../plugin/bootstrap.js"), "utf8"), context);
+  await context.startup({ id: Constants.PLUGIN_ID, version: Constants.VERSION, rootURI: "jar:file:///plugin.xpi!/" });
+  assert.equal(scripts.some(uri => uri.endsWith("/branch-chat.js")), true);
+  assert.equal(scripts.some(uri => uri.endsWith("/branch-chat-ui.js")), true);
+  await context.shutdown();
+  assert.deepEqual(events, ["register", "init", "windows", "closed-windows", "destruct"]);
+  assert.equal(context.SmartPaperTranslatorChromeHandle, null);
+});
+
+test("main window removal and plugin shutdown also close the independent branch", async () => {
+  const { plugin } = loadMainPlugin();
+  const calls = [];
+  const owner = {};
+  plugin.branchChatUI = { closeForWindow: async win => calls.push(["window", win]), shutdown: async () => calls.push(["branch"]) };
+  plugin.codexChatUI = { shutdown: async () => calls.push(["main-ui"]) };
+  plugin.agentsChatService = { shutdown: async () => calls.push(["main-services"]) };
+  plugin.initialized = true;
+  plugin.removeFromWindow(owner);
+  await plugin.shutdown();
+  assert.deepEqual(calls, [["window", owner], ["branch"], ["main-ui"], ["main-services"]]);
+});
+
+test("branch windows close before an unrelated Reader cleanup failure", async () => {
+  const { plugin } = loadMainPlugin();
+  const calls = [];
+  plugin.initialized = true;
+  plugin.branchChatUI = { shutdown: async () => calls.push("branch-closed") };
+  plugin.readerUI = { shutdown: () => { calls.push("reader-error"); throw new Error("reader failure"); } };
+  await assert.rejects(plugin.shutdown(), /reader failure/);
+  assert.deepEqual(calls, ["branch-closed", "reader-error"]);
+});
+
 function loadPreferencesManager() {
   const elements = new Map();
   const makeElement = () => ({

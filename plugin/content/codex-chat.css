@@ -1357,3 +1357,18 @@ button.spt-codex-file-citation:hover {
 .spt-visualize-panel { width: min(1100px, 96vw); max-height: 92vh; overflow: auto; padding: 16px; border-radius: 12px; color: var(--fill-primary, #20252c); background: var(--material-background, #fff); box-shadow: 0 12px 60px rgba(0,0,0,.25); }
 .spt-visualize-panel > button { display: block; margin-left: auto; }
 .spt-visualize [hidden] { display: none !important; }
+
+.spt-codex-branch-button {
+  position: fixed;
+  z-index: 2147483645;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, CanvasText 25%, Canvas);
+  border-radius: 7px;
+  background: Canvas;
+  color: CanvasText;
+  font: menu;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, .2);
+  cursor: pointer;
+}
+.spt-codex-branch-button[hidden] { display: none !important; }
+.spt-codex-branch-button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }

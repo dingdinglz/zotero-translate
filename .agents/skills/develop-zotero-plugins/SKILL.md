@@ -11,6 +11,7 @@ Build against the user's actual Zotero version and prefer public plugin APIs. Fo
 
 - Read [references/implementation-patterns.md](references/implementation-patterns.md) before implementing lifecycle, reader UI, item access, events, or settings.
 - Read [references/source-and-debugging.md](references/source-and-debugging.md) whenever an API, version rule, install error, DOM surface, or Mozilla behavior is uncertain.
+- Read [references/cli-native-probes.md](references/cli-native-probes.md) before macOS native parsing or isolated UI probes. Default to CLI + Accessibility + Run JavaScript; do not assume Computer Use tools or a remote debugger are available.
 - Read [references/zotero-10-migration.md](references/zotero-10-migration.md) for Zotero 9 → 10 migration, compatibility-range changes, or Reader/PDF.js behavior in Zotero 10.
 - Read [references/abstract-popup-case-study.md](references/abstract-popup-case-study.md) for floating reader UI, auto/manual open state, or a misleading compatibility error.
 
@@ -95,7 +96,7 @@ For runtime changes, validate the affected behavior and final package:
 4. Manifest and XPI structure checks.
 5. Native AddonManager parsing in the exact target Zotero version.
 
-Targeted native probes can check isolated features without installing the plugin; see [references/source-and-debugging.md](references/source-and-debugging.md). A successful parser result does not verify startup or UI behavior.
+Targeted native probes can check isolated features without installing the plugin; see [references/source-and-debugging.md](references/source-and-debugging.md). On macOS, use the [CLI-native route](references/cli-native-probes.md): rediscover the PID and verify the app, operate only an owned Run JavaScript window, paste a short wrapper with clipboard preservation, and verify a fresh structured result against the final artifact hash. Do not dump the library's accessibility tree or overwrite an existing editor. Missing system permissions require user help, not profile/TCC changes. A successful parser result does not verify startup or UI behavior.
 
 When installation and UI testing are authorized, use a separate development profile where practical. Cover open/close, repeated toggle, tab switch, empty data, preference change, disable cleanup, and restart as relevant. Verify accessibility names and selected state. If those actions are outside the task's authorization, deliver the completed non-installing checks and label UI smoke testing as unperformed.
 

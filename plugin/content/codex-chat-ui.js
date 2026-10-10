@@ -22,6 +22,7 @@
   );
 
   const Agents = modules.AgentProviders || (typeof require === "function" ? require("./agent-providers.js") : null);
+  const BranchChat = modules.BranchChat || (typeof require === "function" ? require("./branch-chat.js") : null);
 
   const CODEX_L10N_RESOURCE = "smart-paper-translator-codex-chat.ftl";
   const LEGACY_CODEX_L10N_RESOURCE = "smart-paper-translator.ftl";
@@ -711,6 +712,29 @@
     return false;
   }
 
+  function selectedReplyText(container) {
+    const selection = container?.ownerDocument?.defaultView?.getSelection?.();
+    if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
+    const range = selection.getRangeAt(0);
+    const contains = (parent, node) => {
+      for (let current = node; current; current = current.parentNode) if (current === parent) return true;
+      return false;
+    };
+    // Both endpoints must be in the same reply body, not its header, a tool,
+    // another message, or an iframe. Never copy HTML or a privileged DOM object.
+    for (const article of Array.from(container.children || [])) {
+      if (!String(article.className).split(/\s+/u).some(name => ["spt-codex-agent", "spt-codex-assistant"].includes(name))) continue;
+      const content = Array.from(article.children || []).find(child => String(child.className).split(/\s+/u).includes("spt-codex-markdown"));
+      if (!content || !contains(content, range.startContainer) || !contains(content, range.endContainer)) continue;
+      const text = String(range.toString()).trim();
+      if (!text) return null;
+      const rect = range.getBoundingClientRect?.();
+      return { entryKey: article.getAttribute("data-entry-key"), text,
+        rect: rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null };
+    }
+    return null;
+  }
+
   function captureTranscriptViewport(container, renderedBefore) {
     const expanded = new Set();
     const innerScroll = new Map();
@@ -1271,6 +1295,7 @@
       requestScreenshotCapture,
       canStartScreenshotCapture,
       isScreenshotPending,
+      openBranch,
       log
     } = {}) {
       this.service = service;
@@ -1283,6 +1308,7 @@
       this.requestScreenshotCapture = requestScreenshotCapture;
       this.canStartScreenshotCapture = canStartScreenshotCapture;
       this.isScreenshotPending = isScreenshotPending;
+      this.openBranch = openBranch;
       this.log = log || (() => {});
       this.pluginID = null;
       this.paneID = null;
@@ -1718,6 +1744,59 @@
       return true;
     }
 
+    _branchIdentity(view) {
+      return JSON.stringify([view.attachmentID, view.agentId || "codex", view.requestSerial, view.state?.record?.session?.localID]);
+    }
+
+    _updateBranchButton(view) {
+      const button = view.branchButton;
+      if (!button) return;
+      const identity = this._branchIdentity(view);
+      const selected = selectedReplyText(view.elements.messages);
+      view.branchSelection = null;
+      button.hidden = true;
+      if (!selected || this.views.get(view.body) !== view || !view.state ||
+        view.renderedTranscriptKey !== identity || resolveReaderAttachmentID(view.body) !== view.attachmentID) return;
+      try {
+        // Validate status/turn now; the same checks run again on activation.
+        BranchChat.contextFromTranscript(view.state, selected.entryKey, selected.text);
+      }
+      catch (_error) { return; }
+      view.branchSelection = { ...selected, identity };
+      button.hidden = false;
+      const win = view.body.ownerDocument.defaultView;
+      const rect = selected.rect;
+      button.style.left = `${Math.max(8, Math.min(Number(rect?.left) || 8, (win.innerWidth || 900) - 140))}px`;
+      button.style.top = `${Math.max(8, Math.min((Number(rect?.bottom) || 8) + 6, (win.innerHeight || 700) - 44))}px`;
+    }
+
+    async _openSelectedBranch(view) {
+      const saved = view.branchSelection;
+      if (!saved || !this.openBranch || view.branchOpening || this.views.get(view.body) !== view ||
+        this._branchIdentity(view) !== saved.identity || resolveReaderAttachmentID(view.body) !== view.attachmentID) return;
+      view.branchOpening = true;
+      view.branchButton.disabled = true;
+      try {
+        const context = BranchChat.contextFromTranscript(view.state, saved.entryKey, saved.text);
+        const service = this._agentService(view.attachmentID, view.agentId);
+        // Copy the capability catalog, not a live service/connection. It is never prompt data.
+        context.configurationCatalog = service.configurationCatalog ? JSON.parse(JSON.stringify(service.configurationCatalog)) : null;
+        await this.openBranch(view.body.ownerDocument.defaultView, context);
+      }
+      catch (error) {
+        if (this.views.get(view.body) === view && this._branchIdentity(view) === saved.identity) {
+          view.elements.notices.textContent = error.message || "无法打开临时分支";
+        }
+      }
+      finally {
+        view.branchOpening = false;
+        if (this.views.get(view.body) === view) {
+          view.branchButton.disabled = false;
+          this._updateBranchButton(view);
+        }
+      }
+    }
+
     _renderShell({ doc, body, setSectionSummary }) {
       this._destroyView(body);
       body.replaceChildren();
@@ -1839,10 +1918,27 @@
         this._draftFor(view.attachmentID, true, view.agentId).question = input.value;
         this._syncDraftViews(view.attachmentID, view.agentId);
       };
+      if (this.openBranch) {
+        const button = makeButton(doc, /^zh/iu.test(global.Zotero?.locale || "zh-CN") ? "分支提问" : "Ask in branch",
+          () => this._openSelectedBranch(view), "spt-codex-branch-button");
+        button.hidden = true;
+        button.title = /^zh/iu.test(global.Zotero?.locale || "zh-CN") ? "在独立临时窗口中提问，不改变主对话" : "Ask in a temporary window without changing this chat";
+        button.addEventListener("pointerdown", event => event.preventDefault());
+        doc.documentElement.append(button);
+        view.branchButton = button;
+        const reposition = () => this._updateBranchButton(view);
+        view.elements.messages.addEventListener("scroll", reposition);
+        view.cleanups.push(() => {
+          button.remove();
+          view.branchSelection = null;
+          view.elements.messages.removeEventListener("scroll", reposition);
+        });
+      }
       const selectionChanged = () => {
         if (this.views.get(body) === view && view.transcriptDeferred && view.state) {
           this._renderTranscript(view, view.state);
         }
+        this._updateBranchButton(view);
       };
       input.addEventListener("keydown", keydown);
       input.addEventListener("input", inputChanged);
@@ -2779,6 +2875,7 @@
       this._renderTranscript(view, state);
       this._renderDraftContexts(view);
       this._updateComposerAvailability(view);
+      this._updateBranchButton(view);
     }
 
     async shutdown() {
@@ -2807,6 +2904,7 @@
     screenshotPositionSummary,
     openExternalURL,
     renderSafeMarkdown,
+    selectedReplyText,
     appendMermaidBlock,
     captureTranscriptViewport,
     restoreTranscriptViewport,

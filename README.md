@@ -36,6 +36,14 @@ You can choose the model and thinking level in the sidebar. The available levels
 
 OpenCode also offers **Build**, **Plan**, and your local custom modes under **Run mode**. Each paper keeps its own choice; a new session follows OpenCode’s local default. Changes are saved after OpenCode confirms them.
 
+### Ask a side question without changing the conversation
+
+Select text inside a completed Agent reply and click **Ask in branch**. A separate, resizable window opens with just the title, conversation and input area; opening it sends nothing. Write a question or click **Explain this passage**, then keep asking follow-ups in that window. The main conversation, draft, and reading position stay unchanged.
+
+The branch uses the current Agent, model, and thinking level. Its first question includes the selection, the source reply and original question, plus a separate PDF copy—not the entire chat. Each main Zotero window allows one branch; replacing it asks for confirmation. Switching papers does not change an open branch.
+
+Closing the branch discards its in-memory chat and removes the plugin's temporary workspace. **This is not a zero-retention mode for your Agent or model provider.** Codex Full Access is not inherited, and temporary workspaces are not security sandboxes.
+
 ### Read the answer next to the source
 
 Replies support tables, code, and mathematical notation, along with Mermaid diagrams. Text is selectable and copyable, including while a reply is streaming. Tool calls appear in expandable cards, with content built only when opened and scroll positions preserved during updates. Each tool's saved raw output is capped at 64 KiB; oversized output keeps its tail, and older histories are trimmed to the same limit when loaded.
@@ -49,7 +57,7 @@ An interactive chart from the conversation, shown beside the passage it explains
 
 ## Get started
 
-The current version is **0.1.46**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
+The current version is **0.1.48**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
 
 PDF screenshots are enabled on the individually verified **9.0.6 and 10.0.4** versions. Use the original PDF view for screenshots; Zotero 10's reflowed Reading Mode is not supported for capture. Other patch versions keep screenshots disabled until their private PDF.js bridge has been checked.
 
@@ -115,7 +123,7 @@ Codex starts in approval mode. You can enable **Full Access** for the current co
 
 OpenCode image questions require explicit image support in the inspected model catalog. When a model cannot accept PDFs directly, the first question references a text snapshot in the paper workspace.
 
-Histories, PDF copies, and screenshots are stored in separate `codex-acp/`, `pi-acp/`, and `opencode-acp/` directories under `smart-paper-translator/` in your Zotero data directory. These files are not encrypted or included in Zotero sync. Text and selection drafts last only for the current Zotero run; screenshot drafts can be restored after a restart. Translation API keys are stored in Mozilla Login Manager.
+Regular chat histories, PDF copies, and screenshots are stored in separate `codex-acp/`, `pi-acp/`, and `opencode-acp/` directories under `smart-paper-translator/` in your Zotero data directory. These files are not encrypted or included in Zotero sync. Text and selection drafts last only for the current Zotero run; screenshot drafts can be restored after a restart. Translation API keys are stored in Mozilla Login Manager.
 
 ## Development
 
@@ -125,7 +133,7 @@ Read [AGENTS.md](AGENTS.md) before changing plugin code. Runtime files live in `
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.46.xpi
+unzip -t dist/smart-paper-translator-0.1.48.xpi
 ```
 
 Build output goes to `dist/`. Runtime changes also require non-installing XPI parsing in the target Zotero version. The [technical reference (Chinese)](docs/technical-reference.zh-CN.md) covers adapter behavior, storage, rendering limits, and historical validation results.

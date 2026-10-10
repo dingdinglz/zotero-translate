@@ -1,4 +1,5 @@
 var SmartPaperTranslatorPlugin;
+var SmartPaperTranslatorChromeHandle;
 
 function log(message, error) {
   Zotero.debug("Smart Paper Translator: " + message);
@@ -30,18 +31,31 @@ async function startup({ id, version, rootURI }) {
     "content/opencode-acp.js",
     "content/acp-client.js",
     "content/codex-chat.js",
+    "content/branch-chat.js",
     "content/agents-chat.js",
     "content/item-tree-ui.js",
     "content/reader-ui.js",
     "content/codex-chat-ui.js",
+    "content/branch-chat-ui.js",
     "content/main.js"
   ];
   for (const script of scripts) {
     Services.scriptloader.loadSubScript(rootURI + script);
   }
 
-  await SmartPaperTranslatorPlugin.init({ id, version, rootURI });
-  SmartPaperTranslatorPlugin.addToAllWindows();
+  const startupService = Cc["@mozilla.org/addons/addon-manager-startup;1"].getService(Ci.amIAddonManagerStartup);
+  SmartPaperTranslatorChromeHandle = startupService.registerChrome(Services.io.newURI(rootURI + "manifest.json"), [
+    ["content", "smart-paper-translator", "content/"]
+  ]);
+  try {
+    await SmartPaperTranslatorPlugin.init({ id, version, rootURI });
+    SmartPaperTranslatorPlugin.addToAllWindows();
+  }
+  catch (error) {
+    SmartPaperTranslatorChromeHandle.destruct();
+    SmartPaperTranslatorChromeHandle = null;
+    throw error;
+  }
 }
 
 function onMainWindowLoad({ window }) {
@@ -59,7 +73,12 @@ async function shutdown() {
   catch (error) {
     log("Shutdown failed", error);
   }
-  SmartPaperTranslatorPlugin = undefined;
+  finally {
+    // Local chrome documents must close before their runtime mapping disappears.
+    SmartPaperTranslatorChromeHandle?.destruct();
+    SmartPaperTranslatorChromeHandle = null;
+    SmartPaperTranslatorPlugin = undefined;
+  }
 }
 
 function uninstall({ version }) {
