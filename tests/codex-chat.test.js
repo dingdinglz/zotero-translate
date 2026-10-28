@@ -1113,20 +1113,26 @@ test("thought chunks expose only the latest non-empty line as transient activity
   assert.equal(final.record.transcript.find(entry => entry.kind === "thought").model, "gpt-5.6-codex");
 });
 
-test("thought replay retains only unambiguous locally recorded models", async () => {
+test("thought replay retains model identity by user turn even for identical thoughts and questions", async () => {
   const { service, acp, cache, paper } = makeHarness();
   await service.send(10, "question");
   const state = await service._stateForAttachment(10);
-  state.record.transcript.push(
-    { kind: "thought", text: "Unique Claude thought", model: "anthropic/claude-sonnet-4" },
-    { kind: "thought", text: "Ambiguous", model: "gpt-5.6-codex" },
-    { kind: "thought", text: "Ambiguous", model: "anthropic/claude-sonnet-4" }
-  );
+  state.record.transcript = [
+    { kind: "message", role: "user", text: "Same question" },
+    { kind: "thought", text: "Same thought", model: "anthropic/claude-sonnet-4" },
+    { kind: "message", role: "user", text: "Same question" },
+    { kind: "thought", text: "Same thought", model: "gpt-5.6-codex" },
+    { kind: "message", role: "user", text: "Different question" },
+    { kind: "thought", text: "Same thought", model: "anthropic/claude-sonnet-4" }
+  ];
   await cache.save(paper, state.record);
   acp.loadHook = async (params, client) => {
-    for (const text of ["Unique Claude thought", "Ambiguous", "New external thought"]) {
+    for (const [index, question] of ["Same question", "Same question", "Mismatched external question"].entries()) {
       client.emit("session/update", { sessionId: params.sessionId, update: {
-        sessionUpdate: "agent_thought_chunk", content: { type: "text", text }
+        sessionUpdate: "user_message_chunk", messageId: `q-${index}`, content: { type: "text", text: question }
+      } });
+      client.emit("session/update", { sessionId: params.sessionId, update: {
+        sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Same thought" }
       } });
       client.emit("session/update", { sessionId: params.sessionId, update: {
         sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Answer" }
@@ -1136,7 +1142,7 @@ test("thought replay retains only unambiguous locally recorded models", async ()
   const replayed = await service.reload(10);
   const thoughts = replayed.record.transcript.filter(entry => entry.kind === "thought");
   assert.equal(thoughts[0].model, "anthropic/claude-sonnet-4");
-  assert.equal(thoughts[1].model, undefined);
+  assert.equal(thoughts[1].model, "gpt-5.6-codex");
   assert.equal(thoughts[2].model, undefined);
   assert.ok(thoughts.every(entry => entry.status === "complete"));
 });

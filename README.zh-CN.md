@@ -32,6 +32,8 @@ Smart Paper Translator 把你电脑上已经配置好的 Codex、Pi 和 OpenCode
 
 每个 PDF 都有自己的对话。Codex、Pi 和 OpenCode 分别保存历史、草稿与模型设置，侧栏也会记住这篇论文上次用的是哪个 Agent。切换后看到的是所选 Agent 自己的历史。
 
+GPT 系模型的思考以输入框上方的进度行展示；其他模型使用独立思考块，生成时展开、结束后折叠，输入框上方仅显示 `thinking…`。临时分支聊天也使用相同规则。
+
 模型和思考强度可以直接在侧栏调整。可选档位随模型变化，Pi 的部分模型支持 `max`。重启 Zotero 后仍能查看本地历史，再次发送时会恢复原来的 Agent 会话。
 
 OpenCode 还可以在「运行模式」中选择 **Build、Plan 和本机自定义模式**。每篇论文分别记住选择，新会话默认跟随本机 OpenCode 配置；收到 OpenCode 确认后才保存变更。
@@ -57,7 +59,7 @@ OpenCode 还可以在「运行模式」中选择 **Build、Plan 和本机自定�
 
 ## 开始使用
 
-当前版本为 **0.1.48**，目标环境是 **macOS 上的 Zotero 10.0.4**，保留 Zotero 9 支持，插件清单兼容范围为 Zotero 9.0–10.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
+当前版本为 **0.1.49**，目标环境是 **macOS 上的 Zotero 10.0.4**，保留 Zotero 9 支持，插件清单兼容范围为 Zotero 9.0–10.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
 
 PDF 原页截图仅在逐项验证过的 **9.0.6 和 10.0.4** 开放。截图时请使用 PDF 原页视图，Zotero 10 的重排阅读模式（Reading Mode）不支持截图；其他补丁版本需核对私有 PDF.js 桥后再开放。
 
@@ -133,7 +135,7 @@ OpenCode 图片提问要求检测目录明确声明当前模型支持图片；�
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.48.xpi
+unzip -t dist/smart-paper-translator-0.1.49.xpi
 ```
 
 构建产物输出到 `dist/`。涉及运行时代码的修改，还需要在目标 Zotero 版本中对 XPI 做非安装式解析。适配器行为、存储结构、渲染限制和历史验证结果见[配置与实现参考](docs/technical-reference.zh-CN.md)。

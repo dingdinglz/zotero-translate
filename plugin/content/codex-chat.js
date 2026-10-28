@@ -1408,18 +1408,30 @@
         this._syncRecordConfiguration(state);
         const replay = state.replay || [];
         this._normalizeReplay(state, replay);
-        const thoughtModels = new Map();
-        for (const entry of state.record.transcript) {
-          if (entry.kind !== "thought" || typeof entry.model !== "string") continue;
-          const models = thoughtModels.get(entry.text) || new Set();
-          models.add(entry.model);
-          thoughtModels.set(entry.text, models);
+        const thoughtTurns = transcript => {
+          const turns = [];
+          let turn = null;
+          for (const entry of transcript) {
+            if (entry.kind === "message" && entry.role === "user") {
+              turn = { question: entry, thoughts: [] };
+              turns.push(turn);
+            }
+            else if (entry.kind === "thought" && turn) turn.thoughts.push(entry);
+          }
+          return turns;
+        };
+        const savedTurns = thoughtTurns(state.record.transcript);
+        for (const [index, turn] of thoughtTurns(replay).entries()) {
+          const saved = savedTurns[index];
+          if (!saved || saved.question.text !== turn.question.text ||
+            (saved.question.remoteID && turn.question.remoteID && saved.question.remoteID !== turn.question.remoteID) ||
+            saved.thoughts.length !== turn.thoughts.length ||
+            saved.thoughts.some((entry, i) => entry.text !== turn.thoughts[i].text)) continue;
+          for (const [i, entry] of turn.thoughts.entries()) {
+            if (typeof saved.thoughts[i].model === "string") entry.model = saved.thoughts[i].model;
+          }
         }
         for (const entry of replay) {
-          if (entry.kind === "thought") {
-            const models = thoughtModels.get(entry.text);
-            if (models?.size === 1) entry.model = [...models][0];
-          }
           if (entry.status === "streaming") entry.status = "complete";
           const persistedImage = entry.kind === "tool"
             ? persistedImages.get(String(entry.remoteID || ""))

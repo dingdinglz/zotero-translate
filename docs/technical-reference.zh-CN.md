@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.48 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.49 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -37,7 +37,7 @@ Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio �
 - 超宽工具输出、路径和表格被限制在 Item Pane 内，不再把用户消息推到侧栏可视区域之外。
 - `execute`、文件读取、图片查看和搜索等常见工具会显示为语义卡片，只呈现安全元数据，不再把内部 ID、时间戳及原始事件 JSON 暴露在界面中；权限审批使用同一套可读展示。Codex 完成态 `View Image` 会联合核对工具类型、标题、输入路径、位置和资源链接，再把通过常规文件、25 MiB、扩展名与文件签名校验的 PNG/JPEG/GIF/WebP/AVIF 复制到工作区外的会话媒体目录；SVG、未知格式、路径不一致和伪装文件只显示错误，不回退直读源路径。图片卡片默认折叠，用户展开后才解码本地副本；点击预览可在当前 Zotero 窗口放大，并在适应窗口与 1:1 原始像素间切换。Web Search 会区分多查询搜索、打开网页和页内查找，完整展示 ACP 返回的查询、页面、查找词，以及事件中实际携带的结果标题、摘要或文本；若固定适配器没有传回网页正文或结果摘要，卡片会明确标注协议事件未携带内容。
 - Agents 回答和 Web Search 卡片中的 HTTP/HTTPS 链接只在用户点击后通过 Zotero 的 `Zotero.launchURL()` 交给系统默认浏览器；插件不在 Item Pane 内导航，也不允许其他 URL scheme。
-- Agent 思考增量中的最新非空状态行会显示在输入框上方的加载栏中；空白分隔块被忽略，历史思考不再堆成可展开卡片，任务结束后加载栏自动隐藏。
+- GPT 系模型保留输入框上方的最新非空思考进度行；其他模型使用独立纯文本思考块，生成时展开、结束后折叠，底部仅显示 `thinking…`，授权/停止提示优先。侧栏和分支一致，具体模型识别、历史回退与选区边界见 [Agents 思考展示契约](agents-presentation/SPEC.md)。
 - 设置页提供默认关闭的“开发者模式”。只有开启后，Agents 侧栏才显示“复制日志”按钮，并在内存中记录当前实时 turn 的工具调用与思考事件；关闭后立即清空且停止采集。日志会脱敏用户主目录和常见密钥字段，并限制事件、字符串及集合大小，但复制前仍应检查其中的命令、路径和工具输出。
 - 首轮实际发送给 ACP 的论文安全边界和 `resource_link` 只作为协议上下文保存；用户消息气泡始终只显示用户输入的问题，远端回放也会做同样的展示归一化。
 - 选区在真正发送时才以版本化 JSON 文本交给所选本机 Agent，包含 `pageIndex`、页码、页标签、单页或跨页矩形坐标，并明确把选区文字标记为不可信论文数据而非指令。已发送消息的本地镜像和 `session/load` 回放会恢复可读问题与选区卡片；旧纯文本历史保持原样。
@@ -163,10 +163,20 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.48.xpi
+unzip -t dist/smart-paper-translator-0.1.49.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.49：按模型区分思考展示
+
+GPT 系保留进度行；其他模型改为独立思考块，生成时展开、结束后折叠，底部显示 `thinking…`。分支窗口同步。新思考记录保留模型 ID，回放按对应用户轮次恢复，避免不同模型返回相同思考文本时串用展示方式。
+
+本次通过 **392 项自动测试**、JavaScript/静态检查、两次同字节构建、`unzip -t`、根目录及 SHA-256 校验；XPI 中 48 个运行时文件与源码逐字节一致，排除 `.DS_Store` 等开发元数据。
+
+最终 XPI SHA-256：`4e2b14e933210b4f1d8858123f966d1a7aa0f57472f4d4ac2ea2c6d14617d957`。
+
+本机应用文件预检为 Zotero **10.0.6 / Gecko 140.17.0**，但当前工具进程 `AXIsProcessTrusted() === false`，未执行本轮原生 AddonManager 解析或 UI 探针；不能沿用 0.1.48 的解析结果作为本包证据。未安装插件、未修改 profile/TCC、未调用真实模型；目标 10.0.4 与 9.0.6 本轮同样未做原生验证。
 
 ## 0.1.48：精简分支窗口
 

@@ -16,9 +16,10 @@ macOS 原生验证默认使用 Skill 的 `references/cli-native-probes.md`：CLI
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.48`
+- 当前版本：`0.1.49`
 - 目标平台：macOS Zotero 10.0.4；保留 Zotero 9.0.6 既有支持
 - 0.1.48 另在本机 Zotero 10.0.6 / Gecko 140.17.0 完成非安装式 XPI 解析和模拟后端的独立分支窗口验证；不代表完整插件/真实 Agent 验证，截图精确版本白名单不变。
+- 0.1.49 已通过 392 项自动测试及可复现 XPI 检查；本轮因工具进程无 AX 权限未完成原生解析/UI 验证，不得沿用 0.1.48 的验证结论。
 - 清单兼容范围：Zotero `9.0`–`10.0.*`；私有 PDF.js 截图桥仅开放 `9.0.6` / `10.0.4`
 - 插件源码根目录：`plugin/`
 - 最终 XPI 中只能包含 `plugin/` 下的运行时文件，不得包含 `.agents/`、测试、文档或构建工具。
@@ -42,6 +43,7 @@ macOS 原生验证默认使用 Skill 的 `references/cli-native-probes.md`：CLI
 - 临时分支仅从单条已完成 Agent 正文内的原生选区创建，复核 Reader 附件、Agent、请求序号与本地会话；只复制选中文字、同一回复的完整正文与对应用户问题，排除思考、工具、截图和其他历史。选区最多 16384 UTF-16 单元，完整上下文 JSON 最多 256 KiB UTF-8，超限不得静默截断。打开不启动 ACP、不写盘；用户首次发送后才准备独立临时论文副本。每个主窗口最多一个非模态分支，替换须确认并等旧清理完成；分支绑定打开时论文/Agent/模型/思考，不随主界面切换，不回写主会话、草稿、偏好或配置目录。
 - 三 Agent 分支必须使用新连接、新 session 与随机独立临时目录，聊天镜像只存内存；不继承 Codex Full Access，只提供 ACP 一次性批准/拒绝选项，保留 Pi 表单交互。OpenCode 分支使用工作区外的独立临时数据库，不用主数据库；Codex/Pi 子进程 workdir 也指向分支工作区。关闭、替换、所属主窗口关闭及退出时取消请求并回收进程，再清理自有文件/媒体/内存；不得调用 session/delete 或删除外部 Agent 历史。连接丢失后不回放外部持久历史，要求重新创建。明确披露独立工作区非沙箱、Agent/供应商可能留存、异常退出或清理失败可能残留临时文件，不承诺绝对零痕迹。取消和关闭 RPC 必须有包含 stdin 写入的时限；停止不得等待堵塞的 stdin.close 才杀进程，未回收进程须保留引用并阻止重启。即使进程关闭报错，也先等完整 send/load（包括创建 turn 前的 await）和媒体写入结束；无法确认进程退出时保留文件而不与在途写入竞态删除，清理失败明确提示并阻止替换。
 - 分支窗口通过 bootstrap 的运行时 registerChrome 映射打开固定本地 XHTML，不将 jar/file 视为特权页面；监听器核对目标 document/URI，忽略初始 about:blank，早关和迟到回调必须清理。退出先关闭窗口再 destruct 注册句柄。窗口仅展示标题、对话和输入操作区；不常驻展示 Agent/模型/思考、说明横幅或选文/源上下文卡片，后台仍保留固定配置与首轮上下文，隐私与留存边界继续在 README/技术说明中披露。正文复用独立 CodexChatUI 实例的安全渲染/权限卡，不注册第二个 Item Pane、不提供递归分支；错误/授权/停止入口必须保留，选择期间仅推迟正文重绘，不打断授权表单输入。
+- 思考展示按实际模型而非 Agent 区分，侧栏与分支一致；模型识别、流式折叠、历史回放及纯文本边界遵循 `docs/agents-presentation/SPEC.md`。
 - Agents 消息区必须显式启用原生文本选择与复制；有选区时只延后当前论文/Agent/本地会话的消息 DOM 重绘，状态与停止/授权控件继续更新。选区取消后立即显示最新状态；切换论文、Agent、会话或重新加载不得被旧选区阻塞，窗口/视图销毁时移除监听器。
 - Agents 文本/思考流式更新按 50 ms 合并，镜像写盘按 500 ms 防抖；结束、停止、授权、错误和图片更新即时推送并清理待发计时器。公开快照必须与内部状态隔离。三 Agent 的单工具 `rawOutput` 以序列化 JSON 的 UTF-8 字节数限制为 64 KiB，包含转义、键名与数组开销；超限仅保留有界文本尾部与固定标量元数据，不复制任意键或数组索引，不拆 Unicode 代理对。旧镜像加载时幂等规范化并原子保存。折叠工具卡片延迟创建内容，恢复展开状态时先挂载并填充再恢复滚动；旧节点的迟到 toggle 不得加载内容。
 - Agents 侧栏模型/思考控件使用单列布局，选中全名可换行；保留原生 select 的菜单和键盘语义，展示副本设为 `aria-hidden`，配置失败同步恢复原值，忙碌状态同时禁用原生控件和更新展示样式。不得以裁切、省略号或仅悬停提示代替完整名称。
@@ -92,6 +94,8 @@ zotero-translate/
 │               ├── inspect_zotero_source.py      # 本机 omni.ja 字面/正则搜索
 │               └── build_xpi.py                  # Skill 通用可复现打包器
 ├── docs/
+│   ├── agents-presentation/
+│   │   └── SPEC.md                 # 按模型展示思考、折叠/选择与回放边界
 │   ├── screenshots/                 # 中英文 README 共用的 Zotero 实际界面截图
 │   │   ├── agent-settings.png       # 公共运行环境与 Pi 模型、适配器准备状态
 │   │   ├── paper-context.png        # 对话中展开的 PDF 截图、页码与问题
@@ -118,14 +122,14 @@ zotero-translate/
 │       ├── pi-acp-compat.js          # 固定 Pi 适配器哈希校验、Node 内存补丁、按模型读取档位与确认 max
 │       ├── opencode-acp.js          # 原生启动、OSC/模型收集、检测与分支临时数据库/能力解析
 │       ├── acp-client.js             # 跨平台路径、npm/原生启动、分支 workdir、Pi 补丁及进程清理
-│       ├── codex-chat.js             # 共用聊天核心、原生 PDF/图片路径、流式合并/输出限幅、会话/权限/媒体及图表读取
+│       ├── codex-chat.js             # 共用聊天核心、思考模型元数据/回放、PDF/图片、流式限幅、会话/权限/媒体及图表读取
 │       ├── agents-chat.js            # 当前 Agent 偏好、服务路由、Pi/OpenCode 每论文连接/引用与独立探测生命周期
 │       ├── branch-chat.js            # 有界源回复快照、内存镜像、独立 ACP/临时工作区与关闭清理
 │       ├── math-renderer.js          # KaTeX→MathML、有界不可信输入与安全导入/原始 TeX 回退
 │       ├── mermaid-renderer.js       # Mermaid XUL/HTML sandbox、串行缓存、有界 SVG 校验与数据图片
 │       ├── visualize-renderer.js     # visualize 标记、Unix/Windows/UNC 工作区逐级校验、双层无网络 iframe、资源/状态与清理
 │       ├── visualize-theme.css       # 隔离图表的本地明暗主题与基础控件样式
-│       ├── codex-chat-ui.js          # Item Pane、单回复选区分支入口、配置/权限与可复用安全消息渲染
+│       ├── codex-chat-ui.js          # Item Pane、单回复选区分支入口、配置/权限、按模型思考展示与共用安全渲染
 │       ├── codex-chat.css            # Agents 配置/权限、分支按钮、消息选择及公式/媒体/图表样式
 │       ├── branch-chat-ui.js         # 极简分支窗口、后台固定上下文、确认替换、多轮/权限和异步销毁
 │       ├── branch-chat.xhtml         # 运行时 chrome 映射的独立非模态窗口骨架
@@ -182,8 +186,9 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.48.xpi         # 当前版本交付物
-    ├── smart-paper-translator-0.1.47.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.49.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.48.xpi         # 上一版本归档
+    ├── smart-paper-translator-0.1.47.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.46.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.45.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.44.xpi         # 历史版本归档
