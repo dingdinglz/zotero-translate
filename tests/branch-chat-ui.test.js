@@ -281,6 +281,25 @@ for (const agentId of ["codex", "pi", "opencode"]) {
   });
 }
 
+test("branch shares GPT progress and non-GPT live/collapsed thought rendering", async t => {
+  const h = harness(t);
+  await h.open(context("opencode"));
+  const service = h.services[0], view = h.record().view;
+  service.state.record.session.config.model = "anthropic/claude-sonnet-4";
+  service.state.record.transcript = [{ id: "t", kind: "thought", text: "Full thought", status: "streaming" }];
+  service.emit({ status: "generating", activityText: "Last thought line" });
+  assert.equal(view.elements.status.textContent, "thinking…");
+  assert.equal(view.elements.messages.children[0].open, true);
+  service.emit({ status: "ready" });
+  assert.equal(view.elements.messages.children[0].open, false);
+  service.state.record.session.config.model = "openai/gpt-5.6";
+  service.emit({ status: "generating" });
+  assert.equal(view.elements.status.textContent, "Last thought line");
+  assert.equal(view.elements.messages.children.length, 0);
+  service.emit({ status: "waiting-approval" });
+  assert.equal(view.elements.status.textContent, "Waiting for your response");
+});
+
 test("several turns remain isolated by owner, attachment and Agent; explain preserves an existing draft", async t => {
   const h = harness(t), otherOwner = new Window();
   await h.open(context("pi"));
@@ -622,7 +641,7 @@ test("selected transcript nodes defer updates, not status/Stop/permissions; clea
   service.answer("Streaming update", "generating");
   assert.equal(view.elements.messages.firstElementChild, selected);
   assert.equal(view.transcriptDeferred, true);
-  assert.equal(view.elements.status.textContent, "Generating…");
+  assert.equal(view.elements.status.textContent, "thinking…");
   assert.equal(view.elements.stop.hidden, false);
   const permission = { id: "approval-1", type: "permission", title: "Read temporary source", toolCall: { kind: "read", content: [], rawInput: {} }, options: [{ optionId: "once", name: "Allow once", kind: "allow_once" }] };
   service.answer("Still streaming", "waiting-approval", [permission]);

@@ -1108,7 +1108,37 @@ test("thought chunks expose only the latest non-empty line as transient activity
 
   assert.equal(activities.includes("Preparing to analyze AIM-based PDF source"), false);
   assert.ok(activities.includes("Planning text extraction from PDF"));
-  assert.equal((await service.load(10)).activityText, null);
+  const final = await service.load(10);
+  assert.equal(final.activityText, null);
+  assert.equal(final.record.transcript.find(entry => entry.kind === "thought").model, "gpt-5.6-codex");
+});
+
+test("thought replay retains only unambiguous locally recorded models", async () => {
+  const { service, acp, cache, paper } = makeHarness();
+  await service.send(10, "question");
+  const state = await service._stateForAttachment(10);
+  state.record.transcript.push(
+    { kind: "thought", text: "Unique Claude thought", model: "anthropic/claude-sonnet-4" },
+    { kind: "thought", text: "Ambiguous", model: "gpt-5.6-codex" },
+    { kind: "thought", text: "Ambiguous", model: "anthropic/claude-sonnet-4" }
+  );
+  await cache.save(paper, state.record);
+  acp.loadHook = async (params, client) => {
+    for (const text of ["Unique Claude thought", "Ambiguous", "New external thought"]) {
+      client.emit("session/update", { sessionId: params.sessionId, update: {
+        sessionUpdate: "agent_thought_chunk", content: { type: "text", text }
+      } });
+      client.emit("session/update", { sessionId: params.sessionId, update: {
+        sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Answer" }
+      } });
+    }
+  };
+  const replayed = await service.reload(10);
+  const thoughts = replayed.record.transcript.filter(entry => entry.kind === "thought");
+  assert.equal(thoughts[0].model, "anthropic/claude-sonnet-4");
+  assert.equal(thoughts[1].model, undefined);
+  assert.equal(thoughts[2].model, undefined);
+  assert.ok(thoughts.every(entry => entry.status === "complete"));
 });
 
 test("developer mode alone captures bounded redacted tool and thought diagnostics", async () => {

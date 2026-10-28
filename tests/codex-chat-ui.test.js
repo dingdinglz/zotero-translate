@@ -18,6 +18,8 @@ const {
   appendMermaidBlock,
   captureTranscriptViewport,
   restoreTranscriptViewport,
+  isGPTModel,
+  thinkingActivityText,
   describeToolEntry,
   describeToolImage,
   appendToolDetails
@@ -1298,7 +1300,7 @@ test("transcript viewport follows only when the reader was already at the bottom
   assert.equal(container.scrollTop, 100);
 });
 
-test("live thought text appears as a loading status and historical thought cards stay hidden", () => {
+test("GPT thought text appears as a loading status and historical thought cards stay hidden", () => {
   const doc = new Document();
   const makeElement = (name = "div") => new Node(name);
   const view = {
@@ -1333,7 +1335,7 @@ test("live thought text appears as a loading status and historical thought cards
     pendingInteractions: [],
     adapter: { preparedVersion: "1.6.2", requiredVersion: "1.6.2" },
     record: {
-      session: { id: "thread-1", workspacePath: "/workspace", config: {} },
+      session: { id: "thread-1", workspacePath: "/workspace", config: { model: "gpt-5.6" } },
       transcript: [
         { id: "thought-1", kind: "thought", text: "**Old status**", status: "streaming" },
         { id: "message-1", kind: "message", role: "agent", text: "Visible answer" }
@@ -1356,6 +1358,100 @@ test("live thought text appears as a loading status and historical thought cards
   assert.equal(view.elements.activity.hidden, true);
   assert.equal(view.elements.copyLog.hidden, false);
   assert.equal(view.elements.copyLog.textContent, "复制日志 (7)");
+
+  state.record.session.config.model = "anthropic/claude-sonnet-4";
+  state.status = "generating";
+  ui._updateView(view, state);
+  assert.equal(view.elements.activityText.textContent, "thinking…");
+  assert.equal(view.elements.messages.children[0].localName, "details");
+  assert.equal(view.elements.messages.children[0].open, true);
+  state.status = "waiting-approval";
+  ui._updateView(view, state);
+  assert.equal(view.elements.activityText.textContent, "等待你的授权…");
+});
+
+test("thought presentation follows model IDs, not Agent names or provider names", () => {
+  for (const model of ["gpt-5.6", "openai/gpt-5.6-codex", "openrouter/openai/GPT-5", "gpt4", "gpt-oss-120b"]) {
+    assert.equal(isGPTModel(model), true, model);
+    for (const agentId of ["codex", "pi", "opencode"]) {
+      assert.equal(thinkingActivityText({ agentId, activityText: "Latest progress", record: { session: { config: { model } } } }), "Latest progress");
+    }
+  }
+  for (const model of ["claude-sonnet-4", "google/gemini-2.5-pro", "gpt-provider/claude", "not-gpt-5", "", undefined]) {
+    assert.equal(isGPTModel(model), false);
+    assert.equal(thinkingActivityText({ activityText: "Full private thought", record: { session: { config: { model } } } }), "thinking…");
+  }
+  assert.equal(thinkingActivityText({ configOptions: [{ id: "model", currentValue: "anthropic/claude" }],
+    activityText: "Progress", record: { session: { config: { model: "gpt-5" } } } }), "thinking…");
+});
+
+test("non-GPT thoughts expand live, retain native toggles and collapse when the turn ends", () => {
+  const doc = new Document();
+  const ui = new CodexChatUI({ service: {} });
+  const view = { body: { ownerDocument: doc }, attachmentID: 10, agentId: "pi", requestSerial: 1,
+    elements: { messages: doc.createElement("div") } };
+  const raw = "<script>untrusted()</script>\n**Full thought**\n:visualize{path=\"plot.html\"}";
+  const state = { status: "generating", record: { session: { localID: "s1", config: { model: "claude-sonnet-4" } },
+    transcript: [
+      { id: "old", kind: "thought", text: "Old", status: "streaming" },
+      { id: "question", kind: "message", role: "user", text: "Question" },
+      { id: "live", kind: "thought", text: raw, status: "streaming", model: "claude-sonnet-4" }
+    ] } };
+  const render = () => ui._renderTranscript(view, state);
+  const live = () => view.elements.messages.children[2];
+  render();
+  assert.equal(view.elements.messages.children[0].open, false, "old streaming flags must not expand earlier turns");
+  assert.equal(live().open, true);
+  const text = descendants(live()).find(node => node.className === "spt-codex-thought-text");
+  assert.equal(text.textContent, raw);
+  assert.equal(descendants(live()).some(node => ["script", "iframe", "a"].includes(node.localName)), false);
+  live().open = false;
+  render();
+  assert.equal(live().open, false, "manual collapse survives a stream redraw");
+  live().open = true;
+  state.status = "waiting-approval";
+  render();
+  assert.equal(live().open, true);
+  state.status = "ready";
+  render();
+  assert.equal(live().open, false);
+  live().open = true;
+  render();
+  assert.equal(live().open, true, "completed thoughts remain manually expandable");
+  state.record.session.config.model = "gpt-5.6";
+  render();
+  assert.equal(live(), undefined, "legacy thought follows session model, recorded non-GPT thought remains");
+  assert.equal(view.elements.messages.children[1].className, "spt-codex-event spt-codex-event-thought");
+  state.record.session.localID = "s2";
+  render();
+  assert.equal(view.elements.messages.children[1].open, false, "same IDs in another session do not inherit expansion");
+});
+
+test("thought selection delays collapse but not the terminal state; new turns and identities clear old expansion", () => {
+  for (const status of ["ready", "cancelled", "error"]) {
+    const doc = new Document(), ui = new CodexChatUI({ service: {} });
+    const view = { body: { ownerDocument: doc }, attachmentID: 10, requestSerial: 1,
+      elements: { messages: doc.createElement("div") } };
+    const state = { status: "generating", record: { session: { localID: "s", config: { model: "gemini-pro" } }, transcript: [
+      { id: "q", kind: "message", role: "user", text: "Question" },
+      { id: "t", kind: "thought", text: "Thinking", status: "streaming" }
+    ] } };
+    ui._renderTranscript(view, state);
+    const selected = view.elements.messages.children[1];
+    doc.defaultView.getSelection = () => ({ isCollapsed: false, rangeCount: 1,
+      getRangeAt: () => ({ intersectsNode: node => node === view.elements.messages }) });
+    state.status = status;
+    ui._renderTranscript(view, state);
+    assert.equal(view.transcriptDeferred, true);
+    assert.equal(view.elements.messages.children[1], selected);
+    doc.defaultView.getSelection = () => ({ isCollapsed: true });
+    ui._renderTranscript(view, state);
+    assert.equal(view.elements.messages.children[1].open, false);
+    state.record.transcript.push({ id: "q2", kind: "message", role: "user", text: "Next" });
+    state.status = "generating";
+    ui._renderTranscript(view, state);
+    assert.equal(view.elements.messages.children[1].open, false);
+  }
 });
 
 test("copy log action writes the developer report to the clipboard", async () => {
