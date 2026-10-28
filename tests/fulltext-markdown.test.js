@@ -246,6 +246,20 @@ test("KaTeX MathML is imported using existing safety primitive when parser is av
   assert.ok(nodes.some(node => node.getAttribute("data-math-renderer") === "katex-0.18.4"));
 });
 
+test("bare LaTeX environments remain intact when sent to MathRenderer", () => {
+  const received = [];
+  const scope = { SmartPaperTranslatorModules: { MathRenderer: {
+    appendMath: (doc, parent, source, display) => { received.push([source, display]); parent.append(doc.createElementNS("http://www.w3.org/1998/Math/MathML", "math")); }
+  } } };
+  vm.runInNewContext(fs.readFileSync(require.resolve("../plugin/content/fulltext-markdown.js"), "utf8"), scope);
+  const doc = new Document(), root = doc.createElement("div");
+  const matrix = String.raw`\begin{pmatrix}a & b \\ c & d\end{pmatrix}`;
+  scope.SmartPaperTranslatorModules.FulltextMarkdown.renderMarkdown(doc, root, matrix);
+  assert.equal(received[0][0], matrix); assert.equal(received[0][1], true);
+  scope.SmartPaperTranslatorModules.FulltextMarkdown.renderMarkdown(doc, root, `$x$ and \\(y\\)`);
+  assert.deepEqual(received.slice(1), [["x", false], ["y", false]]);
+});
+
 test("PNG, JPEG, GIF and WebP MIME/magic/dimensions are checked before assigning src", () => {
   const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 8, 8, 0, 1, 0, 1, 0, 0xff, 0xd9]);
   const gif = Buffer.from("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff\x3b", "latin1");

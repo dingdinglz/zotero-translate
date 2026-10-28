@@ -172,6 +172,17 @@ test("about:blank and child load are ignored; early close cleans pending documen
   assert.equal(win.listenerCount, 0); await h.ui.shutdown();
 });
 
+test("a confirmed live translation automatically saves PDF, but reopening does not", async () => {
+  const h = setup(); await h.ui.open(h.owner, 1); const r = h.ui.windows.get(h.owner).current;
+  const s = r.service;
+  s.emit({ pageCount: 1, source: "# Source", stage: "review" });
+  s.translate = async () => { h.calls.push("translate"); s.emit({ translated: "# 中文", stage: "translated" }); };
+  click(r, "confirm"); await tick();
+  assert.ok(h.calls.indexOf("translate") < h.calls.indexOf("finish"));
+  assert.match(r.window.confirmations.at(-1), /自动生成/u);
+  await h.ui.shutdown();
+});
+
 test("completed tasks never auto-import or reset; explicit finish/export/version and reset disclosure", async () => {
   const h = setup(), r = await review(h), s = h.services.get(1);
   s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", stage: "translated" });
@@ -244,10 +255,21 @@ test("reopen racing another owner's cleanup waits for release then creates a fre
   await h.ui.shutdown();
 });
 
+test("isolated native probes can use their own chrome package without changing the default URI", async () => {
+  const h = setup(), uri = "chrome://spt-owned-probe/content/fulltext.xhtml";
+  const ui = new FulltextUI({ runtime: h.runtime, windowURI: uri, openWindow: (_owner, url) => {
+    assert.equal(url, uri); return new Win(uri);
+  } });
+  assert.equal(await ui.open(h.owner, 1), true);
+  assert.equal(ui.windows.get(h.owner).current.document.documentURI, uri);
+  await ui.shutdown();
+});
+
 test("fixed XHTML has no scripts or remote resources; implementation never injects HTML", () => {
   const xhtml = fs.readFileSync(require.resolve("../plugin/content/fulltext.xhtml"), "utf8");
   assert.match(xhtml, /script-src 'none'/); assert.match(xhtml, /connect-src 'none'/);
-  assert.ok(!/<script/iu.test(xhtml)); assert.match(xhtml, /chrome:\/\/smart-paper-translator\/content\/fulltext.css/);
+  assert.ok(!/<script/iu.test(xhtml)); assert.match(xhtml, /<link rel="stylesheet" href="fulltext\.css"\s*\/>/u);
+  assert.equal(new URL("fulltext.css", URI).href, "chrome://smart-paper-translator/content/fulltext.css");
   const js = fs.readFileSync(require.resolve("../plugin/content/fulltext-ui.js"), "utf8");
   assert.ok(!/\.innerHTML\s*=/u.test(js)); assert.ok(!/service\??\.shutdown\s*\(/u.test(js));
 });

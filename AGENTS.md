@@ -16,10 +16,11 @@ macOS 原生验证默认使用 Skill 的 `references/cli-native-probes.md`：CLI
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.49`
+- 当前版本：`0.1.50`
 - 目标平台：macOS Zotero 10.0.4；保留 Zotero 9.0.6 既有支持
 - 0.1.48 另在本机 Zotero 10.0.6 / Gecko 140.17.0 完成非安装式 XPI 解析和模拟后端的独立分支窗口验证；不代表完整插件/真实 Agent 验证，截图精确版本白名单不变。
-- 0.1.49 已通过 392 项自动测试及可复现 XPI 检查；本轮因工具进程无 AX 权限未完成原生解析/UI 验证，不得沿用 0.1.48 的验证结论。
+- 0.1.49 历史验证为 392 项自动测试及可复现 XPI；当轮因 AX 权限未完成原生解析/UI 验证。
+- 0.1.50 为全文翻译测试包：通过 461 项 JavaScript 测试与 37 项 Python 离线测试。早期候选包在 Zotero 10.0.6 / Gecko 140.17.0 通过非安装式解析、本地 Python 检测、合成 PDF 预览和 MathML 显示，但 PDF 打印出现 iframe 加载超时；修正内容域 load 事件监听后，原生复测因模态窗口阻塞并按用户要求停止。最终包未完成原生复测，不得宣称中文 PDF 导出、真实附件导入、真实 OXR/DeepSeek 或完整安装流程已验证。候选/最终哈希见技术参考。
 - 清单兼容范围：Zotero `9.0`–`10.0.*`；私有 PDF.js 截图桥仅开放 `9.0.6` / `10.0.4`
 - 插件源码根目录：`plugin/`
 - 最终 XPI 中只能包含 `plugin/` 下的运行时文件，不得包含 `.agents/`、测试、文档或构建工具。
@@ -193,7 +194,7 @@ zotero-translate/
 │   ├── service.test.js               # 摘要、手动标签/迟到生成、缓存探测、术语删除/在途失效、并发与取消
 │   ├── fulltext-service.test.js      # 上传/翻译确认、逐段校对、恢复/变更/取消与导入防重复
 │   ├── fulltext-markdown.test.js     # 无损结构、参考文献/占位符保护、资源上限与安全DOM
-│   ├── fulltext-runtime.test.js      # OXR地址、子进程协议/输出上限及取消
+│   ├── fulltext-runtime.test.js      # OXR地址、子进程边界、静态打印契约/图片解码/迟到取消
 │   ├── fulltext-ui.test.js           # 确认门控、编辑保护、窗口/预览迟到、共享任务去重与关闭暂停
 │   ├── fulltext_worker_test.py       # Python离线分块/恢复/版面/预览/路径和HTTP边界
 │   ├── item-tree-ui.test.js          # 标签编辑/聚合/分页/定位、手动优先、失败重试、异步隔离与清理
@@ -203,7 +204,8 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.49.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.50.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.49.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.48.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.47.xpi         # 历史版本归档
     ├── smart-paper-translator-0.1.46.xpi         # 历史版本归档

@@ -23,8 +23,8 @@
     catch (_) { return "未配置有效地址"; }
   }
   class FulltextUI {
-    constructor({ runtime, rootURI = "", openWindow } = {}) {
-      Object.assign(this, { runtime, rootURI });
+    constructor({ runtime, rootURI = "", openWindow, windowURI = URI } = {}) {
+      Object.assign(this, { runtime, rootURI, windowURI });
       this.openWindow = openWindow || ((owner, url, name, features) => owner.openDialog(url, name, features));
       this.windows = new Map(); this.stopped = false;
     }
@@ -38,7 +38,7 @@
     _current(r) {
       return !this.stopped && !r.closed && !r.slot.gone && !r.slot.owner.closed &&
         this.windows.get(r.slot.owner) === r.slot && r.slot.current === r && !r.window?.closed &&
-        (!r.document || (r.window.document === r.document && r.document.documentURI === URI));
+        (!r.document || (r.window.document === r.document && r.document.documentURI === this.windowURI));
     }
     open(owner, attachmentID) {
       if (this.stopped || !owner || owner.closed || !Number.isSafeInteger(attachmentID) || attachmentID <= 0) return Promise.resolve(false);
@@ -92,7 +92,7 @@
         });
         const loaded = await Promise.race([r.ready, r.closedPromise]);
         if (loaded === CLOSED || !this._current(r)) { await this._close(r); return false; }
-        const opening = Promise.resolve(this.openWindow(slot.owner, URI, `spt-fulltext-${++serial}`,
+        const opening = Promise.resolve(this.openWindow(slot.owner, this.windowURI, `spt-fulltext-${++serial}`,
           "chrome,dialog=no,resizable,centerscreen,width=1100,height=800")).then(win => {
           if (!this._current(r)) { win?.close(); return CLOSED; }
           r.window = win;
@@ -130,7 +130,7 @@
         }
       }, r.cleanups);
       listen(win, "unload", event => {
-        if (event.target === (r.document || win.document) && (win.closed || event.target.documentURI === URI)) {
+        if (event.target === (r.document || win.document) && (win.closed || event.target.documentURI === this.windowURI)) {
           void this._close(r).catch(() => {});
         }
       }, r.cleanups);
@@ -145,8 +145,8 @@
           if (event && event.target !== win.document) return;
           if (!this._current(r)) return finish(CLOSED);
           const doc = win.document;
-          if (doc.documentURI === URI && doc.readyState === "complete" && doc.body) { r.document = doc; finish(doc); }
-          else if (doc.documentURI && doc.documentURI !== URI && doc.documentURI !== "about:blank") finish(null, new Error("全文翻译页面地址不匹配。"));
+          if (doc.documentURI === this.windowURI && doc.readyState === "complete" && doc.body) { r.document = doc; finish(doc); }
+          else if (doc.documentURI && doc.documentURI !== this.windowURI && doc.documentURI !== "about:blank") finish(null, new Error("全文翻译页面地址不匹配。"));
         };
         listen(win, "load", loaded, r.cleanups);
         r.cleanups.push(() => finish(CLOSED));
@@ -280,7 +280,7 @@
         const references = plan ? `\n已识别并保留 ${plan.referenceCount} 条参考文献。若遗漏，请先将参考文献节标题改为 ## References 再确认。` : "";
         if (r.state.translated && !changed) return;
         const reset = r.state.approvedHash && changed ? "\n原文或配置已改变，确认会重置旧检查点及译文。" : "\n未改变的原文与配置会保留已有检查点。";
-        if (!r.window.confirm(`确认 Markdown 并向 DeepSeek 发送正文？\n地址：${address(config.endpoint)}\n模型：${String(config.model || "未配置")}\n每段会产生翻译和独立校对请求；格式失败可能重试并产生费用。${references}${reset}`)) return;
+        if (!r.window.confirm(`确认 Markdown 并向 DeepSeek 发送正文？\n地址：${address(config.endpoint)}\n模型：${String(config.model || "未配置")}\n每段会产生翻译和独立校对请求；格式失败可能重试并产生费用。全部通过后自动生成并保存独立中文 PDF 附件。${references}${reset}`)) return;
         if (!valid()) return;
         const unchanged = () => {
           if (configKey(this.runtime.config()) !== configKey(config) || r.el.source.value !== source) {
@@ -293,6 +293,7 @@
         unchanged();
         r.dirty = false;
         await r.service.translate({ consent: true });
+        if (valid() && r.service.snapshot().translated) await r.service.finish(r.window);
       });
     }
     async _pause(r) {

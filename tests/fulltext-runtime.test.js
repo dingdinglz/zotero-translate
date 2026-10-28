@@ -26,6 +26,69 @@ test("Python collector bounds output and kills on cancellation", async () => {
   await assert.rejects(collectProcess(cancelled, { timeoutMS: 1000, registerCancel: cancel => { cancel(); return () => {}; } }), /暂停/u);
   assert.ok(cancelled.killed);
 });
+function printFixture({ failedImage = false, delayed = false } = {}) {
+  const vm = require("node:vm"), fs = require("node:fs");
+  const files = new Map([["/data/task/translated.pdf", new TextEncoder().encode("old PDF")]]);
+  const dirs = new Set(["/data/task"]), calls = [];
+  let frame, cancel, settlePrint;
+  const element = () => ({ append() {}, setAttribute() {}, style: {} });
+  const inert = { head: element(), body: element(), documentElement: {}, createElement: element,
+    createElementNS: element, createTextNode: text => ({ text }), importNode: node => node };
+  class XMLParser {}
+  const owner = { closed: false, DOMParser: XMLParser, XMLSerializer: class { serializeToString() { return "<html></html>"; } }, document: {
+    implementation: { createHTMLDocument: () => inert },
+    createElementNS: () => {
+      frame = { ...element(), contentDocument: { documentURI: "about:srcdoc", fonts: { ready: Promise.resolve() },
+        images: [{ complete: true, naturalWidth: failedImage ? 0 : 1, naturalHeight: 1, async decode() {} }] },
+      addEventListener(_name, fn, capture, wantsUntrusted) { assert.equal(capture, true); assert.equal(wantsUntrusted, true); this.load = fn; }, remove() { this.removed = true; },
+      browsingContext: { print: async settings => {
+        calls.push(["print", { ...settings }]);
+        if (delayed) await new Promise(resolve => { settlePrint = resolve; });
+        files.set(settings.toFileName, new TextEncoder().encode("%PDF-1.7\n" + "x".repeat(120)));
+      } } };
+      return frame;
+    }, documentElement: { append: node => node.load() }
+  } };
+  const scope = { TextEncoder, TextDecoder, URL, setTimeout, clearTimeout,
+    SmartPaperTranslatorModules: { Constants: { VERSION: "test" }, ACP: { toNativeAbsolutePath: path => path },
+      FulltextMarkdown: { PRINT_CSS: "", renderMarkdown: doc => assert.equal(doc.defaultView.DOMParser, XMLParser) } },
+    Zotero: { DataDirectory: { dir: "/data" } }, Services: { uuid: { generateUUID: () => "{abcd}" } },
+    PathUtils: { join: (...parts) => parts.join("/") },
+    Cc: { "@mozilla.org/file/local;1": { createInstance: () => ({ initWithPath(path) { this.path = path; }, parent: null,
+      isSymlink: () => false, exists() { return files.has(this.path) || dirs.has(this.path); }, isFile() { return files.has(this.path); }, isDirectory() { return dirs.has(this.path); } }) },
+      "@mozilla.org/gfx/printsettings-service;1": { getService: () => ({ createNewPrintSettings: () => ({}) }) } },
+    Ci: { nsIPrintSettings: { kOutputFormatPDF: 1, kOutputDestinationFile: 2, kPaperSizeInches: 3 } },
+    IOUtils: { stat: async path => ({ size: files.get(path).length }), read: async path => files.get(path),
+      makeDirectory: async path => dirs.add(path), move: async (from, to) => { calls.push(["move", from, to]); files.set(to, files.get(from)); files.delete(from); } }
+  };
+  vm.runInNewContext(fs.readFileSync(require.resolve("../plugin/content/fulltext-runtime.js"), "utf8"), scope);
+  const runtime = new scope.SmartPaperTranslatorModules.FulltextRuntime.FulltextRuntime({});
+  runtime.python = async (operation, request) => { calls.push([operation, request]); return { pageCount: 1 }; };
+  return { runtime, owner, calls, files, frame: () => frame, start: () => runtime.printPDF(owner, "# 中文", "/data/task", fn => { cancel = fn; return () => {}; }), cancel: () => cancel(), settle: () => settlePrint() };
+}
+
+test("native print adapter uses isolated settings, supplies XML parser and validates before replacing PDF", async () => {
+  const x = printFixture(); await x.start();
+  assert.deepEqual(x.calls.map(call => call[0]), ["print", "preview", "move"]);
+  const settings = x.calls[0][1]; assert.equal(settings.printSilent, true); assert.equal(settings.paperWidth, 8.2677);
+  assert.equal(settings.headerStrCenter, ""); assert.equal(settings.toFileName, "/data/task/print-abcd.pdf");
+  assert.ok(x.frame().removed);
+});
+
+test("failed image decode keeps the previous PDF and never prints", async () => {
+  const x = printFixture({ failedImage: true }); await assert.rejects(x.start(), /图片解码/u);
+  assert.equal(x.calls.length, 0); assert.equal(new TextDecoder().decode(x.files.get("/data/task/translated.pdf")), "old PDF");
+});
+
+test("cancelling a delayed print never commits its late temporary output", async () => {
+  const x = printFixture({ delayed: true }); const printing = x.start();
+  const rejection = assert.rejects(printing, /暂停/u);
+  while (!x.calls.length) await new Promise(resolve => setImmediate(resolve));
+  x.cancel(); await rejection; x.settle(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(new TextDecoder().decode(x.files.get("/data/task/translated.pdf")), "old PDF");
+  assert.ok(!x.calls.some(call => call[0] === "move")); assert.ok(x.frame().removed);
+});
+
 test("Python diagnostic stderr is not leaked into public errors", async () => {
   const process = processMock("not json", 1); process.stderr = pipe(["PRIVATE_PAPER_CONTENT secret-key"]);
   await assert.rejects(collectProcess(process, { timeoutMS: 1000 }), error => !error.message.includes("PRIVATE") && !error.message.includes("secret"));

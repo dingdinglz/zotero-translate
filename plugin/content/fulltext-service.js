@@ -101,7 +101,8 @@
       if (this.state.approvedHash) throw new Error("此任务已有确认稿。请先使用现有稿件；重新识别需显式重置任务，不能覆盖译文。");
       const config = this.getConfig();
       return this.run("parsing", async serial => {
-        const result = await this.convert({ baseURL: config.oxrBaseURL, pythonPath: config.pythonPath, registerCancel: cancel => this.registerCancel(cancel) });
+        const result = await this.convert({ baseURL: config.oxrBaseURL, pythonPath: config.pythonPath,
+          isCurrent: () => serial === this.serial, registerCancel: cancel => this.registerCancel(cancel) });
         this.check(serial);
         this.source = await this.storage.readText("source.md");
         if (typeof this.source !== "string") throw new Error("转换未生成完整 Markdown。");
@@ -152,12 +153,12 @@
               let draft = attempt === 0 ? existing : "";
               if (!draft) draft = parseAnswer(await this.complete({ config, systemMessage: SYSTEM,
                 prompt: JSON.stringify({ instruction: config.translationPrompt, source: prepared.text }),
-                registerCancel: cancel => this.registerCancel(cancel), maxTokens: 12000 }));
+                isCurrent: () => serial === this.serial, registerCancel: cancel => this.registerCancel(cancel), maxTokens: 12000 }));
               this.check(serial); this.state.draft = draft;
               this.markdown.restoreTranslation(prepared, draft);
               const reviewed = parseAnswer(await this.complete({ config, systemMessage: SYSTEM,
                 prompt: JSON.stringify({ instruction: config.reviewPrompt, source: prepared.text, draft }),
-                registerCancel: cancel => this.registerCancel(cancel), maxTokens: 12000 }));
+                isCurrent: () => serial === this.serial, registerCancel: cancel => this.registerCancel(cancel), maxTokens: 12000 }));
               this.check(serial);
               const restored = this.markdown.restoreTranslation(prepared, reviewed);
               this.state.translations[segment.id] = restored; this.state.draft = "";
@@ -185,7 +186,12 @@
       return this.run("exporting", async serial => {
         await this.createPDF(owner, this.translated, cancel => this.registerCancel(cancel)); this.check(serial);
         await this.verifySource(); this.check(serial);
-        this.state.importIntent = true; await this.save(); this.check(serial);
+        this.state.importIntent = true;
+        try { await this.save(); this.check(serial); }
+        catch (error) {
+          // No import callback has run yet, so cancellation is not an uncertain transaction.
+          this.state.importIntent = false; await this.save(); throw error;
+        }
         // Once import begins, record its result even if the view closes; it is a library transaction.
         const id = await this.importPDF();
         this.state.chineseAttachmentID = id; this.state.importIntent = false; this.state.stage = "complete";

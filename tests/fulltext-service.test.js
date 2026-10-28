@@ -100,6 +100,23 @@ test("late cancellation registration is immediately cancelled", async () => {
   const x = setup(); await x.service.pause(); let cancelled = false;
   x.service.registerCancel(() => { cancelled = true; }); assert.ok(cancelled);
 });
+test("pause before the import callback clears its intent and permits a later save", async () => {
+  const x = setup(); await prepared(x); await x.service.translate({ consent: true });
+  const write = x.args.storage.writeJSON; let release, entered;
+  const entering = new Promise(resolve => { entered = resolve; });
+  let intercepted = false;
+  x.args.storage.writeJSON = async (name, value) => {
+    await write(name, value);
+    if (value.importIntent && !intercepted) {
+      intercepted = true; entered(); await new Promise(resolve => { release = resolve; });
+    }
+  };
+  const finishing = x.service.finish({}); const rejection = assert.rejects(finishing, /暂停/u);
+  await entering; const pausing = x.service.pause(); release(); await pausing; await rejection;
+  assert.equal(x.imports(), 0); assert.equal(JSON.parse(x.files.get("state.json")).importIntent, false);
+  const restored = new FulltextService(x.args); await restored.load(); await restored.finish({}); assert.equal(x.imports(), 1);
+});
+
 test("an uncertain import is never repeated automatically", async () => {
   const x = setup({ importPDF: async () => { throw new Error("transaction result unavailable"); } });
   await prepared(x); await x.service.translate({ consent: true }); await assert.rejects(x.service.finish({}));

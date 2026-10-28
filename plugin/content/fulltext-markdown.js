@@ -240,7 +240,9 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
     while ((end = source.indexOf(closer, end)) >= 0) {
       let slashes = 0;
       for (let j = end - 1; j >= 0 && source[j] === "\\"; j--) slashes++;
-      if (slashes % 2 === 0) return { end: end + closer.length, content: source.slice(i + opener.length, end), display: opener !== "$" && opener !== "\\(" };
+      if (slashes % 2 === 0) return { end: end + closer.length,
+        content: environment ? source.slice(i, end + closer.length) : source.slice(i + opener.length, end),
+        display: opener !== "$" && opener !== "\\(" };
       end += closer.length;
     }
     fail("公式定界符未闭合（货币美元符请写为 \\$）");

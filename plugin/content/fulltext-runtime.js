@@ -132,14 +132,14 @@
       })().catch(error => { this.helperPromise = null; throw error; });
       return this.helperPromise;
     }
-    async python(operation, request, { pythonPath, registerCancel } = {}) {
+    async python(operation, request, { pythonPath, registerCancel, isCurrent = () => true } = {}) {
       if (this.stopped) throw new Error("插件已退出。");
       if (this.processFailure) throw new Error("旧 Python 进程未确认回收，请重启 Zotero 后重试。");
       const command = native(pythonPath || this.config().pythonPath);
       // A venv's Python is normally a symlink. Only plugin-owned output paths prohibit symlinks.
       if (!(await global.IOUtils.exists(command))) throw new Error("Python 路径不存在，请在设置中选择环境。");
       const root = await this.helpers();
-      if (this.stopped) throw new Error("插件已退出。");
+      if (this.stopped || !isCurrent()) throw new Error("任务已暂停或插件已退出。");
       const { Subprocess } = global.ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
       const process = await Subprocess.call({ command, arguments: ["-I", global.PathUtils.join(root, "worker.py"), operation, JSON.stringify(request)],
         workdir: root, environmentAppend: true, environment: { PYTHONNOUSERSITE: "1", PYTHONDONTWRITEBYTECODE: "1", PYTHONUNBUFFERED: "1" }, stderr: "pipe" });
@@ -216,20 +216,21 @@
     }
     async _create(id) {
       const { item, parent } = await this.attachment(id);
+      const sourceKey = item.key, libraryID = item.libraryID, parentID = parent.id;
       const sourcePath = native(await item.getFilePathAsync());
       const bytes = await boundedRead(sourcePath, MAX_FILE);
       if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") throw new Error("附件不是有效 PDF。");
       const digest = hashBytes(bytes);
-      const identity = `${item.libraryID}-${item.key}-${digest}`;
+      const identity = `${libraryID}-${sourceKey}-${digest}`;
       const taskRoot = await directory(global.PathUtils.join(this.root, "tasks", identity));
       const storage = storeAt(taskRoot);
       const verifySource = async () => {
         const current = await this.attachment(id);
-        if (current.item.key !== item.key || current.item.libraryID !== item.libraryID || current.parent.id !== parent.id ||
+        if (current.item.key !== sourceKey || current.item.libraryID !== libraryID || current.parent.id !== parentID ||
           native(await current.item.getFilePathAsync()) !== sourcePath || hashBytes(await boundedRead(sourcePath, MAX_FILE)) !== digest) {
           throw new Error("原 PDF 或论文身份已经改变，请关闭窗口并重新打开任务。");
         }
-        const library = global.Zotero.Libraries.get(item.libraryID);
+        const library = global.Zotero.Libraries.get(libraryID);
         if (!library?.editable || library.filesEditable === false) throw new Error("当前文库不可写，不能保存中文附件。");
       };
       await verifySource();
@@ -255,15 +256,16 @@
         },
         complete: async options => {
           const key = await this.credentials.get("deepseek");
+          if (this.stopped || !options.isCurrent()) throw new Error("任务已暂停，未发送模型请求。");
           return this.apiClient.complete({ ...options, apiKey: key });
         },
         createPDF: (owner, markdown, registerCancel) => this.printPDF(owner, markdown, taskRoot, registerCancel),
         importPDF: async () => {
           await verifySource();
           const file = global.PathUtils.join(taskRoot, "translated.pdf"); await boundedRead(file, MAX_FILE);
-          const chinese = await global.Zotero.Attachments.importFromFile({ file, parentItemID: parent.id,
+          const chinese = await global.Zotero.Attachments.importFromFile({ file, parentItemID: parentID,
             title: `${parent.getField("title") || "论文"} — 中文译文`, contentType: "application/pdf" });
-          const link = { sourceID: id, sourceKey: item.key, chineseID: chinese.id, chineseKey: chinese.key, parentID: parent.id, libraryID: item.libraryID };
+          const link = { sourceID: id, sourceKey, chineseID: chinese.id, chineseKey: chinese.key, parentID, libraryID };
           for (const target of [id, chinese.id]) {
             const path = global.PathUtils.join(this.root, `link-${target}.json`);
             checkPath(path, "regular", true); checkPath(path + ".tmp", "regular", true);
@@ -295,7 +297,12 @@
       meta.setAttribute("content", "default-src 'none'; script-src 'none'; connect-src 'none'; img-src data:; style-src 'unsafe-inline'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'");
       doc.head.append(meta);
       const style = doc.createElement("style"); style.textContent = modules.FulltextMarkdown.PRINT_CSS; doc.head.append(style);
-      modules.FulltextMarkdown.renderMarkdown(doc, doc.body, markdown);
+      // Inert createHTMLDocument() has no defaultView. Only borrow the owner's XML
+      // parser constructor; all rendered nodes are still created/imported in the inert document.
+      const renderDocument = { defaultView: { DOMParser: owner.DOMParser },
+        createElement: doc.createElement.bind(doc), createElementNS: doc.createElementNS.bind(doc),
+        createTextNode: doc.createTextNode.bind(doc), importNode: doc.importNode.bind(doc) };
+      modules.FulltextMarkdown.renderMarkdown(renderDocument, doc.body, markdown);
       const html = "<!doctype html>" + new owner.XMLSerializer().serializeToString(doc.documentElement);
       const frame = owner.document.createElementNS("http://www.w3.org/1999/xhtml", "iframe");
       frame.setAttribute("sandbox", ""); frame.setAttribute("aria-hidden", "true");
@@ -316,7 +323,8 @@
         current();
         await Promise.race([cancellation, new Promise((resolve, reject) => {
           timer = global.setTimeout(() => reject(new Error("静态打印文档加载超时。")), 30000);
-          frame.addEventListener("load", () => { if (frame.contentDocument?.URL === "about:srcdoc") resolve(); });
+          // Gecko chrome hosts must opt in to content-domain load events on this owned frame.
+          frame.addEventListener("load", () => { if (frame.contentDocument?.documentURI === "about:srcdoc") resolve(); }, true, true);
           frame.srcdoc = html; owner.document.documentElement.append(frame);
         })]);
         global.clearTimeout(timer); current();
