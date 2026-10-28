@@ -425,7 +425,8 @@
       elements.stop.disabled = record.cancelPending || status === "cancelling";
       const visibleStatus = record.cancelPending ? "cancelling" :
         !record.loaded ? "loading" : record.sending && !BUSY.has(status) ? "connecting" : status;
-      elements.status.textContent = record.words[visibleStatus] || visibleStatus;
+      elements.status.textContent = (visibleStatus === "generating" && ChatUI.thinkingActivityText(state)) ||
+        record.words[visibleStatus] || visibleStatus;
       root.dataset.status = visibleStatus;
       const error = record.localError || state?.error || (blocked ? record.words.blocked : "");
       // Renderer failures use this same notices node, never the interaction container.

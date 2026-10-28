@@ -1408,7 +1408,18 @@
         this._syncRecordConfiguration(state);
         const replay = state.replay || [];
         this._normalizeReplay(state, replay);
+        const thoughtModels = new Map();
+        for (const entry of state.record.transcript) {
+          if (entry.kind !== "thought" || typeof entry.model !== "string") continue;
+          const models = thoughtModels.get(entry.text) || new Set();
+          models.add(entry.model);
+          thoughtModels.set(entry.text, models);
+        }
         for (const entry of replay) {
+          if (entry.kind === "thought") {
+            const models = thoughtModels.get(entry.text);
+            if (models?.size === 1) entry.model = [...models][0];
+          }
           if (entry.status === "streaming") entry.status = "complete";
           const persistedImage = entry.kind === "tool"
             ? persistedImages.get(String(entry.remoteID || ""))
@@ -2657,10 +2668,12 @@
         if (thought?.kind === "thought" && thought.status === "streaming") thought.text += text;
         else {
           thought = {
-            id: this.randomID(), kind: "thought", text, status: "streaming", createdAt: this.now()
+            id: this.randomID(), kind: "thought", text, status: "streaming", createdAt: this.now(),
+            model: getConfigOption(state.configOptions, "model")?.currentValue || state.record.session.config.model || ""
           };
           transcript.push(thought);
         }
+        if (state.replay) delete thought.model;
         const activityText = latestThoughtStatus(thought.text);
         if (!state.replay && state.turn && activityText) state.activityText = activityText;
       }

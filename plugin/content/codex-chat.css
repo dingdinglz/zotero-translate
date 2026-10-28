@@ -738,6 +738,13 @@ button.spt-codex-file-citation:hover {
   margin-bottom: 0;
 }
 
+.spt-codex-thought-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--spt-codex-muted);
+  line-height: 1.6;
+}
+
 .spt-codex-event-content ol {
   margin: 0;
   padding-inline-start: 22px;

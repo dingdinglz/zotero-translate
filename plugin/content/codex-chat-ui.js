@@ -735,13 +735,30 @@
     return null;
   }
 
+  function thoughtModel(state) {
+    return state.configOptions?.find(option => option.id === "model")?.currentValue ||
+      state.record?.session?.config?.model || "";
+  }
+
+  function isGPTModel(model) {
+    return /^gpt(?:[-._\d]|$)/iu.test(String(model || "").trim().split("/").pop());
+  }
+
+  function thinkingActivityText(state) {
+    return isGPTModel(thoughtModel(state)) ? state.activityText || "" : "thinking…";
+  }
+
   function captureTranscriptViewport(container, renderedBefore) {
     const expanded = new Set();
+    const thoughts = new Map();
     const innerScroll = new Map();
     for (const child of Array.from(container.children || [])) {
       const key = child.getAttribute?.("data-entry-key");
       if (!key || String(child.localName || "").toLowerCase() !== "details") continue;
       if (child.open) expanded.add(key);
+      if (child.dataset?.thoughtActive !== undefined) {
+        thoughts.set(key, { active: child.dataset.thoughtActive === "true", open: child.open });
+      }
       const content = Array.from(child.children || []).find((candidate) =>
         String(candidate.className || "").split(/\s+/u).includes("spt-codex-event-content")
       );
@@ -752,6 +769,7 @@
     const clientHeight = Number(container.clientHeight) || 0;
     return {
       expanded,
+      thoughts,
       innerScroll,
       scrollTop,
       pinnedToBottom: Boolean(
@@ -2658,6 +2676,7 @@
         view.transcriptDeferred = true;
         return;
       }
+      const sameTranscript = view.renderedTranscriptKey === transcriptKey;
       view.transcriptDeferred = false;
       view.renderedTranscriptKey = transcriptKey;
       const viewport = captureTranscriptViewport(container, renderedBefore);
@@ -2674,8 +2693,10 @@
         restoreTranscriptViewport(container, viewport, renderedBefore);
         return;
       }
+      const lastUserIndex = state.record.transcript.findLastIndex(entry =>
+        entry.kind === "message" && entry.role === "user");
       for (const [index, entry] of state.record.transcript.entries()) {
-        if (entry.kind === "thought") continue;
+        if (entry.kind === "thought" && isGPTModel(entry.model ?? thoughtModel(state))) continue;
         const entryKey = transcriptEntryKey(entry, index);
         if (entry.kind === "message") {
           const article = doc.createElement("article");
@@ -2734,7 +2755,14 @@
           const details = doc.createElement("details");
           details.className = `spt-codex-event spt-codex-event-${entry.kind}`;
           details.setAttribute("data-entry-key", entryKey);
-          details.open = viewport.expanded.has(entryKey);
+          details.open = sameTranscript && viewport.expanded.has(entryKey);
+          if (entry.kind === "thought") {
+            const active = index > lastUserIndex && entry.status === "streaming" &&
+              ["generating", "waiting-approval", "cancelling"].includes(state.status);
+            const previous = sameTranscript ? viewport.thoughts.get(entryKey) : null;
+            details.dataset.thoughtActive = String(active);
+            details.open = previous && previous.active === active ? previous.open : active;
+          }
           const summary = doc.createElement("summary");
           const toolPresentation = entry.kind === "tool"
             ? describeToolEntry(entry, state.record.session.workspacePath)
@@ -2791,6 +2819,12 @@
             };
             details.addEventListener("toggle", populateWhenExpanded);
           }
+          else if (entry.kind === "thought") {
+            const text = doc.createElement("div");
+            text.className = "spt-codex-thought-text";
+            text.textContent = String(entry.text || "");
+            eventContent.append(text);
+          }
           else if (entry.kind === "plan" && Array.isArray(entry.entries)) {
             const list = doc.createElement("ol");
             for (const item of entry.entries) {
@@ -2839,9 +2873,10 @@
       }[state.status] || state.status;
       view.root.dataset.status = state.status;
       view.setSectionSummary?.(waiting ? "等待授权" : (state.record.session.id ? "已绑定会话" : "未创建会话"));
+      const thinkingText = thinkingActivityText(state);
       const activityLabel = {
         connecting: `正在连接本地 ${label}…`,
-        generating: state.activityText || `${label} 正在思考…`,
+        generating: thinkingText || `${label} 正在思考…`,
         cancelling: "正在停止当前任务…",
         "waiting-approval": "等待你的授权…"
       }[state.status] || "";
@@ -2852,7 +2887,7 @@
       view.elements.activity.dataset.status = state.status;
       view.elements.activityText.removeAttribute?.("data-l10n-id");
       view.elements.activityText.textContent = activityLabel;
-      if (state.status === "connecting" || (state.status === "generating" && !state.activityText)) {
+      if (state.status === "connecting" || (state.status === "generating" && !thinkingText)) {
         setLocalizedText(view.elements.activityText, `smart-paper-translator-agents-${state.status === "connecting" ? "connecting" : "thinking"}`, activityLabel, { agent: label });
       }
       view.elements.status.removeAttribute?.("data-l10n-id");
@@ -2908,6 +2943,8 @@
     appendMermaidBlock,
     captureTranscriptViewport,
     restoreTranscriptViewport,
+    isGPTModel,
+    thinkingActivityText,
     describeToolEntry,
     describeToolImage,
     appendToolImageDetails,
