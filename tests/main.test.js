@@ -69,6 +69,21 @@ function loadMainPlugin() {
   return { plugin: context.SmartPaperTranslatorPlugin, context, values, preferenceCalls, detectCalls, detected };
 }
 
+test("fulltext resolves only the exact main-window Reader tab and cleans windows before runtime", async () => {
+  const { plugin, context } = loadMainPlugin();
+  const reader = { tabID: "reader-tab", itemID: 42 }, owner = { Zotero_Tabs: { selectedID: "reader-tab" } };
+  context.Zotero.Reader = { getByTabID: id => id === reader.tabID ? reader : null };
+  context.Zotero.getMainWindows = () => [owner];
+  assert.equal(plugin._fulltextContext(reader).attachmentID, 42);
+  assert.throws(() => plugin._fulltextContext({ ...reader, itemID: 99 }), /无法确认/u);
+  assert.throws(() => plugin._fulltextContext({ itemID: 42 }), /无法确认/u);
+  const calls = [];
+  plugin.fulltextUI = { shutdown: async () => calls.push("window") };
+  plugin.fulltextRuntime = { shutdown: async () => calls.push("runtime") };
+  plugin.readerUI = { shutdown: () => calls.push("reader") }; plugin.initialized = true;
+  await plugin.shutdown(); assert.deepEqual(calls, ["window", "runtime", "reader"]);
+});
+
 test("bootstrap registers the local branch chrome document and tears it down after window cleanup", async () => {
   const events = [], scripts = [];
   const plugin = { init: async () => events.push("init"), addToAllWindows: () => events.push("windows"), shutdown: async () => events.push("closed-windows") };

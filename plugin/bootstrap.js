@@ -37,6 +37,10 @@ async function startup({ id, version, rootURI }) {
     "content/reader-ui.js",
     "content/codex-chat-ui.js",
     "content/branch-chat-ui.js",
+    "content/fulltext-markdown.js",
+    "content/fulltext-service.js",
+    "content/fulltext-runtime.js",
+    "content/fulltext-ui.js",
     "content/main.js"
   ];
   for (const script of scripts) {

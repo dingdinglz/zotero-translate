@@ -4,7 +4,6 @@ const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
 const { FulltextService, parseAnswer, publicConfig } = require("../plugin/content/fulltext-service.js");
 const hash = value => createHash("sha256").update(value).digest("hex");
-const clone = value => JSON.parse(JSON.stringify(value));
 function setup(overrides = {}) {
   const files = new Map(); const calls = []; let imports = 0;
   const config = { provider: "deepseek", endpoint: "https://api.deepseek.com/chat/completions", model: "test", oxrBaseURL: "https://example.test/api/v1" };
@@ -108,6 +107,20 @@ test("an uncertain import is never repeated automatically", async () => {
   const restored = new FulltextService(x.args); await restored.load();
   assert.match(restored.snapshot().error, /导入/u); await assert.rejects(restored.finish({}), /未确认/u);
 });
+test("real Markdown codec survives translation, proofreading and restart without changing references", async () => {
+  const markdown = require("../plugin/content/fulltext-markdown.js");
+  const x = setup({ markdown, complete: async options => {
+    const input = JSON.parse(options.prompt);
+    return JSON.stringify({ translation: input.draft || input.source.replace(/Test/gu, "测试").replace(/Text/gu, "文本").replace(/and/gu, "和") });
+  } });
+  await x.service.parse({ consent: true });
+  const source = "# Test\n\nText [1] and $x$.\n\n## References\n[1] Author. Title. 2020.\n";
+  await x.service.confirm(source); await x.service.translate({ consent: true });
+  assert.equal(x.files.get("translated.md"), "# 测试\n\n文本 [1] 和 $x$.\n\n## References\n[1] Author. Title. 2020.\n");
+  const restored = new FulltextService(x.args); await restored.load();
+  assert.equal(restored.translated, x.service.translated);
+});
+
 test("strict response parsing rejects wrappers, extra fields and empty text", () => {
   for (const value of ['```json\n{}\n```', '{"translation":"x","explanation":"y"}', '{"translation":""}', '[]', '{}']) assert.throws(() => parseAnswer(value));
   assert.equal(parseAnswer('{"translation":"中文"}'), "中文");

@@ -28,6 +28,19 @@
       this._listen("spt-test-connection", "click", () => this.testConnection());
       this._listen("spt-reset-deepseek", "click", () => this.resetDeepSeek());
       this._listen("spt-reset-prompts", "click", () => this.resetPrompts());
+      this._listen("spt-fulltext-refresh", "click", () => this.fulltextAction("refresh"));
+      this._listen("spt-fulltext-browse", "click", () => this.fulltextAction("browse"));
+      this._listen("spt-fulltext-inspect", "click", () => this.fulltextAction("inspect"));
+      this._listen("spt-fulltext-python", "change", () => {
+        if (!this.writingBoundValue && !this.fulltextBusy) this.bridge.setFulltextPython?.(this.doc.getElementById("spt-fulltext-python").value);
+      });
+      this._listen("spt-fulltext-python-options", "change", () => {
+        if (this.fulltextBusy) return;
+        const value = this.doc.getElementById("spt-fulltext-python-options").value;
+        if (this.fulltextCandidates?.includes(value)) {
+          this._setBoundValue("spt-fulltext-python", value); this.bridge.setFulltextPython?.(value);
+        }
+      });
       this._listen("spt-validate-prompts", "click", () => this.validatePrompts());
       for (const agentId of agentTabs) {
         this._listen(`spt-agent-tab-${agentId}`, "click", () => this.selectAgentTab(agentId));
@@ -88,8 +101,47 @@
         this.renderPiStatus(this.bridge.getPiStatus());
         this.renderOpenCodeStatus(this.bridge.getOpenCodeStatus?.());
         this.refreshPathCandidates();
+        if (this.bridge.listFulltextPythonCandidates) this.fulltextAction("refresh");
       }, 0);
       this.cleanups.push(() => win.clearTimeout(timer));
+    },
+
+    async fulltextAction(action) {
+      if (this.fulltextBusy || !this.doc) return;
+      const doc = this.doc, win = this.win, bridge = this.bridge;
+      const serial = this.fulltextSerial = (this.fulltextSerial || 0) + 1;
+      const current = () => this.initialized && this.doc === doc && this.fulltextSerial === serial;
+      const controls = ["spt-fulltext-python", "spt-fulltext-python-options", "spt-fulltext-refresh", "spt-fulltext-browse", "spt-fulltext-inspect"];
+      this.fulltextBusy = true; controls.forEach(id => { doc.getElementById(id).disabled = true; });
+      this._status("spt-fulltext-status", action === "inspect" ? "正在检测所选本地环境…" : "正在读取本地路径…");
+      try {
+        if (action === "refresh") {
+          const values = await bridge.listFulltextPythonCandidates();
+          if (!current()) return;
+          this.fulltextCandidates = values;
+          const select = doc.getElementById("spt-fulltext-python-options");
+          const option = doc.createElement("option"); option.value = ""; option.textContent = "手动输入或浏览…";
+          select.replaceChildren(option);
+          for (const value of values) { const entry = doc.createElement("option"); entry.value = entry.textContent = value; select.append(entry); }
+          select.value = values.includes(doc.getElementById("spt-fulltext-python").value) ? doc.getElementById("spt-fulltext-python").value : "";
+          this._status("spt-fulltext-status", `发现 ${values.length} 个本地候选；未执行候选程序，未更改已选路径。`);
+        }
+        else if (action === "browse") {
+          const path = await bridge.pickFulltextPython(win);
+          if (!current()) return;
+          if (path) { this._setBoundValue("spt-fulltext-python", path); bridge.setFulltextPython(path); }
+          this._status("spt-fulltext-status", path ? "已选择环境，请点击检测本地依赖。" : "已取消选择。");
+        }
+        else {
+          const path = doc.getElementById("spt-fulltext-python").value.trim();
+          if (!path) throw new Error("请先选择已有的 Python 环境。");
+          const result = await bridge.inspectFulltextPython(path);
+          if (!current()) return;
+          this._status("spt-fulltext-status", `Python ${result.python} · PyMuPDF ${result.pymupdf} · requests ${result.requests}；本地依赖可用。`, "success");
+        }
+      }
+      catch (error) { if (current()) this._status("spt-fulltext-status", String(error?.message || "本地环境检测失败。"), "error"); }
+      finally { if (current()) { this.fulltextBusy = false; controls.forEach(id => { doc.getElementById(id).disabled = false; }); } }
     },
 
     _listen(id, event, handler) {
@@ -699,6 +751,9 @@
       this.sharedVersions = {};
       this.acpAction = null;
       this.pathCandidates = null;
+      this.fulltextBusy = false;
+      this.fulltextCandidates = null;
+      this.fulltextSerial = (this.fulltextSerial || 0) + 1;
     }
   };
 

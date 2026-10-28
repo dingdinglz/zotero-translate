@@ -76,6 +76,34 @@
     </description>
   </groupbox>
 
+  <groupbox id="spt-fulltext-settings" data-search-strings-raw="全文,PDF,Markdown,OXR,Python,校对,参考文献">
+    <label><html:h2>论文全文翻译</html:h2></label>
+    <description>解析前确认向 OXR 上传 PDF；确认 Markdown 后才逐段发送给上方 DeepSeek 服务。共用地址、模型和安全保存的密钥，目标固定为简体中文。关闭确认页暂停并保留进度。</description>
+    <html:div class="spt-prefs-grid">
+      <html:label for="spt-fulltext-python">Python 环境</html:label>
+      <html:div class="spt-path-field">
+        <html:select id="spt-fulltext-python-options" aria-label="本地 Python 候选"><html:option value="">手动输入或浏览…</html:option></html:select>
+        <html:div class="spt-prefs-path-row">
+          <html:input id="spt-fulltext-python" type="text" preference="extensions.smart-paper-translator.fulltextPythonPath" placeholder="/absolute/path/to/.venv/bin/python" />
+          <html:button id="spt-fulltext-browse" type="button">选择…</html:button>
+        </html:div>
+      </html:div>
+      <html:span></html:span><html:div class="spt-prefs-inline">
+        <html:button id="spt-fulltext-refresh" type="button">刷新候选</html:button>
+        <html:button id="spt-fulltext-inspect" type="button">检测本地依赖</html:button>
+      </html:div>
+      <html:label for="spt-fulltext-oxr">OXR API 地址</html:label>
+      <html:input id="spt-fulltext-oxr" type="url" preference="extensions.smart-paper-translator.fulltextOXRBaseURL" />
+      <html:label for="spt-fulltext-prompt">全文翻译提示词</html:label>
+      <html:textarea id="spt-fulltext-prompt" rows="4" preference="extensions.smart-paper-translator.fulltextTranslationPrompt"></html:textarea>
+      <html:label for="spt-fulltext-review-prompt">逐段校对提示词</html:label>
+      <html:textarea id="spt-fulltext-review-prompt" rows="4" preference="extensions.smart-paper-translator.fulltextReviewPrompt"></html:textarea>
+    </html:div>
+    <html:p id="spt-fulltext-status" class="spt-prefs-status" role="status"></html:p>
+    <description>需要已安装 PyMuPDF ≥ 1.24.4（1.x）、requests ≥ 2.31（2.x）的 Python ≥ 3.9。不会自动安装依赖。可在终端为所选环境运行：python -m pip install 'PyMuPDF&gt;=1.24.4,&lt;2' 'requests&gt;=2.31,&lt;3'。检测只访问本机，不调用模型或上传论文。</description>
+    <description>提示词只填写翻译要求，无需模板变量或输出说明。插件强制结构化响应并保护参考文献条目、引用标记、公式、代码、图片及 Markdown 格式；模型校对不能保证语义绝对正确。</description>
+  </groupbox>
+
   <groupbox id="spt-acp-settings" data-search-strings-raw="Agents,Codex,Pi,OpenCode,ACP,Node,npx,本地模型,侧栏,对话">
     <label><html:h2 data-l10n-id="smart-paper-translator-agents-settings-title">Agents（ACP）</html:h2></label>
     <description data-l10n-id="smart-paper-translator-agents-overview">

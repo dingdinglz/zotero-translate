@@ -58,6 +58,14 @@ var SmartPaperTranslatorPlugin = {
       },
       getScreenshotAgent: (attachmentID) => this.agentsChatService?.getActiveAgent(attachmentID) || "codex",
       onScreenshotStateChanged: () => this.codexChatUI?.refreshAvailability(),
+      openFulltext: (reader) => {
+        const { owner, attachmentID } = this._fulltextContext(reader);
+        return this.fulltextUI.open(owner, attachmentID);
+      },
+      openFulltextVersion: (reader, language) => {
+        const { attachmentID } = this._fulltextContext(reader);
+        return this.fulltextRuntime.openVersion(attachmentID, language);
+      },
       stylesheetText: readerStylesheet,
       log: (message, error) => this.log(message, error)
     });
@@ -134,6 +142,10 @@ var SmartPaperTranslatorPlugin = {
       log: (message, error) => this.log(message, error)
     });
 
+    this.fulltextRuntime = new modules.FulltextRuntime.FulltextRuntime({ rootURI, getPreference,
+      apiClient: this.apiClient, credentials: this.credentials });
+    this.fulltextUI = new modules.FulltextUI.FulltextUI({ runtime: this.fulltextRuntime, rootURI });
+
     await Zotero.PreferencePanes.register({
       pluginID: id,
       id: "smart-paper-translator-preferences",
@@ -176,6 +188,10 @@ var SmartPaperTranslatorPlugin = {
         this._schedulePreferenceRefresh();
       },
       testConnection: () => this.service.testConnection(),
+      listFulltextPythonCandidates: () => this.fulltextRuntime.listPythonCandidates(),
+      pickFulltextPython: (win) => this._pickCodexPath("python", win),
+      inspectFulltextPython: (path) => this.fulltextRuntime.inspect(path),
+      setFulltextPython: (path) => this._setPreference(modules.Constants.PREFS.fulltextPythonPath, String(path || "").trim()),
       validateTemplates: (selectionPrompt, abstractPrompt) => {
         modules.Logic.validateTemplate(
           selectionPrompt,
@@ -382,7 +398,7 @@ var SmartPaperTranslatorPlugin = {
   },
 
   async _pickCodexPath(kind, parentWindow) {
-    const title = { node: "Node", npx: "npx-cli.js", codex: "Codex", pi: "Pi", opencode: "OpenCode" }[kind];
+    const title = { node: "Node", npx: "npx-cli.js", codex: "Codex", pi: "Pi", opencode: "OpenCode", python: "Python（已有 PyMuPDF / requests 环境）" }[kind];
     if (!title) throw new Error("未知路径类型");
     const { FilePicker } = ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
     const picker = new FilePicker();
@@ -455,6 +471,16 @@ var SmartPaperTranslatorPlugin = {
     );
   },
 
+  _fulltextContext(reader) {
+    const tabID = reader?.tabID;
+    const current = tabID && Zotero.Reader.getByTabID(tabID);
+    const owner = tabID && Zotero.getMainWindows().find(win => win.Zotero_Tabs?.selectedID === tabID);
+    if (!current || !owner || owner.closed || current.itemID !== reader.itemID) {
+      throw new Error("无法确认当前 Reader 的 PDF 附件，请在主窗口的 PDF 标签页使用全文翻译。");
+    }
+    return { owner, attachmentID: current.itemID };
+  },
+
   addToAllWindows() {
     for (const win of Zotero.getMainWindows()) {
       if (win.ZoteroPane) this.addToWindow(win);
@@ -473,6 +499,7 @@ var SmartPaperTranslatorPlugin = {
 
   removeFromWindow(win) {
     void this.branchChatUI?.closeForWindow(win).catch(() => this.log("Temporary branch cleanup failed"));
+    void this.fulltextUI?.closeForWindow(win).catch(() => this.log("Fulltext window cleanup failed"));
     const state = this.windowStates.get(win);
     if (!state) return;
     for (const cleanup of state.cleanups) {
@@ -498,6 +525,8 @@ var SmartPaperTranslatorPlugin = {
     // Close chrome child windows before unrelated UI cleanup can fail and the
     // bootstrap finally block unregisters their local resource mapping.
     await this.branchChatUI?.shutdown().catch(() => this.log("Temporary branch shutdown failed"));
+    await this.fulltextUI?.shutdown().catch(() => this.log("Fulltext window shutdown failed"));
+    await this.fulltextRuntime?.shutdown().catch(() => this.log("Fulltext runtime shutdown failed"));
     this.readerUI?.shutdown();
     this.itemTreeUI?.shutdown();
     await this.codexChatUI?.shutdown().catch((error) => this.log("Codex UI shutdown failed", error));

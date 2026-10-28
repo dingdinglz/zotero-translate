@@ -231,6 +231,8 @@
       addScreenshotsToCodex,
       getScreenshotAgent,
       onScreenshotStateChanged,
+      openFulltext,
+      openFulltextVersion,
       stylesheetText,
       log
     } = {}) {
@@ -247,6 +249,8 @@
       this.addScreenshotsToCodex = addScreenshotsToCodex;
       this.getScreenshotAgent = getScreenshotAgent;
       this.onScreenshotStateChanged = onScreenshotStateChanged;
+      this.openFulltext = openFulltext;
+      this.openFulltextVersion = openFulltextVersion;
       this.stylesheetText = stylesheetText || "";
       this.states = new Map();
       this.stylesheets = new Set();
@@ -591,6 +595,7 @@
       append(toolbarButton);
       append(selectionToggleButton);
       append(screenshotButton);
+      this._appendFulltextControls(state, append);
       this._mountPanel(doc, state);
       this._bindPanelEvents(state);
       this._bindSelectionToggleEvents(state);
@@ -598,6 +603,36 @@
       this._applyStoredGeometry(state);
       this._updateVisibility(state);
       this.refreshState(state);
+    }
+
+    _appendFulltextControls(state, append) {
+      if (!this.openFulltext || !this.openFulltextVersion) return;
+      const { doc, reader } = state;
+      const button = createElement(doc, "button", "toolbar-button spt-fulltext-button", "全文译");
+      button.type = "button"; button.title = "PDF → Markdown → 中文 PDF";
+      button.setAttribute("aria-label", "打开全文翻译确认页");
+      const select = createElement(doc, "select", "spt-fulltext-version");
+      select.setAttribute("aria-label", "选择论文中英文版本");
+      for (const [value, text] of [["", "中 / 英"], ["en", "英文原文"], ["zh", "中文译文"]]) {
+        const option = createElement(doc, "option", "", text); option.value = value; select.append(option);
+      }
+      button.disabled = select.disabled = !reader.tabID;
+      let busy = false;
+      const current = () => !state.destroyed && state.doc === doc && this.states.get(reader) === state;
+      const act = async action => {
+        if (busy || !current()) return;
+        busy = true; button.disabled = select.disabled = true;
+        try { await action(); }
+        catch (error) {
+          if (current()) doc.defaultView?.alert?.(String(error?.message || "全文翻译操作失败。"));
+        }
+        finally { if (current()) { busy = false; button.disabled = select.disabled = !reader.tabID; select.value = ""; } }
+      };
+      const open = () => act(() => this.openFulltext(reader));
+      const change = () => { const language = select.value; if (language) return act(() => this.openFulltextVersion(reader, language)); };
+      button.addEventListener("click", open); select.addEventListener("change", change);
+      state.domCleanups.push(() => { button.removeEventListener("click", open); select.removeEventListener("change", change); button.remove(); select.remove(); });
+      append(button); append(select);
     }
 
     _bindPanelEvents(state) {

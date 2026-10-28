@@ -8,6 +8,18 @@ const { ReaderUI, normalizeCodexSelection } = require("../plugin/content/reader-
 const Constants = require("../plugin/content/constants.js");
 const { makePaper } = require("./helpers.js");
 
+test("fulltext toolbar uses bound Reader identity and removes both controls on disposal", async () => {
+  const calls = [], ui = new ReaderUI({ openFulltext: async reader => calls.push(["open", reader.itemID]),
+    openFulltextVersion: async (reader, language) => calls.push([language, reader.itemID]) });
+  const reader = { tabID: "pdf-tab", itemID: 42 }, doc = new FakeDocument();
+  const state = { reader, doc, domCleanups: [], destroyed: false }; ui.states.set(reader, state);
+  const controls = []; ui._appendFulltextControls(state, node => controls.push(node));
+  assert.equal(controls.length, 2); assert.deepEqual(calls, []);
+  await controls[0].dispatch("click"); controls[1].value = "zh"; await controls[1].dispatch("change");
+  assert.deepEqual(calls, [["open", 42], ["zh", 42]]);
+  ui._disposeDOM(state); assert.equal(controls[0].listeners.size, 0); assert.equal(controls[1].listeners.size, 0);
+});
+
 class FakeElement {
   constructor(tag, namespaceURI = "http://www.w3.org/1999/xhtml") {
     this.tagName = tag;

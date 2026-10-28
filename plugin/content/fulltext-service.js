@@ -36,13 +36,13 @@
     }
     snapshot() {
       const segments = this.plan?.segments.filter(s => s.translatable) || [];
-      return copy({ ...this.state, translations: undefined, source: this.source, translated: this.translated,
+      return { ...copy({ ...this.state, translations: undefined }), source: this.source, translated: this.translated,
         busy: Boolean(this.operation), completed: segments.filter(s => Object.hasOwn(this.state.translations, s.id)).length,
         total: segments.length, referenceCount: this.plan?.referenceCount || 0,
-        currentSource: this.plan?.segments.find(s => s.id === this.state.currentID)?.source || "" });
+        currentSource: this.plan?.segments.find(s => s.id === this.state.currentID)?.source || "" };
     }
     subscribe(listener) { this.listeners.add(listener); listener(this.snapshot()); return () => this.listeners.delete(listener); }
-    emit() { const state = this.snapshot(); for (const listener of this.listeners) { try { listener(copy(state)); } catch (_) {} } }
+    emit() { for (const listener of this.listeners) { try { listener(this.snapshot()); } catch (_) {} } }
     async save() { await this.storage.writeJSON("state.json", copy(this.state)); this.emit(); }
     async load() {
       if (this.operation) return this.snapshot();

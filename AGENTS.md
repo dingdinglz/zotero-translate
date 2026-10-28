@@ -123,6 +123,9 @@ zotero-translate/
 │       ├── fulltext-service.js       # 全文确认、串行翻译/校对、检查点、暂停与附件导入状态机
 │       ├── fulltext-markdown.js      # 无损分段、参考文献/格式保护、检查点校验与静态安全排版
 │       ├── fulltext-runtime.js       # Python桥、附件/文件身份、本机预览、Gecko PDF打印及导入/切换
+│       ├── fulltext-ui.js            # 独立确认窗口、源码编辑、双重上传确认、校对修正与迟到隔离
+│       ├── fulltext.xhtml            # 固定本地chrome页面与无网络CSP
+│       ├── fulltext.css              # 左PDF逐页预览/右Markdown及状态/修正/输出操作区
 │       ├── fulltext-python/          # 随XPI打包的固定脚本，不打包Python解释器或第三方库
 │       │   ├── worker.py             # 隔离入口，check/convert/preview有界JSON协议
 │       │   ├── pdf_to_markdown.py    # PDF分块、OXR任务恢复、资源/路径/HTTP限制和逐页预览
@@ -162,9 +165,9 @@ zotero-translate/
 │       ├── item-tree.css             # 智能标签列、编辑浮层/原生控件对齐、主题色胶囊与无障碍模式样式
 │       ├── reader-ui.js              # Agents 选区/截图、划线缓存/重译/禁用、工具栏及悬浮面板术语删除/拖拽缩放
 │       ├── reader.css                # Reader 工具栏/截图、Agents 选区、悬浮面板/悬停删除、缩放和划线弹窗样式
-│       ├── main.js                   # 翻译/三 Agent/分支组装、窗口清理、路径枚举与 FilePicker 桥接
-│       ├── preferences.xhtml         # 翻译/公共 ACP 环境、路径候选/编辑/浏览、三 Agent Tab 与开发者模式
-│       ├── preferences.js            # 设置页路径发现、Tab、按模型思考默认项、互斥检测/准备和迟到回调隔离
+│       ├── main.js                   # 翻译/三Agent/分支/全文任务组装、窗口清理、路径与FilePicker桥接
+│       ├── preferences.xhtml         # 翻译/全文Python与OXR/公共ACP环境、路径候选、三Agent与开发者模式
+│       ├── preferences.js            # 设置页路径发现、全文本地依赖检测、Tab/思考默认项与迟到隔离
 │       └── preferences.css           # 设置页路径组合控件、分段 Tab、窄布局与诊断样式
 ├── tests/
 │   ├── helpers.js                    # Zotero、缓存/偏好 mock 与 Gecko Windows 原生路径契约
@@ -191,6 +194,7 @@ zotero-translate/
 │   ├── fulltext-service.test.js      # 上传/翻译确认、逐段校对、恢复/变更/取消与导入防重复
 │   ├── fulltext-markdown.test.js     # 无损结构、参考文献/占位符保护、资源上限与安全DOM
 │   ├── fulltext-runtime.test.js      # OXR地址、子进程协议/输出上限及取消
+│   ├── fulltext-ui.test.js           # 确认门控、编辑保护、窗口/预览迟到、共享任务去重与关闭暂停
 │   ├── fulltext_worker_test.py       # Python离线分块/恢复/版面/预览/路径和HTTP边界
 │   ├── item-tree-ui.test.js          # 标签编辑/聚合/分页/定位、手动优先、失败重试、异步隔离与清理
 │   └── reader-ui.test.js             # 选区/截图 Agents 入口、划线翻译/禁用、术语删除/重试、Tabs、拖拽缩放和陈旧 UI 防护

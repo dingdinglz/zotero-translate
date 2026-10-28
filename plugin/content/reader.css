@@ -1,3 +1,6 @@
+.spt-fulltext-button { min-width: 3em; white-space: nowrap; font-size: 12px; }
+.spt-fulltext-version { max-width: 7em; font: inherit; color: inherit; background: var(--material-background, transparent); border: 1px solid var(--fill-quinary, #aaa); border-radius: 4px; }
+
 .spt-toolbar-button {
   position: relative;
   flex-shrink: 0;

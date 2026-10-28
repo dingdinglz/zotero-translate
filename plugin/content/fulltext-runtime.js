@@ -153,6 +153,32 @@
       }
     }
     async inspect(pythonPath) { return this.python("check", {}, { pythonPath }); }
+    async listPythonCandidates() {
+      const env = global.Services.env;
+      const windows = Boolean(global.Zotero.isWin);
+      const directories = String(env.get("PATH") || "").split(windows ? ";" : ":");
+      for (const name of ["VIRTUAL_ENV", "CONDA_PREFIX"]) {
+        const value = env.get(name);
+        if (value) directories.unshift(windows ? value : global.PathUtils.join(value, "bin"));
+      }
+      if (!windows) directories.push("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin");
+      const result = [], seen = new Set();
+      for (const directory of [...new Set(directories)].slice(0, 128)) {
+        for (const name of windows ? ["python.exe", "python3.exe"] : ["python3", "python"]) {
+          try {
+            const path = native(global.PathUtils.join(native(directory), name));
+            const file = fileObject(path);
+            if (!seen.has(path) && file.exists() && file.isFile()) { seen.add(path); result.push(path); }
+          } catch (_) {}
+        }
+      }
+      return result;
+    }
+    async release(service) {
+      await service.pause();
+      const entry = this.services.get(service.attachmentID);
+      if (entry && await entry === service) this.services.delete(service.attachmentID);
+    }
     async attachment(id) {
       const item = await global.Zotero.Items.getAsync(id);
       if (!item || item.deleted || !item.isPDFAttachment() || !item.parentItemID) throw new Error("请选择普通论文条目下的 PDF 附件；独立 PDF 请先建立父条目。");
@@ -275,7 +301,8 @@
       frame.setAttribute("sandbox", ""); frame.setAttribute("aria-hidden", "true");
       frame.style.cssText = "position:fixed;left:-10000px;top:0;width:794px;height:1123px;border:0";
       const output = global.PathUtils.join(taskRoot, "translated.pdf");
-      const temporary = global.PathUtils.join(taskRoot, "translated-print.pdf");
+      const printID = global.Services.uuid.generateUUID().toString().replace(/[^a-f0-9-]/giu, "");
+      const temporary = global.PathUtils.join(taskRoot, `print-${printID}.pdf`);
       checkPath(temporary, "regular", true); checkPath(output, "regular", true);
       let timer, cancelled = false, rejectCancellation;
       const cancellation = new Promise((_, reject) => { rejectCancellation = reject; });
@@ -294,8 +321,17 @@
         })]);
         global.clearTimeout(timer); current();
         if (owner.closed || !frame.browsingContext?.print) throw new Error("当前 Zotero 不支持此安全 PDF 导出方式；Markdown 已保留。");
-        await Promise.race([cancellation, frame.contentDocument?.fonts?.ready, new Promise((_, reject) => {
-          timer = global.setTimeout(() => reject(new Error("中文字体加载超时。")), 30000);
+        const ready = async () => {
+          const content = frame.contentDocument;
+          if (!content) throw new Error("无法核对隔离打印文档。");
+          await content.fonts?.ready;
+          for (const image of Array.from(content.images || [])) {
+            if (typeof image.decode === "function") await image.decode();
+            if (!image.complete || !image.naturalWidth || !image.naturalHeight) throw new Error("文档图片解码失败，未生成不完整 PDF。");
+          }
+        };
+        await Promise.race([cancellation, ready(), new Promise((_, reject) => {
+          timer = global.setTimeout(() => reject(new Error("中文字体或图片加载超时。")), 30000);
         })]);
         global.clearTimeout(timer); current();
         const settings = global.Cc["@mozilla.org/gfx/printsettings-service;1"].getService(global.Ci.nsIPrintSettingsService).createNewPrintSettings();

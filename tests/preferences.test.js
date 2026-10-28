@@ -68,6 +68,32 @@ function preferencesFixture() {
   return { manager, bridge, calls, paths, byID, doc, win };
 }
 
+test("fulltext Python discovery is read-only and late picker results cannot save", async () => {
+  const { manager, bridge, byID, calls } = preferencesFixture();
+  byID.get("spt-fulltext-python").value = "/manual/python";
+  bridge.listFulltextPythonCandidates = async () => ["/candidate/python"];
+  bridge.setFulltextPython = value => calls.push(["python", value]);
+  await manager.fulltextAction("refresh");
+  assert.equal(byID.get("spt-fulltext-python").value, "/manual/python");
+  assert.deepEqual(calls, []);
+  let finish;
+  bridge.pickFulltextPython = () => new Promise(resolve => { finish = resolve; });
+  const picking = manager.fulltextAction("browse"); manager.destroy(); finish("/late/python");
+  await picking; assert.deepEqual(calls, []);
+});
+
+test("fulltext local inspection locks paths and does not call model connection testing", async () => {
+  const { manager, bridge, byID } = preferencesFixture();
+  let finish; byID.get("spt-fulltext-python").value = "/selected/python";
+  bridge.testConnection = () => assert.fail("No model requests during local inspection");
+  bridge.inspectFulltextPython = value => { assert.equal(value, "/selected/python"); return new Promise(resolve => { finish = resolve; }); };
+  const inspecting = manager.fulltextAction("inspect");
+  assert.ok(byID.get("spt-fulltext-python").disabled);
+  finish({ python: "3.12", pymupdf: "1.28", requests: "2.34" }); await inspecting;
+  assert.equal(byID.get("spt-fulltext-python").disabled, false);
+  assert.match(byID.get("spt-fulltext-status").textContent, /本地依赖可用/u); manager.destroy();
+});
+
 test("Pi default reasoning clears max when the newly chosen model does not support it", () => {
   const { manager, byID } = preferencesFixture();
   const reasoning = byID.get("spt-pi-default-reasoning"), model = byID.get("spt-pi-default-model");

@@ -26,6 +26,15 @@ def main() -> None:
 
     ElementTree.parse(PLUGIN / "content" / "preferences.xhtml")
     ElementTree.parse(PLUGIN / "content" / "branch-chat.xhtml")
+    ElementTree.parse(PLUGIN / "content" / "fulltext.xhtml")
+    for name in ("fulltext-service.js", "fulltext-runtime.js", "fulltext-ui.js", "fulltext-markdown.js"):
+        source = (PLUGIN / "content" / name).read_text(encoding="utf-8")
+        assert ".innerHTML" not in source, f"active HTML injection: {name}"
+    for path in (PLUGIN / "content" / "fulltext-python").glob("*.py"):
+        import ast
+        ast.parse(path.read_text(encoding="utf-8"), filename=str(path), feature_version=(3, 9))
+    fulltext_markup = (PLUGIN / "content" / "fulltext.xhtml").read_text(encoding="utf-8")
+    assert "script-src 'none'" in fulltext_markup and "connect-src 'none'" in fulltext_markup
     xhtml = (PLUGIN / "content" / "preferences.xhtml").read_text(encoding="utf-8")
     assert "<!DOCTYPE" not in xhtml
 

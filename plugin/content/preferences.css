@@ -2,6 +2,8 @@
   max-width: 820px;
 }
 
+#spt-fulltext-settings textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; resize: vertical; }
+
 #smart-paper-translator-preferences-pane groupbox {
   margin-bottom: 14px;
 }
