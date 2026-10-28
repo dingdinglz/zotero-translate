@@ -1,0 +1,3 @@
+# Manual preparation only. The plugin never invokes pip or installs packages.
+PyMuPDF>=1.24.4,<2
+requests>=2.31,<3

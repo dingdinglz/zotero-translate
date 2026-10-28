@@ -57,6 +57,7 @@ macOS 原生验证默认使用 Skill 的 `references/cli-native-probes.md`：CLI
 - Codex 公式固定使用 XPI 内置 KaTeX `0.18.4` 生成 MathML；必须保持 `trust: false`、宏展开/尺寸上限、每公式独立宏环境和 MathML 外部元素/资源属性过滤。不得使用 `innerHTML`、远程公式服务、运行时 CDN、KaTeX HTML 输出或可加载资源的可信命令。
 - Codex Mermaid 固定使用 XPI 内置 Mermaid `11.16.1`，只在出现 `mermaid` fenced code block 时按窗口延迟加载，不得使用 CDN 或运行时下载。由于 Zotero Item Pane 属于无 `body` 的 XUL 文档，运行时必须留在同窗口的本地 `about:blank` HTML iframe 与专用 Gecko sandbox 中；sandbox 必须以该 HTML 窗口为原型继承只读的 `window`/`document`，不得再次赋值，关闭插件时移除 iframe 并丢弃 sandbox 引用；不得在 Zotero 9.0.6 调用 `Cu.nukeSandbox()`。必须保持 `securityLevel: strict`、`htmlLabels: false`、安全配置锁定、源文本/边数/超时/SVG 大小与节点数上限。返回 SVG 只允许 Mermaid flowchart 生成的本地 `feDropShadow` 滤镜，不得放行其他滤镜原语，并继续拒绝活动元素、HTML、链接和非本地资源引用；结果需写入最长边不超过 4096 像素的固有尺寸并序列化为隔离的数据图片，宽图在侧栏横向滚动，不得作为活动 SVG 注入 Item Pane。解析、超限或安全校验失败时必须保留原始源码。
 - Codex 开发者模式必须默认关闭；关闭时不得采集或保留额外的可复制诊断日志，也不得显示复制入口。开启后仅允许在内存中有界记录当前实时 turn 的工具与思考诊断事件，脱敏常见密钥和用户主目录，不得自动落盘或上传；关闭模式、重建会话和插件退出必须清空。
+- 全文翻译任务绑定文库、原 PDF 附件 key 和文件 SHA-256；OXR 上传与 DeepSeek 翻译分别经用户确认。默认 OXR 地址可配置，仅 HTTPS/本机 HTTP，不跟随重定向；Python 使用用户选择的现成环境，固定插件脚本、独立 argv 和隔离模式，不运行 shell、不自动准备依赖。中间版面 PDF 只做本地逐页预览，不预先写文库。确认后的 Markdown 按内容哈希保存，逐段译文检查点原子写入；恢复复核原 PDF、模型/地址/提示词及保护内容，不混用新旧配置。参考文献条目整体保留，正文引用标记、公式、代码、图片/链接地址和 Markdown/HTML 表格结构不能被翻译改写。每段独立翻译、模型校对和程序校验，最多三轮，失败暂停，不静默缺段。只有全部通过才生成中文 MD/PDF 并导入原论文下的新附件，原 PDF 和批注不变；批注与页码不跨语言同步。关闭确认页暂停并保存进度，远端已提交 OXR 任务可能继续；导入事务结果不确定时阻止重复导入。全文预览/打印只用白名单静态 DOM、本地 KaTeX MathML 和有界签名验证的内嵌图片；不加载远程资源、file 引用或活动 HTML。Gecko 打印使用独立 settings，不修改全局打印偏好；未通过原生验证不得声称 PDF 导出已验证。
 - 悬浮面板术语删除仅清理当前论文中同一规范化原文的全部 selection 缓存配置变体；原子写入成功后更新列表与计数，不改摘要、智能标签或其他论文。删除必须使此前在途的对应划线请求及缓存探测失效，防止旧结果恢复缓存；异步列表刷新和删除回调复核 Reader、论文与请求序号，失败保留术语并允许重试。
 - 划线译文和摘要译文必须支持原生拖选与复制；仅在译文节点阻止 Reader 的 pointerdown 冒泡，不取消默认选择。复制只接受完全位于当前译文节点内的选区，清除 Reader 可能添加的批注格式后仅写入所选纯文本，不修改译文或全局复制行为。
 - 当前 PDF 的划线翻译禁用开关默认关闭，禁用附件 ID 列表仅持久化在本机 Zotero 偏好中；命中禁用状态时不得追加插件划线翻译 UI、查询划线缓存或发起翻译请求，且不得影响其他 PDF 或独立的“添加到 Agents”入口。
@@ -119,6 +120,14 @@ zotero-translate/
 │       ├── pdf-screenshot.js         # Zotero 9.0.6/10.0.4 精确版本桥、原页框选/跨页拆图、PNG 校验与资源保护
 │       ├── api.js                    # OpenAI Chat Completions 客户端与安全错误映射
 │       ├── service.js                # 翻译/摘要、智能标签生成/本地保存、缓存探测、术语删除及在途失效
+│       ├── fulltext-service.js       # 全文确认、串行翻译/校对、检查点、暂停与附件导入状态机
+│       ├── fulltext-markdown.js      # 无损分段、参考文献/格式保护、检查点校验与静态安全排版
+│       ├── fulltext-runtime.js       # Python桥、附件/文件身份、本机预览、Gecko PDF打印及导入/切换
+│       ├── fulltext-python/          # 随XPI打包的固定脚本，不打包Python解释器或第三方库
+│       │   ├── worker.py             # 隔离入口，check/convert/preview有界JSON协议
+│       │   ├── pdf_to_markdown.py    # PDF分块、OXR任务恢复、资源/路径/HTTP限制和逐页预览
+│       │   ├── layout_pdf.py         # 原PDF的无损版面分析叠加副本
+│       │   └── requirements.txt      # 手动准备PyMuPDF/requests的版本范围
 │       ├── pi-acp-compat.js          # 固定 Pi 适配器哈希校验、Node 内存补丁、按模型读取档位与确认 max
 │       ├── opencode-acp.js          # 原生启动、OSC/模型收集、检测与分支临时数据库/能力解析
 │       ├── acp-client.js             # 跨平台路径、npm/原生启动、分支 workdir、Pi 补丁及进程清理
@@ -179,6 +188,10 @@ zotero-translate/
 │   ├── main.test.js                  # ACP 设置/只读发现/FilePicker、分支 chrome 注册和窗口关闭顺序
 │   ├── preferences.test.js           # 路径下拉/编辑/刷新/空路径发现/迟到结果、Tab/表单保留与检测锁
 │   ├── service.test.js               # 摘要、手动标签/迟到生成、缓存探测、术语删除/在途失效、并发与取消
+│   ├── fulltext-service.test.js      # 上传/翻译确认、逐段校对、恢复/变更/取消与导入防重复
+│   ├── fulltext-markdown.test.js     # 无损结构、参考文献/占位符保护、资源上限与安全DOM
+│   ├── fulltext-runtime.test.js      # OXR地址、子进程协议/输出上限及取消
+│   ├── fulltext_worker_test.py       # Python离线分块/恢复/版面/预览/路径和HTTP边界
 │   ├── item-tree-ui.test.js          # 标签编辑/聚合/分页/定位、手动优先、失败重试、异步隔离与清理
 │   └── reader-ui.test.js             # 选区/截图 Agents 入口、划线翻译/禁用、术语删除/重试、Tabs、拖拽缩放和陈旧 UI 防护
 ├── scripts/
@@ -261,6 +274,8 @@ npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
 ```
+
+全文 Python 离线测试使用已准备的环境：`PYTHONDONTWRITEBYTECODE=1 /absolute/path/to/python -m unittest discover -s tests -p fulltext_worker_test.py -q`。该命令需要 `plugin/content/fulltext-python/requirements.txt` 中的现成依赖，不安装依赖、不调用真实 OXR。`npm run check` 包含全文 JavaScript 测试，但不替代 Python 测试。
 
 可选的已准备 Pi 适配器验证：设置 `SPT_TEST_PI_ACP_ENTRY=/absolute/path/to/pi-acp/dist/index.js`，执行 `node --test tests/pi-acp-compat.test.js`。只对现成模块做初始化握手和使用假 Pi RPC 的配置方法验证，不下载、不创建真实 Pi 会话、不调用模型。
 
