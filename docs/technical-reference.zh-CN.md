@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.49 的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.50 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -19,6 +19,20 @@ Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio �
 - 点击单个智能标签，汇总该条目所在文库的同标签文章，覆盖其他分类并排除回收站、子附件和笔记；独立 PDF 可参与。结果支持分页及点击标题定位，只读取已有标签缓存，沿用手动标签优先和当前自动配置匹配规则。
 - Reader 工具栏保留论文智译悬浮窗；摘要译文和术语分 Tab 展示，窗口支持拖动、缩放与持久化。术语行在鼠标悬停或键盘聚焦时显示小号“删除”按钮，点击后清除当前论文中该术语的所有配置版本缓存，并更新术语计数；删除失败保留原项，可重试。此前在途的翻译结果不能将已删除术语恢复，之后可重新划选翻译。
 - 每篇论文独立缓存；模型、目标语言、摘要或提示词变化后生成新的缓存版本。
+
+### 论文全文翻译
+
+0.1.50 新增独立全文流水线：OXR 解析 → 对照版面/原始 PDF 检查编辑 Markdown → 用户确认 → DeepSeek 逐段翻译、校对及格式检查 → 本地中文 Markdown → 重排 PDF 和独立中文附件。最终包的 PDF 导出、实际导入和真实网络服务尚未完成原生验证，详见下方版本记录。持久契约见 [全文翻译模块](fulltext-translation/SPEC.md)。
+
+- 设置共用翻译服务的 DeepSeek 地址、模型与 Login Manager 密钥，全文翻译/校对提示词单独配置，目标固定为简体中文；非 DeepSeek 服务不能运行全文翻译。
+- 用户手动准备 Python ≥ 3.9 与 `PyMuPDF>=1.24.4,<2`、`requests>=2.31,<3`。可在自己选择的环境执行 `python -m pip install 'PyMuPDF>=1.24.4,<2' 'requests>=2.31,<3'`；插件不会执行安装命令。设置页提供路径候选、输入、浏览和只读本机检测。
+- Free OXR 默认 API 为 `https://free-oxr.somark.ai/api/v1`，可改为兼容服务地址；不跟随重定向。PDF 按最多 20 页/9.5 MB 分块；超大单页直接报错。首次上传和发送 DeepSeek 分别确认，关闭页面不保证取消已提交的远端 OXR 任务。
+- 确认页显示本地栅格页面预览，并可切换原 PDF；不导入中间版面 PDF，也不借用私有 PDF.js 截图桥。Markdown 编辑/预览支持常见格式、HTML 表格和合并单元格、内嵌 PNG/JPEG/GIF/WebP 与本地 MathML。远程资源、活动 HTML、任意本机图片路径不加载；不支持的 HTML 保留源码。
+- 参考文献按 References / Bibliography / 参考文献标题识别，整条保留作者、标题、刊物、年份等；正文引用标记、公式、代码、图片和链接地址保持不变。若 OCR 未识别标题，用户应先修正并检查保护条目计数。引用的正文正常翻译。单个保护后的待翻译段上限 16000 UTF-16 单元，超限需在编辑页合理拆分，不静默裁剪。
+- 单段最多三轮格式修复，失败后暂停，可编辑失败稿或重新确认源码。模型校对不是语义正确性保证。确认稿按内容哈希保存；配置/源码变化会要求重新确认并重建译文检查点。已完成段落可恢复，未确认编辑不保证保存。
+- 本次明确确认的翻译完成后自动尝试生成和导入 PDF；重开页面不自动恢复请求或导入。生成失败保留 Markdown，可导出或手动重试。导入结果不确定时阻止自动重复导入，请先检查文库，不要删除意图记录后盲目重试。
+- 仅处理可写文库中普通父论文下的 PDF。中文 PDF 是独立附件，原 PDF 和批注不变；Reader「中文 / 英文原文」只打开身份复核通过的对应附件。中文重排不保证原版布局、页码或批注对齐。
+- 本机数据位于 `smart-paper-translator/fulltext/`，包含按文库、原附件 key 和源 PDF 哈希隔离的副本、OCR 缓存、确认稿及检查点；不加密，不自动参加 Zotero 同步。中文附件遵循 Zotero 常规附件同步规则。开发不调用真实服务、不读取真实密钥、不导入测试附件。
 
 ### Agents ACP 论文对话
 
@@ -163,10 +177,28 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.49.xpi
+unzip -t dist/smart-paper-translator-0.1.50.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.50：全文翻译测试包与验证缺口
+
+已通过 **461 项 JavaScript 自动测试、37 项 Python 离线测试**，JavaScript/静态/XHTML 校验、两次逐字节一致构建、`unzip -t`、归档根目录和全部历史 SHA-256 校验。XPI 内 58 个运行时文件与 `plugin/` 源码逐字节一致，不含测试、开发文档或工具。
+
+最终文件：`dist/smart-paper-translator-0.1.50.xpi`，**1,398,520 字节**；SHA-256：`8babffe3e55b7c94248af8bb55b9858cbc5208c47944ef1f7815462c49fd8333`。
+
+本轮曾在 **macOS Zotero 10.0.6 / Gecko 140.17.0** 对早期候选包 `b8875116f244a1deb98d01833dba2c9a49b0e01275ece7e04f6f7873e0bea6de` 做非安装式解析，结果为 `error=0`、ID `smart-paper-translator@zotero.local`、版本 `0.1.50`、`compatible=true`、`appDisabled=false`。从候选包隔离加载实际模块，使用独立 chrome 注册和合成窗口验证 Python 3.12.0 / PyMuPDF 1.28.2 / requests 2.34.2、本地合成 PDF 预览及两个 MathML 公式；OXR、模型与导入全部模拟，无真实上传、模型调用、安装或文库写入。
+
+该原生探针整体结果为 **`passed=false`**：打印桥等待静态文档时出现“静态打印文档加载超时”，未生成 PDF。参照已有 Gecko 内容域事件桥，最终包已改为在自有 iframe 上显式接收内容域加载事件并验证 about:srcdoc 文档，离线回归通过。后续原生复测被 Zotero 模态窗口阻塞，用户明确选择停止并交付当前测试包。**最终哈希对应包未完成原生解析/UI 复测，不能继承早期候选包的成功结论；PDF 导出、真实附件导入、真实 OXR/DeepSeek 与完整安装生命周期仍未验证。** 本轮未复测 Zotero 9.0.6 或目标 10.0.4，截图精确白名单不变。
+
+手动验收建议：安装前保留原附件与备份；先用非敏感合成论文检测 Python、确认解析目的地，核对表格/公式/参考文献后翻译，检查暂停和重开；最终确认中文 PDF 完整且可打开、原文件未改、两附件切换正确。打印失败时先导出 Markdown，不要假定中文附件已经保存。验证需要的上传/模型费用由用户自行明确确认。
+
+Python 离线回归使用已准备的解释器，不下载依赖：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 /path/to/.venv/bin/python -m unittest discover -s tests -p fulltext_worker_test.py -q
+```
 
 ## 0.1.49：按模型区分思考展示
 

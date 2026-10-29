@@ -59,7 +59,7 @@ An interactive chart from the conversation, shown beside the passage it explains
 
 ## Get started
 
-The current version is **0.1.49**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
+The current version is **0.1.50 (test build)**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
 
 PDF screenshots are enabled on the individually verified **9.0.6 and 10.0.4** versions. Use the original PDF view for screenshots; Zotero 10's reflowed Reading Mode is not supported for capture. Other patch versions keep screenshots disabled until their private PDF.js bridge has been checked.
 
@@ -115,11 +115,25 @@ The reader also has selection translation and an abstract/glossary panel. These 
 
 You can use the Agents sidebar without configuring the translation API.
 
+## Full-paper translation (test build)
+
+This adds a separate PDF → Markdown → Chinese PDF workflow, not an Agent chat. **Native PDF export is not yet verified in the final build.** An earlier candidate passed non-installing XPI parsing, local PDF preview and formula display on Zotero 10.0.6; it exposed a print-frame loading issue. The fix passed offline tests, but native retesting was stopped at the user's request. Real OXR/DeepSeek calls and attachment import were not exercised.
+
+1. Select **DeepSeek** in the translation settings and configure its address, model and key. Full-paper translation shares these settings, but has separate translation/proofreading prompts and a fixed Simplified Chinese target.
+2. Under **论文全文翻译** (Full-paper translation), select an existing **Python 3.9+** environment with **PyMuPDF >=1.24.4,<2** and **requests >=2.31,<3**, then click **检测本地依赖**. You prepare dependencies yourself; the plugin never installs them. The default OXR address is `https://free-oxr.somark.ai/api/v1` and can be changed.
+3. Open a PDF attached to a regular paper in an editable library and click **全文译** in the main-window Reader toolbar. Opening the confirmation window is local. **解析 / 继续** asks before uploading the PDF to OXR. Closing pauses local work; submitted remote jobs may continue.
+4. Compare the layout PDF preview (or switch to the original PDF) with editable Markdown. Check equations, tables and the recognized bibliography before confirming. References/Bibliography entries and inline citation markers are preserved; quoted prose is translated. Unsupported HTML remains source text. After edits, click **确认 Markdown**.
+5. Click **翻译 / 继续** and confirm the destination and model. Each paragraph is translated, proofread and checked; format failures retry up to three rounds, then pause for correction. Completed paragraphs are checkpointed. A successful, confirmed run automatically attempts PDF generation and import; if export fails, keep/export the Markdown and retry **生成 / 保存 PDF** later.
+
+The Chinese PDF is a **new attachment under the same paper**. The Reader's **中文 / 英文原文** control switches attachments; the original PDF and annotations are untouched. Reflow changes layout and page numbers, and annotations do not transfer. Markdown is exportable but is not added as a Zotero attachment. Unconfirmed edits may be lost when closing; confirmed work is kept locally.
+
+Local PDF copies, OCR results, confirmed Markdown and checkpoints are stored under `smart-paper-translator/fulltext/` in Zotero's data directory, unencrypted and outside Zotero sync. The imported Chinese attachment follows Zotero's normal attachment/sync settings. OXR receives uploaded PDF content; the configured DeepSeek endpoint receives paragraph text. Review each service's retention policy before proceeding.
+
 ## Your data and agent permissions
 
 Opening the Agents sidebar or switching agents reads local history without requesting model output. Your first message gives the selected agent a copy of the PDF in a workspace for that paper. Later messages include your question and any selections or screenshots you attach. The agent can still read the PDF in its workspace.
 
-The agent runs locally, but its configured model provider may receive paper content and prompts. Codex uses its existing account and configuration, including Skills and MCP; Pi and OpenCode use their own login, models, permissions, and extensions. The plugin does not automatically modify Zotero items or import generated files.
+The agent runs locally, but its configured model provider may receive paper content and prompts. Codex uses its existing account and configuration, including Skills and MCP; Pi and OpenCode use their own login, models, permissions, and extensions. Agent chat does not automatically modify Zotero items or import generated files; full-paper translation imports its Chinese PDF only after the separate confirmation described above.
 
 Codex starts in approval mode. You can enable **Full Access** for the current conversation to allow network access and file operations outside its workspace. Pi and OpenCode follow their local tool and extension configuration. OpenCode permission requests appear in the conversation. The paper workspace is not a security sandbox for Full Access, Pi, or OpenCode.
 
@@ -135,7 +149,7 @@ Read [AGENTS.md](AGENTS.md) before changing plugin code. Runtime files live in `
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.49.xpi
+unzip -t dist/smart-paper-translator-0.1.50.xpi
 ```
 
 Build output goes to `dist/`. Runtime changes also require non-installing XPI parsing in the target Zotero version. The [technical reference (Chinese)](docs/technical-reference.zh-CN.md) covers adapter behavior, storage, rendering limits, and historical validation results.

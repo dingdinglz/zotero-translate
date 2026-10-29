@@ -59,7 +59,7 @@ OpenCode 还可以在「运行模式」中选择 **Build、Plan 和本机自定�
 
 ## 开始使用
 
-当前版本为 **0.1.49**，目标环境是 **macOS 上的 Zotero 10.0.4**，保留 Zotero 9 支持，插件清单兼容范围为 Zotero 9.0–10.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
+当前版本为 **0.1.50（测试包）**，目标环境是 **macOS 上的 Zotero 10.0.4**，保留 Zotero 9 支持，插件清单兼容范围为 Zotero 9.0–10.0.x。Agents 侧栏用于 Zotero 主窗口中的 PDF 标签页，暂不支持独立阅读器窗口。
 
 PDF 原页截图仅在逐项验证过的 **9.0.6 和 10.0.4** 开放。截图时请使用 PDF 原页视图，Zotero 10 的重排阅读模式（Reading Mode）不支持截图；其他补丁版本需核对私有 PDF.js 桥后再开放。
 
@@ -115,11 +115,25 @@ OpenCode 聊天进程禁用自动升级、后台模型目录刷新和 npm 下载
 
 使用 Agents 侧栏不需要配置翻译 API。
 
+## 论文全文翻译（测试功能）
+
+这是独立的 PDF → Markdown → 中文 PDF 流程，不经过 Agents 聊天。**最终包的原生 PDF 导出尚未验证。** 早期候选包在 Zotero 10.0.6 通过非安装式解析、本地 PDF 预览和公式显示，但发现打印 iframe 加载问题；修复通过离线测试后，原生复测按用户要求停止。真实 OXR/DeepSeek 请求、附件导入也未实际验证。
+
+1. 在翻译设置中选择 **DeepSeek**，配置地址、模型和密钥。全文翻译共用这些设置，另有独立翻译/校对提示词，目标固定为简体中文。
+2. 在「论文全文翻译」中选择已准备好的 **Python 3.9+**，环境需包含 **PyMuPDF >=1.24.4,<2**、**requests >=2.31,<3**，点击「检测本地依赖」。依赖由你手动安装，插件不会自动安装。OXR 默认地址为 `https://free-oxr.somark.ai/api/v1`，可自行修改。
+3. 在可写文库中打开普通论文下的 PDF 附件，点击主窗口 Reader 工具栏的「全文译」。打开页面不联网；点击「解析 / 继续」并确认后才向 OXR 上传 PDF。关闭窗口暂停本地任务，但已提交的远端任务可能继续。
+4. 对照版面 PDF 预览检查可编辑 Markdown，也可以切换为原始 PDF。确认前检查公式、表格和识别出的参考文献条目。References / Bibliography / 参考文献下的条目与文内引用标记保持原文；引用的正文照常翻译，不支持的 HTML 保留源码。编辑后点击「确认 Markdown」。
+5. 点击「翻译 / 继续」，确认目标地址与模型。每段经过翻译、模型校对和程序检查；格式问题最多尝试三轮，仍失败则暂停，允许修正后继续。已完成段落保留检查点。成功完成本次确认的任务后会自动尝试生成并导入 PDF；导出失败时可先导出 Markdown，之后点击「生成 / 保存 PDF」重试。
+
+中文 PDF 是**同一论文下的独立附件**，可用 Reader 的「中文 / 英文原文」切换。英文原 PDF 和批注不改动；中文按 Markdown 重排，不保证原版布局或页码，批注不会迁移。Markdown 可导出，但不会作为 Zotero 附件加入。关闭前尚未确认的编辑可能丢失，已确认内容和完成段落留在本机。
+
+PDF 副本、OCR 结果、确认稿和检查点存放于 Zotero 数据目录的 `smart-paper-translator/fulltext/`，不加密、不自动参与 Zotero 同步；导入的中文附件遵循 Zotero 自身附件/同步设置。OXR 会收到上传的 PDF，配置的 DeepSeek 地址会收到段落文本；开始前请确认相应服务的数据留存规则。
+
 ## 数据与 Agent 权限
 
 打开 Agents 侧栏或切换 Agent 只读取本地历史，不请求模型生成。发送第一条消息时，插件会把 PDF 副本放到这篇论文的专用工作区，交给所选 Agent。后续发送问题和本轮附加的选区、截图；Agent 仍可读取工作区中的 PDF。
 
-Agent 进程在本机运行，但它配置的模型服务可能收到论文内容和提示词。Codex 沿用本机账号与配置，包括 Skills 和 MCP；Pi 和 OpenCode 沿用自己的登录、模型、权限及扩展。插件不会自动修改 Zotero 条目或导入生成文件。
+Agent 进程在本机运行，但它配置的模型服务可能收到论文内容和提示词。Codex 沿用本机账号与配置，包括 Skills 和 MCP；Pi 和 OpenCode 沿用自己的登录、模型、权限及扩展。Agents 聊天不会自动修改 Zotero 条目或导入生成文件；全文翻译则仅在上述单独确认后导入中文 PDF。
 
 Codex 新会话默认使用审批模式。可以为当前对话开启 **Full Access**，允许联网和操作工作区外的文件。Pi 和 OpenCode 按本机工具与扩展配置执行，OpenCode 的工具授权请求显示在当前对话中；专用工作区不构成 Full Access、Pi 或 OpenCode 的安全沙箱。
 
@@ -135,7 +149,7 @@ OpenCode 图片提问要求检测目录明确声明当前模型支持图片；�
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.49.xpi
+unzip -t dist/smart-paper-translator-0.1.50.xpi
 ```
 
 构建产物输出到 `dist/`。涉及运行时代码的修改，还需要在目标 Zotero 版本中对 XPI 做非安装式解析。适配器行为、存储结构、渲染限制和历史验证结果见[配置与实现参考](docs/technical-reference.zh-CN.md)。
