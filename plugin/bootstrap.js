@@ -38,6 +38,7 @@ async function startup({ id, version, rootURI }) {
     "content/codex-chat-ui.js",
     "content/branch-chat-ui.js",
     "content/fulltext-markdown.js",
+    "content/fulltext-image-network.js",
     "content/fulltext-images.js",
     "content/fulltext-service.js",
     "content/fulltext-runtime.js",

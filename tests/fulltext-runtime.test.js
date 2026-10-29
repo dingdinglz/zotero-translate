@@ -245,15 +245,19 @@ function storageFixture() {
   class Cache { constructor(options) { this.options = options; caches.push(this); } cancel() { this.cancelled = true; } dispose() { this.disposed = true; } }
   const scope = { TextEncoder, TextDecoder, URL, setTimeout, clearTimeout,
     SmartPaperTranslatorModules: { ACP: { toNativeAbsolutePath: value => value.startsWith("/") ? value : null },
-      FulltextImages: { ImageCache: Cache }, FulltextMarkdown: { imageInfo() {} } },
-    PathUtils: { join: pathModule.join, filename: pathModule.basename }, Ci: {}, Zotero: { DataDirectory: { dir: "/data" } },
+      FulltextImages: { ImageCache: Cache }, FulltextMarkdown: { imageInfo() {} },
+      FulltextImageNetwork: { createFetch: ({ Components, Cr }) => {
+        assert.equal(typeof Components.isSuccessCode, "function"); assert.ok(Cr);
+        return () => { throw new Error("No real network in tests"); };
+      } } },
+    PathUtils: { join: pathModule.join, filename: pathModule.basename }, Ci: {}, Cr: {}, Components: { isSuccessCode: status => status === 0 }, Zotero: { DataDirectory: { dir: "/data" } },
     Cc: { "@mozilla.org/file/local;1": { createInstance: () => file() } },
     IOUtils: { exists: async path => files.has(path) || dirs.has(path), stat: async path => ({ size: sizes.get(path) ?? files.get(path).length }),
       read: async path => files.get(path), makeDirectory: async path => dirs.add(path),
       getChildren: async root => [...files.keys(), ...links].filter(path => pathModule.dirname(path) === root),
       write: async (path, bytes, options) => { writes.push({ path, options }); await beforeWrite(); files.set(path, bytes); } },
     ChromeUtils: { importESModule: uri => { imports.push(uri); return { XPCOMUtils: { defineLazyGlobalGetters(target, names) {
-      assert.deepEqual(Array.from(names), ["fetch", "AbortController"]); target.fetch = () => { throw new Error("No real network in tests"); }; target.AbortController = AbortController;
+      assert.deepEqual(Array.from(names), ["AbortController"]); target.AbortController = AbortController;
     } } }; } }
   };
   vm.runInNewContext(fs.readFileSync(require.resolve("../plugin/content/fulltext-runtime.js"), "utf8"), scope);
@@ -316,7 +320,7 @@ test("image writes are serialized and idle waits for committed bytes", async () 
   release(); await Promise.all([first, second, waiting]); assert.equal(f.writes.length, 2);
 });
 
-test("runtime image caches use system-global fetch, stay task-bound and drain writes on release", async () => {
+test("runtime image caches use the bounded manual-channel adapter, stay task-bound and drain writes on release", async () => {
   const f = storageFixture(), runtime = new f.api.FulltextRuntime({}), service = { state: { oxrBaseURL: "https://free-oxr.somark.cn/api/v1" }, pause: async () => {} };
   assert.throws(() => runtime.imageCacheFor(service), /已关闭/u);
   runtime.taskRoots.set(service, "/task");

@@ -228,6 +228,17 @@ test("extensionless signed endpoints and generic binary MIME use validated image
   await assert.rejects(wrong.cache.resolve(url()), /校验失败/);
 });
 
+test("signature sniffing supports every allowed raster type independent of filename", async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 8, 8, 0, 1, 0, 1, 0, 0xff, 0xd9]);
+  const gif = Buffer.from("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff\x3b", "latin1");
+  const webp = Buffer.alloc(30); webp.write("RIFF"); webp.writeUInt32LE(22, 4); webp.write("WEBPVP8X", 8); webp.writeUInt32LE(10, 16);
+  for (const [mime, bytes] of [["image/png", PNG], ["image/jpeg", jpeg], ["image/gif", gif], ["image/webp", webp]]) {
+    const f = fixture({ validateImage: require("../plugin/content/fulltext-markdown.js").imageInfo,
+      fetch: async target => response(target, { bytes, mime: "application/octet-stream" }) });
+    assert.equal(await f.cache.resolve("https://cdn.example/image?sig=example"), `data:${mime};base64,${bytes.toString("base64")}`);
+  }
+});
+
 function redirect(target, location, status = 307) {
   return { status, redirected: false, url: target, headers: { get: key => key === "location" ? location : null }, body: null };
 }

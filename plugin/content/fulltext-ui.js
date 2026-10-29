@@ -241,7 +241,7 @@
         button("en", "查看英文 PDF", () => this._action(r, () => this.runtime.openVersion(r.attachmentID, "en"))),
         button("export", "导出中文 Markdown", () => this._action(r, () => r.service.export(r.window))));
       doc.body.replaceChildren(header, upload, columns, e.error, repair, footer,
-        node("p", "notice", "打开不上传 PDF、不调用模型；原文预览会自动下载并缓存受信任 OXR 图片。翻译共用 DeepSeek 配置。中文 PDF 重新排版且批注独立，原 PDF 保留。关闭会暂停；已提交的远端解析可能继续。"));
+        node("p", "notice", "打开不上传 PDF、不调用模型；原文预览会自动下载并缓存远程图片（仅公网 HTTP/HTTPS）。翻译共用 DeepSeek 配置。中文 PDF 重新排版且批注独立，原 PDF 保留。关闭会暂停；已提交的远端解析可能继续。"));
       listen(r.window, "focus", () => this._controls(r), r.cleanups);
       this._controls(r);
     }

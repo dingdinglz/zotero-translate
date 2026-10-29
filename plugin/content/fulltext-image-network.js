@@ -8,18 +8,8 @@
   const FAILURE = "Image network request failed";
   const ABORTED = "Image network request cancelled";
 
-  // Local source evidence: Zotero's Gecko 140.17.0 omni.ja (ESR140):
-  // chrome/toolkit/content/extensions/parent/ext-dns.js:41-79: asyncResolve's
-  // seven arguments, nsIDNSAddrRecord, hasMore/getNextAddrAsString.
-  // modules/NetUtil.sys.mjs:263-318: system principal/newChannelFromURI.
-  // moz-src/toolkit/components/search/SearchUtils.sys.mjs:72-125: stream
-  // listener signatures, binaryinputstream/readByteArray, redirect verifier.
-  // app/omni.ja chrome/content/zotero/xpcom/http.js (followRedirects:false):
-  // cancel old channel and reject redirect verification. Do NOT use its HTTP
-  // helper: that helper logs URLs. responseStatus is HTTP, status is nsresult.
-  // DNS preflight is conservative, NOT DNS pinning or an SSRF sandbox: the
-  // connection may resolve again (rebinding/proxies remain a host limitation).
-  // Caller owns the ONE 15s AbortSignal and <=5 redirect loop; never renew it.
+  // Gecko channel adapter; caller owns the shared timeout and redirect loop.
+  // DNS preflight is not pinning: rebinding/proxies remain a host limitation.
 
   function ipv4(value) {
     if (!/^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/u.test(value)) return null;
@@ -79,7 +69,7 @@
 
     function checkedURI(value) {
       if (typeof value !== "string" || value.length > 32768 || /[\u0000-\u0020\u007f\\]/u.test(value)
-        || !/^https?:\/\//iu.test(value)) throw error(false);
+        || !/^https?:\/\//iu.test(value) || /^https?:\/\/[^/?#]*@/iu.test(value)) throw error(false);
       const uri = Services.io.newURI(value);
       if (!['http', 'https'].includes(uri.scheme) || uri.userPass || !uri.asciiHost) throw error(false);
       // URI parsing canonicalizes alternate numeric IPv4 forms before this check.
@@ -134,7 +124,10 @@
         }
         function onAbort() { fail(true); }
         function headers(values) {
-          return { get(name) { return values[String(name).toLowerCase()] ?? null; } };
+          return { get(name) {
+            const key = String(name).toLowerCase();
+            return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null;
+          } };
         }
         function header(http, name, maxLength) {
           let value;
@@ -181,7 +174,8 @@
           try {
             const principal = Services.scriptSecurityManager.getSystemPrincipal();
             channel = Services.io.newChannelFromURI(uri, null, principal, null,
-              Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL, Ci.nsIContentPolicy.TYPE_OTHER);
+              Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL | Ci.nsILoadInfo.SEC_DISALLOW_SCRIPT,
+              Ci.nsIContentPolicy.TYPE_OTHER);
             channel.loadInfo.allowDeprecatedSystemRequests = true;
             channel = channel.QueryInterface(Ci.nsIHttpChannel);
             channel.loadFlags |= Ci.nsIRequest.LOAD_ANONYMOUS | Ci.nsIRequest.LOAD_BYPASS_CACHE
@@ -189,6 +183,7 @@
             channel.loadGroup = null;
             channel.requestMethod = "GET";
             channel.referrerInfo = null;
+            channel.QueryInterface(Ci.nsIHttpChannelInternal).blockAuthPrompt = true;
             listener = {
               QueryInterface: ChromeUtils.generateQI(["nsIStreamListener", "nsIRequestObserver",
                 "nsIInterfaceRequestor", "nsIChannelEventSink"]),
@@ -234,6 +229,9 @@
                   }
                   const length = values["content-length"];
                   if (length !== null && (!/^\d+$/u.test(length) || Number(length) > MAX_BYTES)) throw error(false);
+                  const encoding = header(http, "content-encoding", 256)?.trim().toLowerCase();
+                  // Gecko may decode the stream; compressed length is not its exact size.
+                  if (encoding && encoding !== "identity") values["content-length"] = null;
                   respond(status, values, body);
                 } catch (_) { fail(); }
               },
@@ -265,8 +263,10 @@
               },
               onStopRequest(request, status) {
                 if (closed) return;
-                if (request !== channel || !responded || !success(status)) { fail(); return; }
-                closed = true; detach(false); drain();
+                try {
+                  if (request !== channel || !responded || !success(status)) throw error(false);
+                  closed = true; detach(false); drain();
+                } catch (_) { fail(); }
               },
             };
             channel.notificationCallbacks = listener;

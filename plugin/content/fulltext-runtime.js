@@ -274,10 +274,12 @@
       previous?.cache.dispose();
       const platform = {};
       const { XPCOMUtils } = global.ChromeUtils.importESModule("resource://gre/modules/XPCOMUtils.sys.mjs");
-      XPCOMUtils.defineLazyGlobalGetters(platform, ["fetch", "AbortController"]);
+      XPCOMUtils.defineLazyGlobalGetters(platform, ["AbortController"]);
+      const fetch = modules.FulltextImageNetwork.createFetch({ Services: global.Services, ChromeUtils: global.ChromeUtils,
+        Cc: global.Cc, Ci: global.Ci, Cr: global.Cr || global.Components.results, Components: global.Components });
       if (!this.imageStores.has(service)) this.imageStores.set(service, imageStorageAt(global.PathUtils.join(this.taskRoots.get(service), "images")));
       const cache = new modules.FulltextImages.ImageCache({ baseURL,
-        fetch: (...args) => platform.fetch(...args), AbortController: platform.AbortController,
+        fetch, AbortController: platform.AbortController,
         hash: text => hashBytes(new TextEncoder().encode(text)),
         storage: this.imageStores.get(service),
         validateImage: uri => modules.FulltextMarkdown.imageInfo(uri) });
