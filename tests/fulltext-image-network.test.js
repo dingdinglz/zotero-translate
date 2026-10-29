@@ -134,6 +134,70 @@ for (const address of ["0.0.0.0", "0.1.2.3", "10.1.2.3", "127.0.0.1", "100.64.0.
   test(`private/special/malformed DNS address rejected: ${address}`, () => assert.equal(isPublicAddress(address), false));
 }
 
+for (const address of ["198.18.0.0", "198.18.0.103", "198.18.255.255", "198.19.0.0", "198.19.255.255"]) {
+  test(`domain DNS accepts proxy Fake-IP without changing URL or public-IP classification: ${address}`, async () => {
+    const env = fixture(), outcome = env.fetch(URL, options()).then(response => ({ response }), error => ({ error }));
+    assert.equal(isPublicAddress(address), false);
+    const ch = env.lookup([address]);
+    assert.equal(env.state.channels.length, 1);
+    assert.equal(ch.URI.spec, URL); assert.equal(ch.loadFlags, 15);
+    env.start(ch); const result = await outcome; assert.ifError(result.error);
+    assert.equal(result.response.url, URL); env.stop(ch);
+  });
+}
+
+test("mixed public and proxy DNS results pass, but any ordinary private address still blocks", async () => {
+  const env = fixture(), outcome = env.fetch(URL, options()).then(response => ({ response }), error => ({ error }));
+  const ch = env.lookup(["93.184.216.34", "198.18.0.103", "2606:4700::1111"]);
+  assert.equal(env.state.channels.length, 1); env.start(ch); assert.ifError((await outcome).error); env.stop(ch);
+  for (const blocked of ["127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.169.254", "198.51.100.1", "::ffff:198.18.0.103", "fc00::1"]) {
+    const rejected = fixture(), pending = rejected.fetch(URL, options());
+    rejected.lookup(["198.18.0.103", blocked]);
+    await assert.rejects(pending, { message: FAILURE }); assert.equal(rejected.state.channels.length, 0);
+  }
+});
+
+test("proxy exception never applies to IP literals or local/internal hostnames", async () => {
+  for (const target of ["http://198.18.0.103/image", "https://198.19.255.255/image", "http://0xc6120067/image", "http://[::ffff:c612:67]/image"]) {
+    const env = fixture(); await assert.rejects(env.fetch(target, options()), { message: FAILURE });
+    assert.equal(env.state.dns.length, 0); assert.equal(env.state.channels.length, 0);
+  }
+  for (const host of ["8.8.8.8", "[2606:4700::1111]", "localhost", "localhost.", "host.localhost", "host.local", "host.internal", "host.lan", "host.home.arpa"]) {
+    const env = fixture(), promise = env.fetch(`https://${host}/image`, options());
+    env.lookup(["198.18.0.103"]);
+    await assert.rejects(promise, { message: FAILURE }); assert.equal(env.state.channels.length, 0);
+  }
+});
+
+test("redirect targets cannot turn the domain Fake-IP exception into direct private-IP access", async () => {
+  const env = fixture(), promise = env.fetch(URL, options()), ch = env.lookup();
+  env.redirect(ch, 307, "https://198.18.0.103/image");
+  await assert.rejects(promise, { message: FAILURE });
+  assert.equal(env.state.channels.length, 1); assert.ok(ch.cancellations.length);
+});
+
+test("ImageCache and native adapter complete a 307 image chain through proxy DNS on both hosts", async () => {
+  const { ImageCache } = require("../plugin/content/fulltext-images.js"), crypto = require("node:crypto");
+  const { imageInfo } = require("../plugin/content/fulltext-markdown.js");
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0S8AAAAASUVORK5CYII=";
+  const bytes = Buffer.from(png.split(",")[1], "base64"), env = fixture(), records = new Map();
+  const cache = new ImageCache({ baseURL: "https://images.example.test/api", fetch: env.fetch, AbortController,
+    hash: value => crypto.createHash("sha256").update(value).digest("hex"), validateImage: imageInfo,
+    storage: { read: async key => records.get(key), write: async (key, value) => records.set(key, value) } });
+  const outcome = cache.resolve(URL).then(data => ({ data }), error => ({ error }));
+  await new Promise(resolve => setImmediate(resolve));
+  const first = env.lookup(["198.18.0.103"]); assert.equal(env.state.channels.length, 1);
+  env.redirect(first);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(env.state.dns.length, 2);
+  const second = env.lookup(["198.19.0.7"], 0, 1);
+  env.start(second, 200, { "content-length": String(bytes.length) }); env.data(second, bytes); env.stop(second);
+  const result = await outcome; assert.ifError(result.error); assert.equal(result.data, png);
+  assert.equal(env.state.channels[0].URI.spec, URL); assert.equal(env.state.channels[1].URI.spec, TARGET);
+  assert.equal(records.size, 1); assert.equal(JSON.stringify([...records.values()]).includes("SECOND_SECRET"), false);
+  cache.dispose();
+});
+
 test("DNS uses Gecko140 seven-argument signature; no channel before all addresses pass", async () => {
   const env = fixture(), promise = env.fetch(URL, options());
   assert.equal(env.state.channels.length, 0);
