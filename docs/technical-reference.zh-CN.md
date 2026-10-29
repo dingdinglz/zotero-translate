@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.53 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.54 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -171,16 +171,30 @@ smart-paper-translator/
 
 ## 开发与验证
 
-插件 XPI 不捆绑 Node、Pi、OpenCode、npm 缓存或 ACP 适配器包；它额外内置 MIT 许可的 KaTeX 0.18.4、Mermaid 11.16.1 和 ISC 许可的 D3 7.9.0 单文件运行时，不含运行时 CDN、字体或网络下载。开发检查需要支持 `module.registerHooks()` 的 Node.js（本次为 24.14.0）、Python 3 和 Info-ZIP：
+插件 XPI 不捆绑 Node、Pi、OpenCode、npm 缓存或 ACP 适配器包；它额外内置 MIT 许可的 KaTeX 0.18.4、Mermaid 11.16.1 和 ISC 许可的 D3 7.9.0 单文件运行时，这些内置库不需要运行时 CDN、远程字体或依赖下载。开发检查需要支持 `module.registerHooks()` 的 Node.js（本次为 24.14.0）、Python 3 和 Info-ZIP：
 
 ```bash
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.53.xpi
+unzip -t dist/smart-paper-translator-0.1.54.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.54：单块编辑、全文原文与 OXR 图片
+
+右栏新增“编辑一段”和“预览全文”。当前页可用鼠标或键盘选择正文、公式、表格或图片块，保存后当前页、全文预览与待译原文同步；全文预览只显示原文，不展示中文译文，也不依赖左侧 PDF 加载成功。块选择不重建正文，异步图片只替换对应占位节点，保留原生文本选择和滚动。未保存的编辑在切页、切模式或关闭前需确认丢弃；忙碌时禁用编辑。
+
+完整识别页组成 `document-<hash>.json` 统一稿，保存精确页数组并绑定任务身份、PDF、原始页文件和原始全文摘要；单块保存使用精确偏移和稿件版本，不做相似匹配。OXR 原始全文保留在 `source.md` 和 `original-<hash>.md`。旧任务加载不自动转换，首次编辑前确认用识别页替代旧手改稿并先备份/归档；缺页或损坏禁编辑。已保存编辑可以重开；旧批准稿及译文暂时保留，原文变化后禁止继续翻译或导出旧译文，重新确认才重置。迁移、编辑及确认在最终写入期间取消也必须回滚，不能发布临时稿。归档目前仍没有界面化恢复入口。
+
+原文预览自动下载并缓存受信任 OXR 图片，不另弹确认。官方 `.cn`/`.ai` 只接受固定 `/api/v1/files/<32hex>/<64hex>.<png|jpg|jpeg|gif|webp>`；自定义服务仅接受自身 HTTPS origin 和配置目录下的同类路径。拒绝任意外链、本机/IP 地址、凭据、query/hash、编码/点路径、重定向和 SVG。后台 fetch 不携带 Cookie、密钥或 Referer，限时 15 秒且流式累计限额，MIME/签名/像素校验通过才写本地 JSON，再交渲染器复核。单图 12 MiB、任务 128 张/64 MiB；磁盘序列化字节按 base64 膨胀率保守计数，关闭重开也不能绕过总量。缓存逐级拒绝软链接、串行原子写，释放及退出等待在途写入；取消可能留下已验证缓存，但不显示迟到图片。失败保留图片 Markdown，可手动重试。
+
+预览文档的 `connect-src 'none'` 与 data-only 图片边界不变。独立模块使用 `XPCOMUtils.defineLazyGlobalGetters()` 取得共享 system-global fetch/AbortController；按[Zotero 10 开发说明](https://www.zotero.org/support/dev/zotero_10_for_developers)核对 Gecko 140 基线，并只读检查本机 `omni.ja` 的 `XPCOMUtils.sys.mjs` 及 Zotero `http.js` 流读取实现。共享 realm 的字节使用跨 realm typed-array 校验。此处只是源码核对，不是运行时验证。远程图片下载仅用于原文预览，不增加 PDF 打印或 Markdown 导出的远程下载；图片数据及地址不作为额外模型输入。
+
+验证：`npm run check` 通过 **552 项 JavaScript 测试**及静态/语法检查，全文相关联合测试 **155 项**通过。独立只读复核发现关闭重开可绕过原 64 MiB 缓存预算，已改为保守磁盘计数并补回归；另修正全文图片不应依赖左侧 PDF 成功加载的门控。Python 完整套件因缺少 PyMuPDF 失败，未安装依赖；显式无第三方依赖模式通过 **29 项**，跳过 **38 项**，不代表完整 PDF 测试。两次构建一致，ZIP/SHA-256 校验通过，**59 个运行时文件**与 `plugin/` 逐字节一致，不含测试、文档或 mockup。
+
+交付：`dist/smart-paper-translator-0.1.54.xpi`，**1,418,149 字节**；SHA-256：`f363835aac3a3b50154a6b6b5caa16f4a9884599987f69bab271606d6d84d2cf`。未请求用户提供的实际图片地址，未操作真机、安装、上传 PDF、调用真实 OXR/DeepSeek，也未验证 PDF 导出或附件导入。
 
 ## 0.1.53：逐页识别预览与算法公式
 

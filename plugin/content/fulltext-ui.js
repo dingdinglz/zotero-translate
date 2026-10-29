@@ -220,7 +220,7 @@
       }, r.cleanups);
       e.source.hidden = true;
       e.rendered = node("div", "rendered");
-      const mdStatus = node("p", "md-status", "加载左侧预览，或点击“预览当前页”查看对应识别内容。"); mdStatus.setAttribute("role", "status");
+      const mdStatus = node("p", "md-status", "加载左侧预览，或选择当前页/全文原文预览。"); mdStatus.setAttribute("role", "status");
       const images = node("div", "image-statusbar");
       images.append(node("span", "image-status"), button("retry-images", "重试图片", () => this._render(r)));
       e["image-status"].setAttribute("role", "status"); e["retry-images"].hidden = true;
@@ -241,7 +241,7 @@
         button("en", "查看英文 PDF", () => this._action(r, () => this.runtime.openVersion(r.attachmentID, "en"))),
         button("export", "导出中文 Markdown", () => this._action(r, () => r.service.export(r.window))));
       doc.body.replaceChildren(header, upload, columns, e.error, repair, footer,
-        node("p", "notice", "打开不上传、不调用模型。翻译共用现有 DeepSeek 配置。中文 PDF 重新排版且批注独立，原 PDF 保留。关闭会暂停；已提交的远端解析可能继续。"));
+        node("p", "notice", "打开不上传 PDF、不调用模型；原文预览会自动下载并缓存受信任 OXR 图片。翻译共用 DeepSeek 配置。中文 PDF 重新排版且批注独立，原 PDF 保留。关闭会暂停；已提交的远端解析可能继续。"));
       listen(r.window, "focus", () => this._controls(r), r.cleanups);
       this._controls(r);
     }
@@ -605,6 +605,7 @@
       r.el["image-status"].textContent = ""; r.el["retry-images"].hidden = true;
       r.renderedSource = r.state.source; r.renderedRevision = r.state.documentRevision;
       this._controls(r);
+      if (!r.state.pageCount) { r.el["md-status"].textContent = "请先确认上传 PDF 并完成解析。"; return; }
       if (r.mode === "page" && r.previewPending) { r.el["md-status"].textContent = "正在加载对应页面…"; return; }
       if (r.mode === "page" && r.previewInvalid) { r.el["md-status"].textContent = "左侧页面加载失败或已失效，请重新加载预览。"; return; }
       let source;
