@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.50 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.51 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -177,10 +177,20 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.50.xpi
+unzip -t dist/smart-paper-translator-0.1.51.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.51：全文工具栏对齐与路径错误诊断
+
+全文译按钮和中英文原生下拉框统一 28px 高度并垂直居中。未选择 Python 时提示「尚未选择 Python 环境」，引导到设置 → Smart Paper Translator → 论文全文翻译，选择环境并检测本地依赖；非法路径、文件丢失和误选目录分别报错。原 PDF 未下载/丢失/非法路径以及 Markdown 导出路径错误不再混用 Python 提示。不会自动选择解释器或安装依赖。
+
+通过 **467 项 JavaScript 自动测试**、JavaScript/静态/XHTML 检查、两次逐字节一致构建、`unzip -t`、归档根目录与 SHA-256 校验。XPI 内 58 个文件与 `plugin/` 运行时源码逐字节一致，不含测试、文档、工具或本地 mockup。
+
+最终文件：`dist/smart-paper-translator-0.1.51.xpi`，**1,398,970 字节**；SHA-256：`bd0b3c4d0fd9c70d24563183cfaad2da76685bffb55e904373ff79af09dabdb3`。
+
+本轮 Python 离线测试未能运行：默认 Miniconda Python 3.8 被版本检查拒绝；现成 Framework Python 3.12 缺少 PyMuPDF。未安装依赖，未修改 Python 脚本，0.1.50 的 37 项 Python 测试仅为历史结果。本轮仅读取本机 Zotero 10.0.6 的版本元数据和工具栏 CSS 源码，未操作运行中的 Zotero，未执行原生解析、UI 验证、安装、真实 OXR/DeepSeek、PDF 导出或附件导入；0.1.50 的验证缺口仍适用。
 
 ## 0.1.50：全文翻译测试包与验证缺口
 
