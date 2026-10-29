@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.54 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.55 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -177,10 +177,24 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.54.xpi
+unzip -t dist/smart-paper-translator-0.1.55.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.55：真实图片跳转与可更换 API
+
+用户反馈0.1.54图片仍显示加载失败。经单独授权，仅请求给定图片：初始地址返回307，Location指向腾讯云COS的临时签名地址；最终返回200、image/png、206450字节，962×414，现有图片校验通过。问题是旧版严格禁止跳转，且模拟测试没有覆盖服务实际返回方式。用户明确选择支持通用图片跳转与可更换API，而非增加固定官方存储桶白名单。
+
+现在支持公网HTTP(S)任意域/路径、相对地址及签名query，最多5次跨域跳转，整条链共用15秒超时。初始相对地址按API配置目录解析，Location按当前请求地址解析。签名仅在当前请求内存使用，缓存以初始URL哈希标识，不保存跳转地址。不携带Cookie、认证头或referrer；本机/私网、URL用户名密码、非HTTP(S)、SVG与活动HTML仍拒绝。HTTP不加密，预览自动图片的网络权限不授权PDF上传或模型请求。
+
+新增 `fulltext-image-network.js`：Gecko channel在目标实际连接前截停自动跳转，返回可见元数据供策略层决定下一跳，避免标准fetch manual的opaque redirect问题，也避免Zotero HTTP辅助函数记录签名URL。连接前DNS预检所有地址为公网，最多64个；这不是地址绑定，不能保证抵御DNS重绑定或代理重路由。通道匿名、禁缓存与认证弹窗，流读取前及累计都限12 MiB，退出/取消清理请求与回调。图片不依赖文件扩展名；支持参数化MIME、空或通用binary MIME下签名有效的PNG/JPEG/GIF/WebP。HTTP压缩的Content-Length不作为解压后图片精确长度，流上限保持不变。
+
+实现核对本机Gecko140.17.0的 `ext-dns.js`（七参数asyncResolve与地址枚举）、`NetUtil.sys.mjs`（系统principal/channel）、`SearchUtils.sys.mjs`（二进制流监听）、Zotero `FaviconLoader.sys.mjs`（blockAuthPrompt）及 `http.js`（重定向截停）。这是源码依据与mock测试，不是插件在真机上的运行结果。当前页/全文编辑、原稿与翻译检查点不改变，也未增加打印/导出的远程下载。
+
+验证：`npm run check` **652项JavaScript测试**及静态/语法检查通过，其中新增通道测试96项。用0.1.54代码复现307形状被拒绝；新代码以相同跳转形状和实际下载PNG离线回放，所得图片字节完全一致。原“非官方域/所有重定向均拒绝”的测试按用户新契约调整，新增私网/DNS/逐跳取消/循环/跳数/压缩流及签名不持久化回归。Python脚本未修改；显式无第三方依赖模式29项通过、38项跳过，完整套件本轮未重跑（上轮因缺少PyMuPDF失败）。两次构建哈希一致，ZIP根目录/CRC和60个运行时文件逐字节检查通过。
+
+交付：`dist/smart-paper-translator-0.1.55.xpi`，**1,423,362字节**；SHA-256：`e6d7dcfb1788c74736a9a4eac84d92f03c3c965b922fa8d052ec75162e3f7299`。授权的真实检查仅限该单张图片；未操作/安装Zotero，未上传PDF、调用真实模型或验证PDF导出/导入。实际图片和临时签名不加入仓库。
 
 ## 0.1.54：单块编辑、全文原文与 OXR 图片
 
