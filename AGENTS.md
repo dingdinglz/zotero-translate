@@ -125,15 +125,15 @@ zotero-translate/
 │       ├── pdf-screenshot.js         # Zotero 9.0.6/10.0.4 精确版本桥、原页框选/跨页拆图、PNG 校验与资源保护
 │       ├── api.js                    # OpenAI Chat Completions 客户端与安全错误映射
 │       ├── service.js                # 翻译/摘要、智能标签生成/本地保存、缓存探测、术语删除及在途失效
-│       ├── fulltext-service.js       # 全文确认、串行翻译/校对、检查点、暂停与附件导入状态机
+│       ├── fulltext-service.js       # 全文确认、分块进度快照/迟到隔离、串行翻译/校对、检查点、暂停与导入
 │       ├── fulltext-markdown.js      # 无损分段、参考文献/格式保护、检查点校验与静态安全排版
-│       ├── fulltext-runtime.js       # Python桥及分对象路径诊断、附件/文件身份、本机预览、Gecko PDF打印及导入/切换
+│       ├── fulltext-runtime.js       # Python有界JSONL进度桥/路径诊断、附件身份、本机预览、PDF打印及导入/切换
 │       ├── fulltext-ui.js            # 独立确认窗口、源码编辑、双重上传确认、校对修正与迟到隔离
 │       ├── fulltext.xhtml            # 固定本地chrome页面与无网络CSP
 │       ├── fulltext.css              # 左PDF逐页预览/右Markdown及状态/修正/输出操作区
 │       ├── fulltext-python/          # 随XPI打包的固定脚本，不打包Python解释器或第三方库
 │       │   ├── worker.py             # 隔离入口，check/convert/preview有界JSON协议
-│       │   ├── pdf_to_markdown.py    # PDF分块、OXR任务恢复、资源/路径/HTTP限制和逐页预览
+│       │   ├── pdf_to_markdown.py    # 有界分块规划/进度JSONL、OXR任务恢复、资源/路径/HTTP限制和逐页预览
 │       │   ├── layout_pdf.py         # 原PDF的无损版面分析叠加副本
 │       │   └── requirements.txt      # 手动准备PyMuPDF/requests的版本范围
 │       ├── pi-acp-compat.js          # 固定 Pi 适配器哈希校验、Node 内存补丁、按模型读取档位与确认 max
@@ -200,7 +200,7 @@ zotero-translate/
 │   ├── fulltext-markdown.test.js     # 无损结构、参考文献/占位符保护、资源上限与安全DOM
 │   ├── fulltext-runtime.test.js      # OXR地址、Python/PDF路径诊断、子进程边界、静态打印契约/图片解码/迟到取消
 │   ├── fulltext-ui.test.js           # 确认门控、编辑保护、窗口/预览迟到、共享任务去重与关闭暂停
-│   ├── fulltext_worker_test.py       # Python离线分块/恢复/版面/预览/路径和HTTP边界
+│   ├── fulltext_worker_test.py       # Python离线分块/恢复/版面/预览/路径/HTTP及无第三方依赖进度协议测试
 │   ├── item-tree-ui.test.js          # 标签编辑/聚合/分页/定位、手动优先、失败重试、异步隔离与清理
 │   └── reader-ui.test.js             # 选区/截图 Agents 入口、划线翻译/禁用、术语删除/重试、Tabs、拖拽缩放和陈旧 UI 防护
 ├── scripts/
@@ -286,7 +286,7 @@ sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
 ```
 
-全文 Python 离线测试使用已准备的环境：`PYTHONDONTWRITEBYTECODE=1 /absolute/path/to/python -m unittest discover -s tests -p fulltext_worker_test.py -q`。该命令需要 `plugin/content/fulltext-python/requirements.txt` 中的现成依赖，不安装依赖、不调用真实 OXR。`npm run check` 包含全文 JavaScript 测试，但不替代 Python 测试。
+全文 Python 离线测试使用已准备的环境：`PYTHONDONTWRITEBYTECODE=1 /absolute/path/to/python -m unittest discover -s tests -p fulltext_worker_test.py -q`。该命令需要 `plugin/content/fulltext-python/requirements.txt` 中的现成依赖，不安装依赖、不调用真实 OXR。`npm run check` 包含全文 JavaScript 测试，但不替代 Python 测试。仅验证不依赖第三方库的进度协议时，显式使用 `SPT_TEST_FULLTEXT_PROGRESS_ONLY=1 PYTHONDONTWRITEBYTECODE=1 /absolute/path/to/python -m unittest discover -s tests -p fulltext_worker_test.py -q`；该模式跳过 PDF/依赖测试，不能报告为完整 Python 测试通过。默认命令仍要求现成依赖，缺失时失败，不静默跳过。
 
 可选的已准备 Pi 适配器验证：设置 `SPT_TEST_PI_ACP_ENTRY=/absolute/path/to/pi-acp/dist/index.js`，执行 `node --test tests/pi-acp-compat.test.js`。只对现成模块做初始化握手和使用假 Pi RPC 的配置方法验证，不下载、不创建真实 Pi 会话、不调用模型。
 

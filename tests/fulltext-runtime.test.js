@@ -26,6 +26,67 @@ test("Python collector bounds output and kills on cancellation", async () => {
   await assert.rejects(collectProcess(cancelled, { timeoutMS: 1000, registerCancel: cancel => { cancel(); return () => {}; } }), /暂停/u);
   assert.ok(cancelled.killed);
 });
+test("Python progress streams bounded JSON lines across arbitrary pipe chunks", async () => {
+  const events = [{ type: "progress", phase: "planning", pageCount: 21 },
+    { type: "progress", phase: "chunk", start: 1, end: 20, status: "pending" },
+    { type: "progress", phase: "parsing" }];
+  const text = events.map(e => JSON.stringify(e) + "\n").join("") + '{"ok":true}\n';
+  const proc = processMock(); proc.stdout = pipe(Array.from(text));
+  const received = [];
+  assert.deepEqual(await collectProcess(proc, { timeoutMS: 1000, onProgress: e => received.push(e) }), { ok: true });
+  assert.deepEqual(received, events);
+});
+test("Python progress is delivered before process exit or terminal result", async () => {
+  let release, observed;
+  const gate = new Promise(resolve => { release = resolve; });
+  const progress = new Promise(resolve => { observed = resolve; });
+  let reads = 0;
+  const proc = processMock();
+  proc.wait = async () => { await gate; return { exitCode: 0 }; };
+  proc.stdout = { async readString() {
+    if (++reads === 1) return '{"type":"progress","phase":"planning","pageCount":1}\n';
+    await gate; return reads === 2 ? '{"ok":true}\n' : "";
+  } };
+  const collecting = collectProcess(proc, { timeoutMS: 1000, onProgress: observed });
+  assert.equal((await progress).pageCount, 1);
+  release(); assert.deepEqual(await collecting, { ok: true });
+});
+test("Python progress rejects malformed frames, unexpected keys and output after terminal", async () => {
+  for (const frame of [
+    { type: "progress", phase: "planning", pageCount: 0 },
+    { type: "progress", phase: "planning", pageCount: 10001 },
+    { type: "progress", phase: "chunk", start: 1, end: 21, status: "pending" },
+    { type: "progress", phase: "chunk", start: 1, end: 1, status: "secret" },
+    { type: "progress", phase: "chunk", start: 1, end: 1, status: "processing", task_id: "PRIVATE" }
+  ]) {
+    const proc = processMock(JSON.stringify(frame) + '\n{"ok":true}\n');
+    await assert.rejects(collectProcess(proc, { timeoutMS: 1000, onProgress() {} }), /进度无效/u);
+    assert.ok(proc.killed);
+  }
+  for (const output of ['{"ok":true}\n{"ok":true}', '{"type":"progress","phase":"parsing"}\n']) {
+    await assert.rejects(collectProcess(processMock(output), { timeoutMS: 1000, onProgress() {} }), /有效结果/u);
+  }
+});
+test("Python progress stays streaming beyond old total cap but bounds line and aggregate bytes", async () => {
+  const event = '{"type":"progress","phase":"parsing"}\n';
+  const proc = processMock(event.repeat(2000) + '{"ok":true}'); let count = 0;
+  await collectProcess(proc, { timeoutMS: 1000, onProgress: () => count++ }); assert.equal(count, 2000);
+  for (const text of ["x".repeat(65537), "汉".repeat(22000), event.repeat(500000)]) {
+    const proc = processMock(text);
+    await assert.rejects(collectProcess(proc, { timeoutMS: 1000, onProgress() {} }), /超限/u);
+    assert.ok(proc.killed);
+  }
+});
+test("cancelled collector drops late progress and callback failures stop the process", async () => {
+  const text = '{"type":"progress","phase":"parsing"}\n{"ok":true}';
+  let calls = 0;
+  await assert.rejects(collectProcess(processMock(text), { timeoutMS: 1000,
+    onProgress: () => calls++, registerCancel: cancel => { cancel(); } }), /暂停/u);
+  assert.equal(calls, 0);
+  const proc = processMock(text);
+  await assert.rejects(collectProcess(proc, { timeoutMS: 1000, onProgress: () => { throw new Error("顺序无效"); } }), /顺序无效/u);
+  assert.ok(proc.killed);
+});
 function pathFixture({ pythonPath = "", windows = false, exists = true, regular = true } = {}) {
   const vm = require("node:vm"), fs = require("node:fs");
   const ACP = require("../plugin/content/acp-client.js");

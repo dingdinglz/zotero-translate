@@ -1,10 +1,14 @@
 """Offline worker regressions. Run with an existing Python containing PyMuPDF/requests.
 No tests install dependencies, contact OXR, or touch Zotero data.
+SPT_TEST_FULLTEXT_PROGRESS_ONLY=1 explicitly runs only dependency-free progress tests.
 """
+import contextlib
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import selectors
 import subprocess
 import sys
 import tempfile
@@ -17,7 +21,9 @@ WORKER = ROOT / "plugin/content/fulltext-python/worker.py"
 spec = importlib.util.spec_from_file_location("fulltext_worker", WORKER.with_name("pdf_to_markdown.py"))
 worker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worker)
-worker.load_dependencies(network=True)
+PROGRESS_ONLY = os.environ.get("SPT_TEST_FULLTEXT_PROGRESS_ONLY") == "1"
+if not PROGRESS_ONLY:
+    worker.load_dependencies(network=True)
 fitz = worker.pymupdf
 
 
@@ -48,6 +54,7 @@ class Response:
         return iter(self.chunks if self.chunks is not None else [self.content])
 
 
+@unittest.skipIf(PROGRESS_ONLY, "Explicit progress-only run; PDF/dependency suite not selected")
 class WorkerTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -226,6 +233,23 @@ class WorkerTest(unittest.TestCase):
         self.assertTrue(options["stream"])
         self.assertEqual(options["timeout"], (15, 120))
         self.assertEqual(json.loads(options["data"]["element_formats"]), {"image": "base64", "formula": "latex", "table": "html"})
+
+    def test_reextracted_bytes_preserve_direct_parse_cache_keys(self):
+        self.source.unlink()
+        self.make_pdf(21)
+        output = self.store()
+        source_hash = worker.fingerprint(self.source)
+        with fitz.open(self.source) as document:
+            for start, end, data in worker.split_pdf(document):
+                session = self.session([Response({"task_id": "old"}), Response(success(end - start))])
+                worker.parse_chunk(session, (start, end, data), self.request["baseURL"], output, source_hash)
+        frames = []
+        session = self.session([])
+        with mock.patch.object(worker.requests, "Session", return_value=session):
+            worker.convert(self.request, frames.append)
+        session.post.assert_not_called()
+        self.assertEqual([f["status"] for f in frames if f["phase"] == "chunk"],
+                         ["pending", "pending", "complete", "complete"])
 
     def test_pending_task_resume_does_not_resubmit(self):
         with self.assertRaisesRegex(worker.WorkerError, "unknown_task_status"):
@@ -486,6 +510,290 @@ sys.exit(core.main(["check", "{}"]))
         data = success(pages=[layout_page(0, [{"type": "text", "bbox": [1, 1, 2, 2]}])])
         with mock.patch.object(worker, "MAX_BLOCKS", 0), self.assertRaisesRegex(worker.WorkerError, "layout_limit"):
             worker.read_result(data, 1)
+
+
+class ProgressTest(unittest.TestCase):
+    """Protocol/state tests run without third-party PDF or HTTP dependencies."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.source = self.root / "paper.pdf"
+        self.source.write_bytes(b"%PDF-synthetic")
+        self.output = self.root / "out"
+        self.output.mkdir()
+        self.request = {"sourcePath": str(self.source), "outputDir": str(self.output),
+                        "baseURL": "https://example.invalid/api/v1"}
+        self.frames = []
+        self.store = worker.Output(str(self.output), self.source)
+        self.store.prepare_cache()
+        self.chunk = (0, 1, b"original PDF bytes")
+        self.session = mock.MagicMock()
+        self.session.__enter__.return_value = self.session
+        # Every network entry is mocked and fails closed when responses run out.
+        self.http = self.enter_patch(mock.patch.object(worker, "request_json"))
+        self.http.side_effect = AssertionError("Real HTTP forbidden")
+        self.enter_patch(mock.patch.object(worker.time, "sleep"))
+        self.enter_patch(mock.patch.object(worker, "requests", mock.Mock(Session=mock.Mock(return_value=self.session))))
+
+    def enter_patch(self, patch):
+        value = patch.start()
+        self.addCleanup(patch.stop)
+        return value
+
+    def frame(self, status, start=1, end=1):
+        return {"type": "progress", "phase": "chunk", "start": start, "end": end, "status": status}
+
+    def parse(self, responses):
+        self.http.side_effect = responses
+        return worker.parse_chunk(self.session, self.chunk, self.request["baseURL"],
+                                  self.store, "source-hash", self.frames.append)
+
+    def fake_pdf(self, count, extract=None):
+        self.enter_patch(mock.patch.object(worker, "open_pdf", side_effect=lambda _: contextlib.nullcontext(range(count))))
+        self.extract = self.enter_patch(mock.patch.object(worker, "extract_pages",
+            side_effect=extract or (lambda _doc, start, end: bytes([start]) * (end - start))))
+
+        def write_layout(_source, destination, pages):
+            self.assertEqual(self.frames[-1], {"type": "progress", "phase": "assembling"})
+            self.assertEqual([page["page_num"] for page in pages], list(range(count)))
+            destination.write_bytes(b"%PDF-layout")
+
+        self.enter_patch(mock.patch.object(worker, "load_layout", return_value=mock.Mock(write_layout_pdf=write_layout)))
+
+    def test_remote_observations_are_deduped_without_fabricated_states(self):
+        self.parse([{"task_id": "SECRET_TASK"}, {"status": " QUEUING "}, {"status": "queuing"},
+                    {"status": "processing"}, {"status": "PROCESSING"}, success()])
+        self.assertEqual(self.frames, [self.frame(status) for status in
+                                      ("uploading", "submitted", "queuing", "processing", "complete")])
+        self.assertNotIn("SECRET", json.dumps(self.frames))
+        self.assertEqual(self.http.call_count, 6)
+
+    def test_immediate_success_and_completed_cache(self):
+        self.assertEqual(self.parse([{"task_id": "task"}, success()])[0], "Paper α")
+        self.assertEqual(self.frames, [self.frame(s) for s in ("uploading", "submitted", "complete")])
+        self.frames.clear()
+        self.http.reset_mock()
+        self.parse([])
+        self.assertEqual(self.frames, [self.frame("complete")])
+        self.http.assert_not_called()
+
+    def test_direct_call_without_progress_and_exact_cache_digest(self):
+        self.http.side_effect = [{"task_id": "task"}, success()]
+        worker.parse_chunk(self.session, self.chunk, self.request["baseURL"], self.store, "source-hash")
+        options = {"baseURL": self.request["baseURL"], "image": "base64", "formula": "latex", "table": "html",
+                   "keep_header_footer": False, "formats": ["markdown", "json"], "version": 1,
+                   "source": "source-hash", "start": 0, "end": 1}
+        digest = hashlib.sha256(self.chunk[2] + json.dumps(options, sort_keys=True).encode()).hexdigest()
+        self.assertEqual([p.name for p in self.store.cache.iterdir()], [digest + ".json"])
+        self.assertEqual(self.http.call_args_list[0].kwargs["files"]["file"][1], self.chunk[2])
+
+    def test_resume_only_reports_submitted_then_observed_state(self):
+        with self.assertRaisesRegex(worker.WorkerError, "unknown_task_status"):
+            self.parse([{"task_id": "task"}, {"status": "unknown"}])
+        self.frames.clear()
+        self.http.reset_mock()
+        self.parse([{"status": "processing"}, success()])
+        self.assertEqual(self.frames, [self.frame(s) for s in ("submitted", "processing", "complete")])
+        self.assertTrue(all(call.args[1].endswith("/parse/async_check") for call in self.http.call_args_list))
+
+    def test_upload_failure_reports_failed_and_reraises_same_exception(self):
+        error = worker.WorkerError("request_failed")
+        with self.assertRaises(worker.WorkerError) as caught:
+            self.parse([error])
+        self.assertIs(caught.exception, error)
+        self.assertEqual(self.frames, [self.frame("uploading"), self.frame("failed")])
+
+    def test_invalid_task_has_no_submitted_state(self):
+        with self.assertRaisesRegex(worker.WorkerError, "invalid_task"):
+            self.parse([{"task_id": ""}])
+        self.assertEqual(self.frames, [self.frame("uploading"), self.frame("failed")])
+
+    def test_remote_failure_does_not_report_complete(self):
+        with self.assertRaisesRegex(worker.WorkerError, "remote_task_failed"):
+            self.parse([{"task_id": "task"}, {"status": "processing"}, {"status": "FAILED"}])
+        self.assertEqual(self.frames, [self.frame(s) for s in ("uploading", "submitted", "processing", "failed")])
+        self.assertEqual(list(self.store.cache.iterdir()), [])
+
+    def test_invalid_result_and_corrupt_cache_report_failed(self):
+        with self.assertRaisesRegex(worker.WorkerError, "incomplete_layout"):
+            self.parse([{"task_id": "task"}, success(pages=[])])
+        self.assertEqual(self.frames[-1], self.frame("failed"))
+        cache = next(self.store.cache.iterdir())
+        cache.write_text(json.dumps({"markdown": "SECRET CONTENT", "layout_pages": []}))
+        self.frames.clear()
+        self.http.reset_mock()
+        with self.assertRaisesRegex(worker.WorkerError, "incomplete_layout"):
+            self.parse([])
+        self.assertEqual(self.frames, [self.frame("failed")])
+        self.http.assert_not_called()
+
+    def test_timeout_reports_failed(self):
+        with mock.patch.object(worker, "TASK_TIMEOUT", 0), self.assertRaisesRegex(worker.WorkerError, "task_timeout"):
+            self.parse([{"task_id": "task"}])
+        self.assertEqual(self.frames, [self.frame(s) for s in ("uploading", "submitted", "failed")])
+
+    def test_plan_has_real_byte_split_ranges_before_any_upload(self):
+        self.fake_pdf(5, lambda _doc, start, end: bytes([start]) * (end - start) * 10)
+        split = worker.split_pdf
+        self.enter_patch(mock.patch.object(worker, "split_pdf", side_effect=lambda doc: split(doc, max_bytes=21)))
+        self.enter_patch(mock.patch.object(worker, "MAX_CHUNK", 21))
+        ranges = [(0, 2), (2, 3), (3, 5)]
+        prefix = [{"type": "progress", "phase": "planning", "pageCount": 5}]
+        prefix += [self.frame("pending", a + 1, b) for a, b in ranges]
+        prefix += [{"type": "progress", "phase": "parsing"}]
+        responses = iter([item for a, b in ranges for item in ({"task_id": "task"}, success(b - a))])
+
+        def http(*_args, **_kwargs):
+            self.assertEqual(self.frames[:len(prefix)], prefix)
+            return next(responses)
+
+        self.http.side_effect = http
+        result = worker.convert(self.request, self.frames.append)
+        expected = prefix + [self.frame(status, a + 1, b) for a, b in ranges
+                             for status in ("uploading", "submitted", "complete")]
+        expected.append({"type": "progress", "phase": "assembling"})
+        self.assertEqual(self.frames, expected)
+        self.assertEqual(result["pageCount"], 5)
+        self.assertEqual([(c.args[1], c.args[2]) for c in self.extract.call_args_list],
+                         [(0, 5), (0, 2), (2, 5), (2, 3), (3, 5)] + ranges)
+        uploads = [c.kwargs["files"]["file"][1] for c in self.http.call_args_list if "files" in c.kwargs]
+        self.assertEqual(uploads, [bytes([a]) * (b - a) * 10 for a, b in ranges])
+        self.assertFalse(self.session.trust_env)
+
+    def test_plan_obeys_twenty_page_limit_and_cache_replay(self):
+        self.fake_pdf(43)
+        self.http.side_effect = [item for count in (20, 20, 3) for item in ({"task_id": "task"}, success(count))]
+        worker.convert(self.request, self.frames.append)
+        self.assertEqual([(f["start"], f["end"]) for f in self.frames if f.get("status") == "pending"],
+                         [(1, 20), (21, 40), (41, 43)])
+        self.frames.clear()
+        self.http.reset_mock()
+        self.http.side_effect = AssertionError("Cache must not contact OXR")
+        worker.convert(self.request, self.frames.append)
+        self.http.assert_not_called()
+        self.assertEqual([f["status"] for f in self.frames if f["phase"] == "chunk"],
+                         ["pending"] * 3 + ["complete"] * 3)
+
+    def test_reextract_limit_fails_before_upload(self):
+        self.fake_pdf(1)
+        self.extract.side_effect = [b"a", b"oversized"]
+        split = worker.split_pdf
+        self.enter_patch(mock.patch.object(worker, "split_pdf", side_effect=lambda doc: split(doc, max_bytes=2)))
+        with mock.patch.object(worker, "MAX_CHUNK", 2), self.assertRaisesRegex(worker.WorkerError, "chunk_limit"):
+            worker.convert(self.request, self.frames.append)
+        self.assertEqual(self.frames, [{"type": "progress", "phase": "planning", "pageCount": 1},
+                         self.frame("pending"), {"type": "progress", "phase": "parsing"}, self.frame("failed")])
+        self.http.assert_not_called()
+        self.assertFalse((self.output / "source.md").exists())
+
+    def test_reextract_exception_reports_failed_once(self):
+        self.fake_pdf(1)
+        error = OSError("SECRET PATH")
+        self.extract.side_effect = [b"a", error]
+        with self.assertRaises(OSError) as caught:
+            worker.convert(self.request, self.frames.append)
+        self.assertIs(caught.exception, error)
+        self.assertEqual(self.frames[-1], self.frame("failed"))
+        self.assertEqual(sum(f.get("status") == "failed" for f in self.frames), 1)
+        self.http.assert_not_called()
+
+    def test_unplannable_single_page_never_uploads(self):
+        self.fake_pdf(1, lambda *_: b"oversized")
+        split = worker.split_pdf
+        self.enter_patch(mock.patch.object(worker, "split_pdf", side_effect=lambda doc: split(doc, max_bytes=2)))
+        with self.assertRaisesRegex(worker.WorkerError, "single_page_too_large"):
+            worker.convert(self.request, self.frames.append)
+        self.assertEqual(self.frames, [{"type": "progress", "phase": "planning", "pageCount": 1}])
+        self.http.assert_not_called()
+
+    def test_chunk_failure_does_not_start_next_chunk_or_assembly(self):
+        self.fake_pdf(21)
+        self.http.side_effect = [{"task_id": "task"}, {"status": "failed"}]
+        with self.assertRaisesRegex(worker.WorkerError, "remote_task_failed"):
+            worker.convert(self.request, self.frames.append)
+        self.assertEqual(self.frames[-1], self.frame("failed", 1, 20))
+        self.assertEqual(sum(f.get("status") == "failed" for f in self.frames), 1)
+        self.assertFalse(any(f.get("start") == 21 and f.get("status") != "pending" for f in self.frames))
+        self.assertFalse(any(f["phase"] == "assembling" for f in self.frames))
+        self.assertFalse((self.output / "source.md").exists())
+
+    def test_check_and_preview_still_emit_only_terminal_json(self):
+        program = '''
+import importlib.util, sys, types
+spec = importlib.util.spec_from_file_location("core", sys.argv[1])
+core = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(core)
+core.load_dependencies = lambda **kwargs: None
+core.pymupdf = types.SimpleNamespace(VersionBind="1.24.4")
+core.requests = types.SimpleNamespace(__version__="2.31.0")
+core.preview = lambda request: {"ok": True, "imageFile": "preview.png", "pageCount": 1, "page": 1}
+sys.exit(core.main(sys.argv[2:]))
+'''
+        for operation, request, keys in [("check", {}, {"ok", "python", "pymupdf", "requests"}),
+                ("preview", {"sourcePath": "unused", "outputDir": "unused", "page": 1},
+                 {"ok", "imageFile", "pageCount", "page"})]:
+            with self.subTest(operation=operation):
+                result = subprocess.run([sys.executable, "-B", "-I", "-c", program,
+                    str(WORKER.with_name("pdf_to_markdown.py")), operation, json.dumps(request)],
+                    capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertEqual(len(result.stdout.splitlines()), 1)
+                self.assertEqual(set(json.loads(result.stdout)), keys)
+
+    def test_cli_progress_is_flushed_before_terminal_json_and_native_noise_suppressed(self):
+        program = '''
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("core", sys.argv[1])
+core = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(core)
+core.load_dependencies = lambda **kwargs: None
+def convert(request, progress):
+    print("SECRET PAPER")
+    os.write(1, b"NATIVE SECRET\\n")
+    os.write(2, b"SECRET TASK KEY\\n")
+    progress({"type": "progress", "phase": "planning", "pageCount": 1})
+    # Parent cannot release us until it receives the frame: proves flush.
+    assert sys.stdin.readline() == "continue\\n"
+    progress({"type": "progress", "phase": "chunk", "start": 1, "end": 1, "status": "pending"})
+    progress({"type": "progress", "phase": "parsing"})
+    if sys.argv[2] == "failure":
+        progress({"type": "progress", "phase": "chunk", "start": 1, "end": 1, "status": "failed"})
+        core.fail("request_failed")
+    progress({"type": "progress", "phase": "assembling"})
+    return {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf", "pageCount": 1}
+core.convert = convert
+sys.exit(core.main(["convert", '{"sourcePath":"SECRET","outputDir":"SECRET","baseURL":"SECRET"}']))
+'''
+        for mode in ("success", "failure"):
+            with self.subTest(mode=mode), subprocess.Popen([sys.executable, "-B", "-I", "-c", program,
+                    str(WORKER.with_name("pdf_to_markdown.py")), mode], stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+                try:
+                    with selectors.DefaultSelector() as selector:
+                        selector.register(process.stdout, selectors.EVENT_READ)
+                        self.assertTrue(selector.select(timeout=10), "Progress buffered until process exit")
+                    first = json.loads(process.stdout.readline())
+                    self.assertEqual(first, {"type": "progress", "phase": "planning", "pageCount": 1})
+                    output, errors = process.communicate("continue\n", timeout=10)
+                    frames = [json.loads(line) for line in output.splitlines()]
+                    self.assertEqual(frames[:2], [self.frame("pending"), {"type": "progress", "phase": "parsing"}])
+                    if mode == "failure":
+                        self.assertEqual(process.returncode, 1)
+                        self.assertEqual(frames[2:], [self.frame("failed"), {"ok": False, "error": "request_failed"}])
+                        self.assertEqual(errors, "fulltext: request_failed\n")
+                    else:
+                        self.assertEqual(process.returncode, 0)
+                        self.assertEqual(frames[2], {"type": "progress", "phase": "assembling"})
+                        self.assertEqual(frames[3], {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf", "pageCount": 1})
+                        self.assertEqual(errors, "")
+                    self.assertNotIn("SECRET", output + errors)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate(timeout=10)
 
 
 if __name__ == "__main__":

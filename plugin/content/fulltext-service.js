@@ -32,11 +32,14 @@
       this.listeners = new Set(); this.cancellers = new Set(); this.serial = 0; this.operation = null;
       this.cancelled = false; this.previewSerial = 0; this.previewCancellers = new Set(); this.previews = new Set();
       this.source = ""; this.plan = null; this.translated = "";
+      this.parseProgress = null; this.parseStartedAt = null;
       this.state = { schema: 1, identity, stage: "new", translations: {}, pageCount: 0, error: "", currentID: "", draft: "" };
     }
     snapshot() {
       const segments = this.plan?.segments.filter(s => s.translatable) || [];
       return { ...copy({ ...this.state, translations: undefined }), source: this.source, translated: this.translated,
+        parseProgress: this.parseProgress ? copy({ ...this.parseProgress,
+          elapsedMS: this.parseStartedAt === null ? this.parseProgress.elapsedMS : Math.max(0, Date.now() - this.parseStartedAt) }) : null,
         busy: Boolean(this.operation), completed: segments.filter(s => Object.hasOwn(this.state.translations, s.id)).length,
         total: segments.length, referenceCount: this.plan?.referenceCount || 0,
         currentSource: this.plan?.segments.find(s => s.id === this.state.currentID)?.source || "" };
@@ -96,19 +99,64 @@
       await Promise.allSettled([operation, ...this.previews]);
     }
     async shutdown() { await this.pause(); this.listeners.clear(); }
+    parsingEvent(event) {
+      const p = this.parseProgress;
+      const invalid = () => { throw new Error("本地转换进度顺序无效。"); };
+      if (event.phase === "planning") {
+        if (p.phase !== "preparing") return invalid();
+        p.phase = "planning"; p.pageCount = event.pageCount;
+      } else if (event.phase === "chunk") {
+        if (event.status === "pending") {
+          if (p.phase !== "planning" || event.start !== (p.chunks.at(-1)?.end || 0) + 1 || event.end > p.pageCount) return invalid();
+          p.chunks.push({ start: event.start, end: event.end, status: "pending" });
+        } else {
+          const chunk = p.chunks.find(c => c.start === event.start && c.end === event.end);
+          if (p.phase !== "parsing" || !chunk || ["complete", "failed"].includes(chunk.status) ||
+              p.chunks.find(c => c.status !== "complete") !== chunk) return invalid();
+          chunk.status = event.status;
+        }
+      } else if (event.phase === "parsing") {
+        if (p.phase !== "planning" || p.chunks.at(-1)?.end !== p.pageCount) return invalid();
+        p.phase = "parsing";
+      } else if (event.phase === "assembling") {
+        if (p.phase !== "parsing" || !p.chunks.every(c => c.status === "complete")) return invalid();
+        p.phase = "assembling";
+      } else return invalid();
+      this.emit();
+    }
     async parse({ consent = false } = {}) {
       if (!consent) throw new Error("必须先确认 PDF 上传地址。");
       if (this.state.approvedHash) throw new Error("此任务已有确认稿。请先使用现有稿件；重新识别需显式重置任务，不能覆盖译文。");
+      if (this.operation || this.parseStartedAt !== null) throw new Error("当前任务仍在运行或回收，请稍后再试。");
       const config = this.getConfig();
-      return this.run("parsing", async serial => {
-        const result = await this.convert({ baseURL: config.oxrBaseURL, pythonPath: config.pythonPath,
-          isCurrent: () => serial === this.serial, registerCancel: cancel => this.registerCancel(cancel) });
-        this.check(serial);
-        this.source = await this.storage.readText("source.md");
-        if (typeof this.source !== "string") throw new Error("转换未生成完整 Markdown。");
-        this.state.pageCount = result.pageCount; this.state.oxrBaseURL = config.oxrBaseURL;
-        this.state.stage = "review"; await this.save(); return this.snapshot();
-      });
+      this.parseStartedAt = Date.now();
+      this.parseProgress = { phase: "preparing", pageCount: 0, chunks: [], elapsedMS: 0 };
+      try {
+        await this.run("parsing", async serial => {
+          const result = await this.convert({ baseURL: config.oxrBaseURL, pythonPath: config.pythonPath,
+            onProgress: event => { if (serial === this.serial && this.state.stage === "parsing" && this.parseStartedAt !== null) this.parsingEvent(event); },
+            isCurrent: () => serial === this.serial, registerCancel: cancel => this.registerCancel(cancel) });
+          this.check(serial);
+          if (this.parseProgress.pageCount && (this.parseProgress.phase !== "assembling" || result.pageCount !== this.parseProgress.pageCount)) {
+            throw new Error("本地转换结果与分块进度不一致。");
+          }
+          this.source = await this.storage.readText("source.md"); this.check(serial);
+          if (typeof this.source !== "string") throw new Error("转换未生成完整 Markdown。");
+          this.state.pageCount = result.pageCount; this.state.oxrBaseURL = config.oxrBaseURL;
+          this.parseProgress.phase = "complete";
+          this.state.stage = "review"; await this.save();
+        });
+      } catch (error) {
+        this.parseProgress.phase = this.cancelled ? "paused" : "failed";
+        for (const chunk of this.parseProgress.chunks) {
+          if (!["pending", "complete", "failed"].includes(chunk.status)) chunk.status = this.cancelled ? "paused" : "failed";
+        }
+        throw error;
+      } finally {
+        this.parseProgress.elapsedMS = Math.max(0, Date.now() - this.parseStartedAt);
+        this.parseStartedAt = null; this.emit();
+      }
+      return this.snapshot();
     }
     async confirm(source) {
       if (this.operation) throw new Error("请先暂停当前任务。");

@@ -84,7 +84,18 @@
       async writeJSON(name, value) { return this.writeText(name, JSON.stringify(value)); }
     };
   }
-  async function collectProcess(process, { timeoutMS, registerCancel, timers = global }) {
+  function validateProgress(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || value.type !== "progress") throw new Error("本地转换进度无效。");
+    const keys = Object.keys(value).sort().join(",");
+    const page = n => Number.isInteger(n) && n >= 1 && n <= 10000;
+    if (value.phase === "planning" && keys === "pageCount,phase,type" && page(value.pageCount)) return value;
+    if (["parsing", "assembling"].includes(value.phase) && keys === "phase,type") return value;
+    if (value.phase === "chunk" && keys === "end,phase,start,status,type" && page(value.start) && page(value.end) &&
+        value.end >= value.start && value.end - value.start < 20 &&
+        ["pending", "uploading", "submitted", "queuing", "processing", "complete", "failed"].includes(value.status)) return value;
+    throw new Error("本地转换进度无效。");
+  }
+  async function collectProcess(process, { timeoutMS, registerCancel, onProgress, timers = global }) {
     let stopped = false, reason = "";
     const stop = message => {
       if (stopped) return;
@@ -93,22 +104,46 @@
     };
     const unregister = registerCancel?.(() => stop("本地转换已暂停。"));
     const timer = timers.setTimeout(() => stop("本地转换超时，已停止；已提交的远端任务可能仍运行。"), timeoutMS);
-    const read = async pipe => {
-      let text = "";
+    let result, terminal = false;
+    const frame = line => {
+      if (stopped) return;
+      let value;
+      try { value = JSON.parse(line); } catch (_) { throw new Error("Python 未返回有效结果，请检查所选环境及依赖。"); }
+      if (terminal) throw new Error("Python 未返回有效结果：结束后仍有输出。");
+      if (value?.type === "progress") {
+        if (!onProgress) throw new Error("本地转换进度无效。");
+        onProgress(validateProgress(value));
+      } else {
+        if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.ok !== "boolean") throw new Error("Python 未返回有效结果。");
+        terminal = true; result = value;
+      }
+    };
+    const read = async (pipe, stdout) => {
+      let buffer = "", size = 0;
       try {
         while (true) {
-          const part = await pipe.readString(); if (!part) break;
-          if (text.length + part.length > 65536) { stop("本地转换诊断输出超限。"); continue; }
-          text += part;
+          let part;
+          try { part = await pipe.readString(); } catch (_) { stop("无法读取本地转换结果。"); break; }
+          if (!part) break;
+          size += new TextEncoder().encode(part).length;
+          if (size > (stdout && onProgress ? 16 * 1024 * 1024 : 65536)) stop("本地转换诊断输出超限。");
+          if (stopped || !stdout) continue;
+          buffer += part;
+          let end;
+          while ((end = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+            if (new TextEncoder().encode(line).length > 65536) throw new Error("本地转换诊断输出超限。");
+            frame(line);
+          }
+          if (new TextEncoder().encode(buffer).length > 65536) throw new Error("本地转换诊断输出超限。");
         }
-      } catch (_) { if (!stopped) stop("无法读取本地转换结果。"); }
-      return text;
+        if (stdout && buffer && !stopped) frame(buffer);
+      } catch (error) { if (!stopped) stop(error.message || "无法读取本地转换结果。"); }
     };
     try {
-      const [exit, stdout] = await Promise.all([process.wait(), read(process.stdout), read(process.stderr)]);
+      const [exit] = await Promise.all([process.wait(), read(process.stdout, true), read(process.stderr, false)]);
       if (reason) throw new Error(reason);
-      let result;
-      try { result = JSON.parse(stdout); } catch (_) { throw new Error("Python 未返回有效结果，请检查所选环境及依赖。"); }
+      if (!terminal) throw new Error("Python 未返回有效结果，请检查所选环境及依赖。");
       if (exit.exitCode !== 0 || result?.ok !== true) throw new Error(String(result?.error || "Python 转换失败，请检查依赖、PDF 和 API 地址。").slice(0, 500));
       return result;
     } finally { timers.clearTimeout(timer); unregister?.(); }
@@ -140,7 +175,7 @@
       })().catch(error => { this.helperPromise = null; throw error; });
       return this.helperPromise;
     }
-    async python(operation, request, { pythonPath, registerCancel, isCurrent = () => true } = {}) {
+    async python(operation, request, { pythonPath, registerCancel, onProgress, isCurrent = () => true } = {}) {
       if (this.stopped) throw new Error("插件已退出。");
       if (this.processFailure) throw new Error("旧 Python 进程未确认回收，请重启 Zotero 后重试。");
       const selected = pythonPath === undefined ? this.config().pythonPath : pythonPath;
@@ -159,7 +194,8 @@
       this.processes.add(process);
       try {
         if (this.stopped) { process.kill(0); await process.wait(); throw new Error("插件已退出。"); }
-        return await collectProcess(process, { timeoutMS: operation === "convert" ? 2 * 60 * 60 * 1000 : 60000, registerCancel });
+        return await collectProcess(process, { timeoutMS: operation === "convert" ? 2 * 60 * 60 * 1000 : 60000, registerCancel,
+          onProgress: operation === "convert" ? value => { if (!this.stopped && isCurrent()) onProgress?.(value); } : undefined });
       } finally {
         try { await process.wait(); this.processes.delete(process); }
         catch (_) { this.processFailure = true; }

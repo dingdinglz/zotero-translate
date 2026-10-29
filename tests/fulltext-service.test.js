@@ -33,6 +33,67 @@ async function prepared(setupResult) {
   await setupResult.service.parse({ consent: true });
   await setupResult.service.confirm(setupResult.service.source);
 }
+test("parse progress tracks real ranges, isolates snapshots and is not persisted as live remote state", async () => {
+  const x = setup(); const convert = x.service.convert; let late;
+  x.service.convert = async options => {
+    late = options.onProgress;
+    late({ phase: "planning", pageCount: 21 });
+    late({ phase: "chunk", start: 1, end: 20, status: "pending" });
+    late({ phase: "chunk", start: 21, end: 21, status: "pending" });
+    late({ phase: "parsing" });
+    for (const status of ["uploading", "submitted", "queuing", "processing", "complete"]) late({ phase: "chunk", start: 1, end: 20, status });
+    const snapshot = x.service.snapshot();
+    assert.equal(snapshot.parseProgress.chunks[0].status, "complete");
+    snapshot.parseProgress.chunks[1].status = "bad";
+    assert.equal(x.service.snapshot().parseProgress.chunks[1].status, "pending");
+    late({ phase: "chunk", start: 21, end: 21, status: "complete" });
+    late({ phase: "assembling" });
+    assert.equal(x.service.snapshot().parseProgress.phase, "assembling");
+    await convert(); return { pageCount: 21 };
+  };
+  await x.service.parse({ consent: true });
+  const before = x.service.snapshot().parseProgress;
+  assert.equal(before.phase, "complete"); assert.ok(before.elapsedMS >= 0);
+  late({ phase: "planning", pageCount: 99 });
+  assert.deepEqual(x.service.snapshot().parseProgress, before);
+  assert.ok(!x.files.get("state.json").includes("parseProgress"));
+});
+test("pause preserves completed chunks, freezes elapsed time and ignores late parse events", async () => {
+  const x = setup(); let report, finish;
+  x.service.convert = options => new Promise(resolve => {
+    report = options.onProgress; finish = resolve;
+    report({ phase: "planning", pageCount: 2 });
+    for (const start of [1, 2]) report({ phase: "chunk", start, end: start, status: "pending" });
+    report({ phase: "parsing" });
+    report({ phase: "chunk", start: 1, end: 1, status: "complete" });
+    report({ phase: "chunk", start: 2, end: 2, status: "processing" });
+    options.registerCancel(() => finish({ pageCount: 2 }));
+  });
+  const parsing = x.service.parse({ consent: true });
+  while (!report) await new Promise(resolve => setImmediate(resolve));
+  const rejection = assert.rejects(parsing, /暂停/u);
+  await x.service.pause(); await rejection;
+  const snapshot = x.service.snapshot().parseProgress;
+  assert.equal(snapshot.phase, "paused");
+  assert.deepEqual(snapshot.chunks.map(c => c.status), ["complete", "paused"]);
+  report({ phase: "chunk", start: 2, end: 2, status: "complete" });
+  assert.deepEqual(x.service.snapshot().parseProgress, snapshot);
+});
+test("parse errors retain completed rows and reject out-of-order plans", async () => {
+  for (const invalid of [true, false]) {
+    const x = setup({ convert: async ({ onProgress }) => {
+      onProgress({ phase: "planning", pageCount: 2 });
+      onProgress({ phase: "chunk", start: 1, end: 2, status: "pending" });
+      if (invalid) onProgress({ phase: "assembling" });
+      onProgress({ phase: "parsing" });
+      onProgress({ phase: "chunk", start: 1, end: 2, status: "uploading" });
+      throw new Error("network failure");
+    } });
+    await assert.rejects(x.service.parse({ consent: true }), invalid ? /顺序/u : /network/u);
+    assert.equal(x.service.snapshot().parseProgress.phase, "failed");
+    assert.equal(x.service.snapshot().parseProgress.chunks[0].status, invalid ? "pending" : "failed");
+  }
+});
 test("opening is local; upload and translation each require consent", async () => {
   const x = setup(); await x.service.load(); assert.deepEqual(x.calls, []);
   await assert.rejects(x.service.parse(), /确认/u); assert.deepEqual(x.calls, []);

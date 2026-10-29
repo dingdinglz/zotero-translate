@@ -403,7 +403,24 @@ def read_result(data, count):
     return markdown, sorted(normalized, key=lambda page: page["page_num"])
 
 
-def parse_chunk(session, chunk, base, output, source_hash):
+def no_progress(_frame):
+    pass
+
+
+def chunk_progress(progress, start, end, status):
+    progress({"type": "progress", "phase": "chunk", "start": start + 1, "end": end, "status": status})
+
+
+def parse_chunk(session, chunk, base, output, source_hash, progress=no_progress):
+    start, end, _ = chunk
+    try:
+        return _parse_chunk(session, chunk, base, output, source_hash, progress)
+    except Exception:
+        chunk_progress(progress, start, end, "failed")
+        raise
+
+
+def _parse_chunk(session, chunk, base, output, source_hash, progress):
     start, end, pdf = chunk
     options = {"baseURL": base, "image": "base64", "formula": "latex", "table": "html",
                "keep_header_footer": False, "formats": ["markdown", "json"], "version": 1,
@@ -412,12 +429,15 @@ def parse_chunk(session, chunk, base, output, source_hash):
     name = "cache/" + digest + ".json"
     state = output.cache_read(name)
     if "markdown" in state:
-        return read_result({"result": {"outputs": {"markdown": state["markdown"],
-                           "json": {"pages": state.get("layout_pages")}}}}, end - start)
+        result = read_result({"result": {"outputs": {"markdown": state["markdown"],
+                             "json": {"pages": state.get("layout_pages")}}}}, end - start)
+        chunk_progress(progress, start, end, "complete")
+        return result
     task = state.get("task_id")
     if state and not valid_task(task):
         fail("invalid_cache")
     if not task:
+        chunk_progress(progress, start, end, "uploading")
         data = request_json(session, base + "/parse/async", {
             "api_key": "dummy", "output_formats": ["markdown", "json"],
             "element_formats": json.dumps({"image": "base64", "formula": "latex", "table": "html"}),
@@ -426,8 +446,13 @@ def parse_chunk(session, chunk, base, output, source_hash):
         task = data.get("task_id")
         if not valid_task(task):
             fail("invalid_task")
+        chunk_progress(progress, start, end, "submitted")
         output.cache_write(name, {"task_id": task})
+    else:
+        # A resumed task is awaiting its first observed remote state too.
+        chunk_progress(progress, start, end, "submitted")
     deadline = time.monotonic() + TASK_TIMEOUT
+    previous_status = None
     while time.monotonic() < deadline:
         data = request_json(session, base + "/parse/async_check", {"api_key": "dummy", "task_id": task})
         raw = data.get("status")
@@ -435,12 +460,16 @@ def parse_chunk(session, chunk, base, output, source_hash):
         if status == "success":
             markdown, pages = read_result(data, end - start)
             output.cache_write(name, {"markdown": markdown, "layout_pages": pages})
+            chunk_progress(progress, start, end, "complete")
             return markdown, pages
         if status == "failed":
             output.path(name).unlink()
             fail("remote_task_failed")
         if status not in {"queuing", "processing"}:
             fail("unknown_task_status")
+        if status != previous_status:
+            chunk_progress(progress, start, end, status)
+            previous_status = status
         time.sleep(min(5, max(0, deadline - time.monotonic())))
     fail("task_timeout")
 
@@ -459,7 +488,7 @@ def load_layout():
     return module
 
 
-def convert(request):
+def convert(request, progress=no_progress):
     base = base_url(request.get("baseURL"))
     source = source_path(request.get("sourcePath"))
     output = Output(request.get("outputDir"), source)
@@ -469,12 +498,27 @@ def convert(request):
     blocks = 0
     with open_pdf(source) as doc:
         count = len(doc)
+        progress({"type": "progress", "phase": "planning", "pageCount": count})
         output.prepare_cache()
+        # Keep only page ranges between planning and upload.
+        ranges = []
+        for start, end, data in split_pdf(doc):
+            ranges.append((start, end))
+            del data
+            chunk_progress(progress, start, end, "pending")
+        progress({"type": "progress", "phase": "parsing"})
         with requests.Session() as session, output.staging("source.md") as (markdown_file, _):
             session.trust_env = False  # no inherited proxies/netrc credentials
-            for chunk in split_pdf(doc):
-                markdown, layout = parse_chunk(session, chunk, base, output, before)
-                start, end, _ = chunk
+            for start, end in ranges:
+                try:
+                    pdf = extract_pages(doc, start, end)
+                    if len(pdf) > MAX_CHUNK:
+                        fail("chunk_limit")
+                except Exception:
+                    chunk_progress(progress, start, end, "failed")
+                    raise
+                markdown, layout = parse_chunk(session, (start, end, pdf), base, output, before, progress)
+                del pdf
                 data = ("<!-- PDF pages {}-{} -->\n\n{}\n\n".format(start + 1, end, markdown.strip())).encode("utf-8")
                 total += len(data)
                 if total > MAX_MARKDOWN:
@@ -486,6 +530,7 @@ def convert(request):
                 pages.extend(dict(page, page_num=start + page["page_num"]) for page in layout)
             if fingerprint(source) != before:
                 fail("source_changed")
+            progress({"type": "progress", "phase": "assembling"})
             with output.staging("layout.pdf") as (layout_handle, temporary):
                 layout_handle.close()  # allow replace on Windows as well
                 load_layout().write_layout_pdf(source, temporary, pages)
@@ -525,7 +570,7 @@ def preview(request):
     return {"ok": True, "imageFile": "preview.png", "pageCount": count, "page": number}
 
 
-def dispatch(operation, request):
+def dispatch(operation, request, progress=no_progress):
     fields = {"check": set(), "convert": {"sourcePath", "outputDir", "baseURL"},
               "preview": {"sourcePath", "outputDir", "page"}}
     if operation not in fields or not isinstance(request, dict) or set(request) != fields[operation]:
@@ -534,7 +579,7 @@ def dispatch(operation, request):
     if operation == "check":
         return {"ok": True, "python": ".".join(map(str, sys.version_info[:3])),
                 "pymupdf": pymupdf.VersionBind, "requests": requests.__version__}
-    return convert(request) if operation == "convert" else preview(request)
+    return convert(request, progress) if operation == "convert" else preview(request)
 
 
 @contextlib.contextmanager
@@ -545,10 +590,13 @@ def quiet_libraries():
     sys.stderr.flush()
     saved = [os.dup(1), os.dup(2)]
     try:
-        with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        # Keep a private protocol stream on the original stdout descriptor.
+        # Progress bypasses library suppression without exposing native noise.
+        with os.fdopen(os.dup(saved[0]), "w", encoding="utf-8") as protocol, \
+                open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
             os.dup2(sink.fileno(), 1)
             os.dup2(sink.fileno(), 2)
-            yield
+            yield protocol
     finally:
         for target, descriptor in zip((1, 2), saved):
             os.dup2(descriptor, target)
@@ -566,14 +614,18 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, cancelled)
     signal.signal(signal.SIGINT, cancelled)
     try:
-        with quiet_libraries():
+        with quiet_libraries() as protocol:
+            def emit_progress(frame):
+                protocol.write(json.dumps(frame, ensure_ascii=True, separators=(",", ":")) + "\n")
+                protocol.flush()
+
             if len(args) != 2 or len(args[1].encode("utf-8")) > 65536:
                 fail("invalid_request")
             try:
                 request = json.loads(args[1])
             except (ValueError, RecursionError):
                 fail("invalid_request")
-            result = dispatch(args[0], request)
+            result = dispatch(args[0], request, emit_progress)
     except WorkerError as error:
         code = error.args[0]
     except BaseException:
