@@ -30,6 +30,8 @@ thead { display: table-header-group; } tr,img { break-inside: avoid; }
 img { max-width: 100%; height: auto; } math[display="block"] { margin: 1em 0; overflow-wrap: anywhere; }
 blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start: 0.5mm solid #bbb; }
 .spt-fulltext-source { white-space: pre-wrap; font-family: monospace; }
+.spt-fulltext-algorithm { line-height: 1.8; tab-size: 4; }
+.spt-fulltext-algorithm math { white-space: normal; }
 `;
 
   function fail(message) { throw new Error(`全文 Markdown：${message}`); }
@@ -721,18 +723,54 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
       for (const child of Array.from(fragment.childNodes || fragment.children)) parent.append(child);
       return true;
     };
+    const algorithm = (parent, value, language, afterHeading) => {
+      const explicit = /^(?:algorithm|pseudocode)$/iu.test(language);
+      const inferred = !language || /^(?:text|plaintext)$/iu.test(language);
+      if (!explicit && !(inferred && afterHeading &&
+          /(?:^|\n)[ \t]*(?:Require|Ensure|Input|Output|输入|输出)\s*[:：]/iu.test(value) &&
+          /(?:^|\n)[ \t]*(?:for|while|if)\b/iu.test(value) &&
+          /(?:^|\n)[ \t]*(?:end\s+(?:for|while|if)\b|return\b)/iu.test(value))) return false;
+      const pre = element("pre"); pre.setAttribute("class", "spt-fulltext-algorithm");
+      const pattern = /\$|\\(?:\[|\(|begin\{)/gu;
+      let cursor = 0, match;
+      while ((match = pattern.exec(value))) {
+        let slashes = 0;
+        for (let j = match.index - 1; j >= 0 && value[j] === "\\"; j--) slashes++;
+        if (slashes % 2) continue;
+        let math;
+        try { math = mathAt(value, match.index); } catch (_) { continue; }
+        if (!math) continue;
+        if (match.index > cursor) text(pre, value.slice(cursor, match.index));
+        appendMath(pre, math.content, math.display);
+        cursor = math.end; pattern.lastIndex = cursor;
+      }
+      if (cursor < value.length) text(pre, value.slice(cursor));
+      parent.append(pre); return true;
+    };
     const renderBlocks = (parent, markdown, depth = 0) => {
       if (depth > 64) fail("块嵌套超过上限");
+      let algorithmHeading = false;
       for (const block of splitBlocks(markdown)) {
         const value = block.source;
         if (block.kind === "blank" || block.kind === "comment") continue;
-        if (block.kind === "html-code") { inline(parent, value); continue; }
+        const afterHeading = algorithmHeading;
+        algorithmHeading = Boolean(block.heading && /^(?:algorithm|算法)\s*\d+\b/iu.test(block.heading.title.replace(/[*_]/gu, "")));
+        if (block.kind === "html-code") {
+          const wrapped = value.match(/^\s*<(pre|code)>([\s\S]*)<\/\1>\s*$/iu);
+          let content = wrapped?.[2];
+          const inner = content?.match(/^<code>([\s\S]*)<\/code>$/iu);
+          if (inner) content = inner[1];
+          if (content !== undefined && algorithm(parent, decodeEntities(content), "", afterHeading)) continue;
+          inline(parent, value); continue;
+        }
         if (block.kind === "html-table") { if (!renderHTML(parent, value)) fallback(parent, value); continue; }
         if (block.kind === "code" || block.kind === "indented-code") {
-          const pre = element("pre"), code = element("code");
           const lines = linesOf(value);
-          text(code, block.kind === "code" ? lines.slice(1, -1).join("") : lines.map(line => line.replace(/^(?: {4}|\t)/u, "")).join(""));
-          pre.append(code); parent.append(pre); continue;
+          const content = block.kind === "code" ? lines.slice(1, -1).join("") : lines.map(line => line.replace(/^(?: {4}|\t)/u, "")).join("");
+          const language = block.kind === "code" ? bare(lines[0]).replace(/^ {0,3}(?:`{3,}|~{3,})/u, "").trim() : "";
+          if (algorithm(parent, content, language, afterHeading)) continue;
+          const pre = element("pre"), code = element("code");
+          text(code, content); pre.append(code); parent.append(pre); continue;
         }
         if (block.kind === "math") { const math = mathAt(value, value.search(/\S/u)); appendMath(parent, math.content, true); continue; }
         if (block.heading) { const h = element(`h${block.heading.level}`); inline(h, block.heading.title); parent.append(h); continue; }

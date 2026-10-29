@@ -204,13 +204,15 @@
       imagebox.append(node("img", "image")); e.image.alt = "当前 PDF 页的本地预览"; e.image.hidden = true;
       left.append(pdfbar, node("p", "preview-error"), imagebox);
       const mdbar = node("div", "mdbar");
-      mdbar.append(node("h2", null, "Markdown"), button("edit", "编辑原文", () => {
-        e.source.hidden = false; e.rendered.hidden = true;
-      }), button("preview", "安全预览", () => this._render(r)));
+      mdbar.append(node("h2", "md-title", "Markdown"), button("edit", "编辑全文", () => {
+        e.source.hidden = false; e.rendered.hidden = true; e["md-status"].textContent = ""; this._controls(r);
+      }), button("preview", "预览当前页", () => this._render(r)));
       e.source = node("textarea", "source"); e.source.setAttribute("aria-label", "识别结果 Markdown 源码"); e.source.spellcheck = false;
       listen(e.source, "input", () => { r.dirty = true; this._controls(r); }, r.cleanups);
-      e.rendered = node("div", "rendered"); e.rendered.hidden = true;
-      right.append(mdbar, e.source, e.rendered, node("p", null, "可修正识别结果；参考文献整条保留原文，正文引用标记受保护。"));
+      e.source.hidden = true;
+      e.rendered = node("div", "rendered");
+      const mdStatus = node("p", "md-status", "加载左侧预览，或点击“预览当前页”查看对应识别内容。"); mdStatus.setAttribute("role", "status");
+      right.append(mdbar, node("p", "md-note"), mdStatus, e.source, e.rendered);
       columns.append(left, right);
       e.error = node("p", "error"); e.error.setAttribute("role", "alert");
       const repair = node("section", "repair");
@@ -331,7 +333,8 @@
       let config, changed = false;
       try { config = this.runtime.config(); changed = this._changed(r, config); e.destination.textContent = `解析会上传完整 PDF 至：${address(config.oxrBaseURL)}`; }
       catch (error) { e.destination.textContent = safeError(error); }
-      e.parse.disabled = !ready || busy || Boolean(s.approvedHash);
+      e.parse.disabled = !ready || busy || Boolean(s.importIntent && !s.chineseAttachmentID);
+      e.parse.textContent = s.pageCount ? "重新上传并解析" : "上传 PDF 并解析";
       e.confirm.disabled = !ready || busy || !s.pageCount || !e.source.value.trim() || r.draftDirty || (Boolean(s.translated) && !changed);
       e.source.readOnly = !ready || busy;
       e.pause.disabled = !ready || r.stopping || !busy;
@@ -343,8 +346,11 @@
       e.original.disabled = e.reload.disabled = !ready || busy;
       e.previous.disabled = !ready || busy || r.page <= 1;
       e.next.disabled = !ready || busy || r.page >= r.pages;
-      e.preview.disabled = !ready || busy || !e.source.value;
-      e.preview.textContent = s.translated && !r.dirty ? "预览中文译文" : "预览原文";
+      e.preview.disabled = !ready || busy || !s.pageCount;
+      e["md-title"].textContent = e.source.hidden ? `Markdown · 第 ${r.page} 页识别预览` : "Markdown · 全文编辑";
+      e["md-note"].textContent = e.source.hidden
+        ? "按当前页 OXR 识别块重建，可能与全文稿排版不同；全文编辑和中文译文不会改写此预览。"
+        : "正在编辑完整识别稿，用于确认、翻译与导出；不会改写逐页识别预览。参考文献条目保留原文。";
       e.page.textContent = r.pages ? `第 ${r.page} / ${r.pages} 页` : "尚无预览";
     }
     _error(r, error) { if (this._current(r)) { r.localError = true; r.el.error.textContent = safeError(error); } }
@@ -361,12 +367,29 @@
       r.action = action; return action;
     }
     _parse(r) {
+      let parsed = false;
       return this._action(r, async valid => {
-        const config = this.runtime.config();
-        if (!r.window.confirm(`将完整 PDF 上传至 ${address(config.oxrBaseURL)} 进行解析？已提交的远端任务可能无法取消。`)) return;
+        const config = this.runtime.config(), replaceApproved = Boolean(r.state.approvedHash);
+        if (!r.window.confirm(`将完整 PDF 上传至 ${address(config.oxrBaseURL)} 进行解析？仍按页数和体积分块，不额外逐页请求。已提交的远端任务可能无法取消。`)) return;
+        if ((replaceApproved || r.dirty || r.draftDirty) && !r.window.confirm(
+          "重新解析会先归档已有确认稿的检查点；新解析成功后才切换，并需重新确认和翻译。失败保留旧任务；已有附件不会删除。未确认的全文编辑和未保存的段落修正将在成功后丢弃，是否继续？")) return;
         if (this.runtime.config().oxrBaseURL !== config.oxrBaseURL) throw new Error("上传地址已经改变，请重新检查并确认。");
-        if (valid()) await r.service.parse({ consent: true });
-      }).then(ok => { if (ok && r.state.pageCount) return this._preview(r); });
+        if (valid()) {
+          ++r.previewSerial; r.previewPending = false;
+          r.el.image.removeAttribute("src"); r.el.image.hidden = true; r.el.rendered.replaceChildren();
+          r.el["md-status"].textContent = "正在重新解析，完成后加载对应页。";
+          await r.service.parse({ consent: true, replaceApproved }); parsed = true;
+        }
+      }, () => {
+        if (parsed) { r.dirty = false; r.draftDirty = false; r.page = 1; r.pages = r.service.snapshot().pageCount; }
+      }).then(async ok => {
+        if (!this._current(r)) return;
+        if (!ok) r.el["md-status"].textContent = "解析未完成，旧任务已保留；可重新加载原有预览。";
+        if (ok && parsed && r.state.pageCount) {
+          r.el.source.hidden = true; r.el.rendered.hidden = false;
+          await this._preview(r);
+        }
+      });
     }
     _translate(r) {
       return this._action(r, async valid => {
@@ -395,7 +418,9 @@
     }
     async _pause(r) {
       if (!this._current(r) || r.stopping) return;
-      r.stopping = true; ++r.opSerial; ++r.previewSerial; this._controls(r);
+      r.stopping = true; ++r.opSerial; ++r.previewSerial;
+      if (r.previewPending) { r.previewPending = false; r.el["md-status"].textContent = "预览已暂停，请重新加载。"; }
+      this._controls(r);
       try {
         await r.service.pause(); await r.action; await r.service.pause();
       } catch (error) { this._error(r, error); }
@@ -403,25 +428,43 @@
     }
     async _preview(r) {
       if (!this._current(r) || !r.service || this._active(r)) return;
-      const id = ++r.previewSerial, doc = r.document;
+      const id = ++r.previewSerial, doc = r.document, requestedPage = r.page;
+      r.previewPending = true;
       r.el.image.removeAttribute("src"); r.el.image.hidden = true; r.el["preview-error"].textContent = "正在本地生成预览…";
+      r.el.rendered.replaceChildren();
+      if (r.el.source.hidden) r.el["md-status"].textContent = "正在加载对应页面…";
       this._controls(r);
       try {
-        const result = await r.service.preview(r.page, Boolean(r.el.original.checked));
+        const result = await r.service.preview(requestedPage, Boolean(r.el.original.checked));
         if (!this._current(r) || r.document !== doc || id !== r.previewSerial) return;
+        if (result.page !== requestedPage || !Number.isSafeInteger(result.pageCount) || result.pageCount < requestedPage ||
+            (r.state.pageCount && result.pageCount !== r.state.pageCount)) throw new Error("本地预览页码与任务不一致。");
         if (typeof result.dataURI !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/u.test(result.dataURI) || result.dataURI.length > 45 * 1024 * 1024) throw new Error("本地预览图片无效。");
         r.el.image.setAttribute("src", result.dataURI); r.el.image.hidden = false;
+        r.previewPending = false;
         r.page = result.page; r.pages = result.pageCount; r.el["preview-error"].textContent = ""; this._controls(r);
+        if (r.el.source.hidden) this._render(r);
       } catch (error) {
-        if (this._current(r) && r.document === doc && id === r.previewSerial) r.el["preview-error"].textContent = safeError(error);
+        if (this._current(r) && r.document === doc && id === r.previewSerial) {
+          r.previewPending = false; r.el["preview-error"].textContent = safeError(error);
+          r.el.rendered.replaceChildren(); r.el["md-status"].textContent = "左侧页面加载失败，未展示可能错位的内容。";
+        }
       }
     }
     _render(r) {
       if (!this._current(r)) return;
+      r.el.source.hidden = true; r.el.rendered.hidden = false;
+      r.el.rendered.replaceChildren(); r.el.rendered.scrollTop = 0; this._controls(r);
+      if (r.previewPending) { r.el["md-status"].textContent = "正在加载对应页面…"; return; }
       try {
-        modules.FulltextMarkdown.renderMarkdown(r.document, r.el.rendered, !r.dirty && r.state.translated ? r.state.translated : r.el.source.value);
-        r.el.source.hidden = true; r.el.rendered.hidden = false;
-      } catch (error) { this._error(r, error); }
+        const source = r.service.getPageMarkdown(r.page);
+        if (source === null) {
+          r.el["md-status"].textContent = r.state.pagePreviewError || "本页缺少完整逐页识别信息，无法准确预览，需要重新解析。可点击“重新上传并解析”，确认后重建；不会自动上传。";
+          return;
+        }
+        r.el["md-status"].textContent = source.trim() ? "" : "本页无识别内容。";
+        modules.FulltextMarkdown.renderMarkdown(r.document, r.el.rendered, source);
+      } catch (error) { r.el["md-status"].textContent = "本页无法安全渲染；未显示其他页面。"; this._error(r, error); }
     }
     _close(r) {
       if (r.closing) return r.closing;

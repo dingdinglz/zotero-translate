@@ -211,6 +211,52 @@ test("safe DOM has normal heading levels, lists, nested list, code, quote and ha
   assert.match(root.textContent, /<script>alert\(1\)<\/script>/u);
 });
 
+test("algorithm pseudocode preserves indentation while rendering only math fragments", () => {
+  const code = "Require: Graph $\\mathcal{G}^{0}$, Metrics $\\mathcal{M}_{D}$\nfor each $m_i \\in \\mathcal{M}_{D}$ do\n    $v_i \\gets \\text{NODEGEN}(m_i)$\nend for\nreturn Updated graph $\\mathcal{G}$";
+  for (const source of [`### Algorithm 1 PKG Update\n\n\`\`\`\n${code}\n\`\`\`\n`,
+    `\`\`\`pseudocode\n${code}\n\`\`\``, `### Algorithm 1\n\n${code.split("\n").map(line => "    " + line).join("\n")}\n`,
+    `### Algorithm 1\n\n<pre><code>${code}</code></pre>\n`]) {
+    const { root, nodes } = render(source);
+    assert.equal(nodes.filter(node => node.localName === "math").length, 5, source);
+    assert.ok(nodes.some(node => node.localName === "pre" && node.getAttribute("class") === "spt-fulltext-algorithm"));
+    assert.match(root.textContent, /\n    /u);
+    roundtrip(source);
+  }
+});
+
+test("PKG algorithm formula samples compile with the bundled KaTeX MathML renderer", () => {
+  const { renderTexToMathML } = require("../plugin/content/math-renderer.js");
+  for (const tex of [String.raw`\mathcal{G}^{0} = (\mathcal{V}^{0}, \mathcal{E}^{0})`,
+    String.raw`\mathcal{M}_{D} = \{m_1, \dots, m_{|\mathcal{M}_{D}|}\}`,
+    String.raw`\{NodeGen, EdgeGen, Merge, UpdateNode\}`,
+    String.raw`\exists v_k \in \mathcal{V}^{0} : \text{MERGE}(m_i, v_k)`,
+    String.raw`v_k \gets \text{UPDATENode}(m_i, v_k)`,
+    String.raw`\mathcal{E}^{0} \gets \mathcal{E}^{0} \cup \{e_{i,j}\}`]) {
+    const markup = renderTexToMathML(tex);
+    assert.match(markup, /<math[ >]/u); assert.doesNotMatch(markup, /katex-error/u);
+  }
+});
+
+test("real code and ambiguous blocks remain literal even below algorithm headings", () => {
+  for (const source of ["```python\nx = '$x$'\n```", "```\n$x$\n```", "    $x$\n",
+    "### Algorithm 1\n\n```python\nRequire: $x$\nfor each $y$ do\nend for\n```",
+    "### Algorithm 1\n\nExplanation first.\n\n```\nRequire: $x$\nfor each $y$ do\nend for\n```",
+    "### Algorithm 1\n\n```\nx = '$x$'\n```", "<pre>$x$</pre>"]) {
+    const { root, nodes } = render(source);
+    assert.equal(nodes.filter(node => node.localName === "math").length, 0, source);
+    assert.ok(root.textContent.includes("$x$"));
+  }
+});
+
+test("algorithm math never activates HTML, images or links and malformed math stays visible", () => {
+  const source = '```algorithm\nRequire: $x$\n    <script>evil()</script> ![x](https://example.org/x) `code`\n    \\$literal \\{keep\\} $unclosed\n```';
+  const { root, nodes } = render(source);
+  assert.equal(nodes.filter(node => node.localName === "math").length, 1);
+  assert.ok(!nodes.some(node => ["script", "img", "a"].includes(node.localName)));
+  assert.match(root.textContent, /<script>evil\(\)<\/script>/u);
+  assert.ok(root.textContent.includes("\\$literal \\{keep\\} $unclosed"));
+});
+
 test("Markdown tables retain column counts, escaped pipes and code cells", () => {
   const { nodes } = render("| Name | Value |\n| :--- | ---: |\n| a\\|b | `x|y` |\n");
   assert.equal(nodes.filter(n => n.localName === "table").length, 1);

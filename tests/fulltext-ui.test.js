@@ -24,7 +24,7 @@ class Events {
 class Node extends Events {
   constructor(tag) { super(); this.tag = tag; this.children = []; this.attributes = {}; this.value = ""; this.hidden = false; this.disabled = false; this._text = ""; }
   append(...nodes) { for (const n of nodes) { this.children.push(n); n.parentNode = this; } }
-  replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
+  replaceChildren(...nodes) { this._text = ""; this.children = []; this.append(...nodes); }
   set textContent(value) { this._text = value; this.children = []; }
   get textContent() { return this._text; }
   set innerHTML(_) { throw new Error("Unsafe HTML"); }
@@ -59,7 +59,8 @@ class Service {
   async confirm(source) { this.calls.push("confirm"); this.emit({ source, approvedHash: "hash", config: { ...config }, stage: "ready" }); }
   async translate(options) { assert.equal(options.consent, true); this.calls.push("translate"); }
   async pause() { this.calls.push(`pause:${this.attachmentID}`); }
-  async preview(page, original) { this.calls.push(`preview:${page}:${original}`); return { dataURI: "data:image/png;base64,YQ==", page, pageCount: 2 }; }
+  getPageMarkdown(page) { return this.pages?.[page - 1] ?? (page <= this.state.pageCount ? `# OCR page ${page}` : null); }
+  async preview(page, original) { this.calls.push(`preview:${page}:${original}`); return { dataURI: "data:image/png;base64,YQ==", page, pageCount: this.state.pageCount || 2 }; }
   async setDraft(value) { this.calls.push(`draft:${value}`); this.emit({ draft: value }); }
   async finish(win) { assert.equal(win.closed, false); this.calls.push("finish"); this.emit({ chineseAttachmentID: 42, stage: "complete" }); }
   async export() { this.calls.push("export"); }
@@ -97,24 +98,69 @@ test("open is local; same task focuses; explicit upload and translation confirma
   await h.ui.shutdown();
 });
 
-test("snapshot ticks preserve source edits and native selection; preview is user-driven", async () => {
+test("snapshot ticks preserve full-source edits and selection; page preview stays independent", async () => {
   const h = setup(), r = await review(h), s = h.services.get(1);
   edit(r, "source", "# User edit"); r.el.source.selectionStart = 3; r.el.source.selectionEnd = 7;
   s.emit({ completed: 2 }); s.emit({ completed: 3 });
   assert.equal(r.el.source.value, "# User edit"); assert.equal(r.el.source.selectionStart, 3); assert.equal(r.el.source.selectionEnd, 7);
   assert.equal(h.renders(), 0); click(r, "preview"); assert.equal(h.renders(), 1);
   s.emit({ completed: 4 }); assert.equal(h.renders(), 1);
-  assert.equal(r.el.rendered.textContent, "# User edit");
+  assert.equal(r.el.rendered.textContent, "# OCR page 1");
+  assert.equal(r.el.source.value, "# User edit");
+  assert.match(r.el["md-note"].textContent, /不会改写/u);
+  await h.ui.shutdown();
+});
+
+test("page preview follows only the accepted PDF page and clears stale content on failure", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  click(r, "preview"); assert.equal(r.el.rendered.textContent, "# OCR page 1");
+  click(r, "next"); assert.equal(r.el.rendered.textContent, ""); await tick();
+  assert.equal(r.el.rendered.textContent, "# OCR page 2");
+  assert.match(r.el["md-title"].textContent, /第 2 页/u);
+  assert.equal(r.el.rendered.scrollTop, 0);
+  s.preview = async () => { throw new Error("image failure"); };
+  click(r, "previous"); await tick();
+  assert.equal(r.el.image.getAttribute("src"), null); assert.equal(r.el.rendered.textContent, "");
+  assert.match(r.el["md-status"].textContent, /失败/u);
+  s.getPageMarkdown = () => null;
+  click(r, "preview");
+  assert.equal(r.el.rendered.textContent, ""); assert.match(r.el["md-status"].textContent, /重新解析/u);
+  assert.ok(!h.calls.includes("parse"));
+  s.getPageMarkdown = () => "";
+  click(r, "preview"); assert.match(r.el["md-status"].textContent, /无识别内容/u);
+  click(r, "edit"); assert.equal(r.el.source.hidden, false); assert.equal(r.el.source.value, "# Source");
+  await h.ui.shutdown();
+});
+
+test("reparse of approved tasks needs a separate reset confirmation and preserves unsaved edits on failure", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  s.emit({ approvedHash: "old", translated: "Old translation" });
+  assert.equal(r.el.parse.disabled, false);
+  let requests = 0;
+  s.parse = async options => { requests++; assert.deepEqual(options, { consent: true, replaceApproved: true }); throw new Error("parse failed"); };
+  edit(r, "source", "Unsaved full text");
+  r.window.confirm = text => { r.window.confirmations.push(text); return !text.includes("归档"); };
+  click(r, "parse"); await tick(); assert.equal(requests, 0);
+  r.window.confirm = text => { r.window.confirmations.push(text); return true; };
+  click(r, "parse"); await tick(); assert.equal(requests, 1);
+  assert.equal(r.el.source.value, "Unsaved full text"); assert.equal(r.dirty, true);
+  assert.match(r.window.confirmations.at(-1), /归档[\s\S]*重新确认[\s\S]*未确认/u);
+  s.parse = async options => { assert.equal(options.replaceApproved, true); s.emit({ source: "New full text", translated: "", approvedHash: null, pageCount: 1 }); };
+  click(r, "parse"); await tick();
+  assert.equal(r.el.source.value, "New full text"); assert.equal(r.dirty, false); assert.equal(r.pages, 1);
+  assert.equal(r.el.rendered.textContent, "# OCR page 1");
+  s.emit({ importIntent: true }); assert.equal(r.el.parse.disabled, true);
   await h.ui.shutdown();
 });
 
 test("late page previews and old-window callbacks cannot replace the current image", async () => {
   const h = setup(), r = await review(h), s = h.services.get(1), a = deferred(), b = deferred();
   s.preview = page => page === 1 ? a.promise : b.promise;
-  click(r, "reload"); click(r, "next");
+  click(r, "preview"); click(r, "reload"); click(r, "next");
   b.resolve({ dataURI: "data:image/png;base64,Yg==", page: 2, pageCount: 2 }); await tick();
   a.resolve({ dataURI: "data:image/png;base64,YQ==", page: 1, pageCount: 2 }); await tick();
   assert.equal(r.el.image.getAttribute("src"), "data:image/png;base64,Yg==");
+  assert.equal(r.el.rendered.textContent, "# OCR page 2");
   const late = deferred(); s.preview = () => late.promise; click(r, "reload");
   await h.ui.open(h.owner, 2); const newer = h.record();
   late.resolve({ dataURI: "data:image/png;base64,Yw==", page: 2, pageCount: 2 }); await tick();
@@ -122,6 +168,23 @@ test("late page previews and old-window callbacks cannot replace the current ima
   const changedDoc = deferred(); h.services.get(2).preview = () => changedDoc.promise; click(newer, "reload");
   newer.window.document = { documentURI: URI }; changedDoc.resolve({ dataURI: "data:image/png;base64,Yw==", page: 1, pageCount: 2 }); await tick();
   assert.equal(newer.el.image.getAttribute("src"), null);
+  await h.ui.shutdown();
+});
+
+test("wrong-page images and previews superseded by reparse never update either pane", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1), gate = deferred();
+  s.preview = async () => ({ dataURI: "data:image/png;base64,YQ==", page: 2, pageCount: 2 });
+  click(r, "reload"); await tick();
+  assert.equal(r.el.image.getAttribute("src"), null); assert.equal(r.el.rendered.textContent, "");
+  assert.match(r.el["preview-error"].textContent, /页码/u);
+  s.preview = () => gate.promise;
+  click(r, "reload");
+  const parsing = deferred(); s.parse = () => parsing.promise;
+  click(r, "parse"); await tick();
+  gate.resolve({ dataURI: "data:image/png;base64,YQ==", page: 1, pageCount: 2 }); await tick();
+  assert.equal(r.el.image.getAttribute("src"), null); assert.equal(r.el.rendered.textContent, "");
+  parsing.reject(new Error("offline")); await tick();
+  assert.equal(r.previewPending, false); assert.match(r.el["md-status"].textContent, /旧任务/u);
   await h.ui.shutdown();
 });
 

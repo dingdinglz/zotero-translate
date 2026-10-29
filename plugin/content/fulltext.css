@@ -24,6 +24,9 @@ textarea { resize: vertical; border: 1px solid light-dark(#bbc8dc, #626c7e); bor
 #spt-fulltext-rendered { flex: 1; min-height: 0; overflow: auto; overflow-wrap: anywhere; user-select: text; -moz-user-select: text; }
 #spt-fulltext-rendered img { max-width: 100%; height: auto; }
 #spt-fulltext-rendered pre { white-space: pre-wrap; }
+#spt-fulltext-rendered .spt-fulltext-algorithm { line-height: 1.8; tab-size: 4; }
+#spt-fulltext-rendered .spt-fulltext-algorithm math { white-space: normal; }
+#spt-fulltext-md-status:empty { display: none; }
 #spt-fulltext-rendered table { border-collapse: collapse; max-width: 100%; }
 #spt-fulltext-rendered td, #spt-fulltext-rendered th { border: 1px solid #8994a6; padding: 5px; }
 #spt-fulltext-error, #spt-fulltext-preview-error { color: light-dark(#a12626, #ffa7a7); white-space: pre-wrap; }
