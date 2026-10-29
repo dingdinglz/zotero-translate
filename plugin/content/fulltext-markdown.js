@@ -208,6 +208,24 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
     return blocks;
   }
 
+  function rangedBlocks(source) {
+    let offset = 0, index = 0;
+    return splitBlocks(source).map(block => {
+      const start = offset; offset += block.source.length;
+      return { ...block, start, end: offset, index: ["blank", "comment"].includes(block.kind) ? null : index++ };
+    });
+  }
+  function editableBlocks(source, { strict = false } = {}) {
+    checkSource(source);
+    try {
+      return rangedBlocks(source).filter(block => block.index !== null)
+        .map(({ index, start, end, kind, source }) => ({ index, start, end, kind, source }));
+    } catch (error) {
+      if (strict) throw error;
+      return source ? [{ index: 0, start: 0, end: source.length, kind: "source", source }] : [];
+    }
+  }
+
   function balancedEnd(source, start, open, close) {
     let depth = 1;
     for (let i = start + open.length; i < source.length; i++) {
@@ -607,7 +625,7 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
     return { size, width, height };
   }
 
-  function renderMarkdown(doc, container, source) {
+  function renderMarkdown(doc, container, source, { imageResolver, onRemoteImage, onBlock } = {}) {
     checkSource(source);
     if (!doc || !container) fail("缺少渲染文档或容器");
     const MathRenderer = modules.MathRenderer || (typeof require === "function" ? require("./math-renderer.js") : null);
@@ -629,7 +647,22 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
       if (nodes > MAX_NODES) fail("MathML 节点超过上限");
     };
     const image = (parent, uri, alt, original) => {
-      if (!uri.startsWith("data:")) { text(parent, original); return; }
+      if (!uri.startsWith("data:")) {
+        const resolved = imageResolver?.(uri);
+        if (!resolved) {
+          if (!onRemoteImage) { text(parent, original); return; }
+          const placeholder = element("span"); text(placeholder, original); parent.append(placeholder);
+          let committed = false;
+          onRemoteImage(uri, dataURI => {
+            if (committed) return;
+            if (typeof dataURI !== "string" || !dataURI.startsWith("data:")) fail("图片仅允许已验证的本地数据");
+            const staged = element("span"); image(staged, dataURI, alt, original);
+            placeholder.replaceChildren(...staged.childNodes); committed = true;
+          });
+          return;
+        }
+        uri = resolved;
+      }
       const info = imageInfo(uri);
       imageBytes += info.size;
       if (imageBytes > MAX_TOTAL_IMAGE_BYTES) fail("文档内嵌图片总量超过 64 MiB");
@@ -748,12 +781,14 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
       if (cursor < value.length) text(pre, value.slice(cursor));
       parent.append(pre); return true;
     };
-    const renderBlocks = (parent, markdown, depth = 0) => {
+    const renderBlocks = (target, markdown, depth = 0) => {
       if (depth > 64) fail("块嵌套超过上限");
       let algorithmHeading = false;
-      for (const block of splitBlocks(markdown)) {
+      for (const block of rangedBlocks(markdown)) {
         const value = block.source;
         if (block.kind === "blank" || block.kind === "comment") continue;
+        const parent = depth === 0 && onBlock ? element("div") : target;
+        if (parent !== target) { target.append(parent); onBlock(parent, { index: block.index, start: block.start, end: block.end, kind: block.kind, source: value }); }
         const afterHeading = algorithmHeading;
         algorithmHeading = Boolean(block.heading && /^(?:algorithm|算法)\s*\d+\b/iu.test(block.heading.title.replace(/[*_]/gu, "")));
         if (block.kind === "html-code") {
@@ -829,7 +864,7 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
 
   modules.FulltextMarkdown = {
     MAX_SOURCE_BYTES, MAX_SEGMENT_LENGTH, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, MAX_IMAGE_PIXELS,
-    PRINT_CSS, createPlan, prepareSegment, restoreTranslation, validateRestored, assemble, renderMarkdown
+    PRINT_CSS, validateSource: checkSource, editableBlocks, imageInfo, createPlan, prepareSegment, restoreTranslation, validateRestored, assemble, renderMarkdown
   };
   if (typeof module !== "undefined" && module.exports) module.exports = modules.FulltextMarkdown;
 })(typeof globalThis !== "undefined" ? globalThis : this);

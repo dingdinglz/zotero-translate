@@ -64,14 +64,15 @@
         if (this._current(old) && (old.attachmentID === attachmentID || old.service?.attachmentID === attachmentID)) {
           old.window?.focus(); return true;
         }
-        if (!old.closed && !slot.owner.confirm("暂停并保存当前任务，打开另一篇论文？已提交的远端解析任务可能继续。")) return false;
+        if (!old.closed && !slot.owner.confirm("暂停并保存当前任务，打开另一篇论文？未保存的单块编辑和段落修正将丢弃；已提交的远端解析任务可能继续。")) return false;
         await this._close(old);
         if (this.stopped || slot.gone || slot.owner.closed) return false;
       }
       let resolveClosed;
       const r = { slot, attachmentID, window: null, document: null, service: null, closed: false,
         cleanups: [], opSerial: 0, previewSerial: 0, pending: false, stopping: false,
-        dirty: false, draftDirty: false, page: 1, pages: 0, state: {},
+        dirty: false, draftDirty: false, mode: "page", page: 1, pages: 0, state: {},
+        imageSerial: 0, renderSerial: 0, blockNodes: [], blockCleanups: [], selected: null,
         closedPromise: new Promise(resolve => { resolveClosed = resolve; }), resolveClosed: () => resolveClosed(CLOSED) };
       slot.current = r;
       try {
@@ -129,12 +130,12 @@
       listen(win, "close", event => {
         if (!top(event, win) || r.closed) return;
         event.preventDefault();
-        if ((this._active(r) || r.dirty || r.draftDirty) && !win.confirm("暂停并关闭全文翻译？已确认进度将保留；未确认的原文编辑和未保存的段落修正将丢弃。已提交的 OXR 远端任务可能继续。")) return;
+        if ((this._active(r) || r.dirty || r.draftDirty) && !win.confirm("暂停并关闭全文翻译？已保存原文与已确认进度将保留；未保存的单块编辑和段落修正将丢弃。已提交的 OXR 远端任务可能继续。")) return;
         void this._close(r).catch(error => win.alert?.(safeError(error)));
       }, r.cleanups);
       listen(win, "beforeunload", event => {
         if (top(event, win) && (this._active(r) || r.dirty || r.draftDirty) && !r.closed) {
-          event.preventDefault(); event.returnValue = "关闭将暂停并保留已确认进度，但丢弃未确认的编辑。远端任务可能继续。";
+          event.preventDefault(); event.returnValue = "关闭将暂停并保留已保存原文与已确认进度，但丢弃未保存的编辑。远端任务可能继续。";
         }
       }, r.cleanups);
       listen(win, "unload", event => {
@@ -196,23 +197,34 @@
       e.original = node("input", "original"); e.original.type = "checkbox";
       const label = node("label", null, "原始 PDF"); label.prepend?.(e.original);
       if (!e.original.parentNode) label.append(e.original);
-      listen(e.original, "change", () => { r.page = 1; void this._preview(r); }, r.cleanups);
-      pdfbar.append(label, button("previous", "上一页", () => { r.page--; void this._preview(r); }),
-        node("span", "page", "尚无预览"), button("next", "下一页", () => { r.page++; void this._preview(r); }),
-        button("reload", "加载预览", () => this._preview(r)));
+      listen(e.original, "change", () => {
+        if (!this._current(r) || this._active(r) || !this._discard(r)) { e.original.checked = !e.original.checked; return; }
+        r.page = 1; r.mode = "page"; void this._preview(r);
+      }, r.cleanups);
+      pdfbar.append(label, button("previous", "上一页", () => this._navigate(r, r.page - 1)),
+        node("span", "page", "尚无预览"), button("next", "下一页", () => this._navigate(r, r.page + 1)),
+        button("reload", "加载预览", () => { if (this._discard(r)) { r.mode = "page"; void this._preview(r); } }));
       const imagebox = node("div", "imagebox");
       imagebox.append(node("img", "image")); e.image.alt = "当前 PDF 页的本地预览"; e.image.hidden = true;
       left.append(pdfbar, node("p", "preview-error"), imagebox);
       const mdbar = node("div", "mdbar");
-      mdbar.append(node("h2", "md-title", "Markdown"), button("edit", "编辑全文", () => {
-        e.source.hidden = false; e.rendered.hidden = true; e["md-status"].textContent = ""; this._controls(r);
-      }), button("preview", "预览当前页", () => this._render(r)));
-      e.source = node("textarea", "source"); e.source.setAttribute("aria-label", "识别结果 Markdown 源码"); e.source.spellcheck = false;
-      listen(e.source, "input", () => { r.dirty = true; this._controls(r); }, r.cleanups);
+      mdbar.append(node("h2", "md-title", "Markdown"), button("edit", "编辑一段", () => this._edit(r)),
+        button("full", "预览全文", () => this._mode(r, "full")),
+        button("preview", "返回当前页", () => this._mode(r, "page")),
+        button("save", "保存编辑", () => this._save(r)),
+        button("cancel", "取消编辑", () => this._mode(r, "page")));
+      e.source = node("textarea", "source"); e.source.setAttribute("aria-label", "选中块的 Markdown 源码"); e.source.spellcheck = false;
+      listen(e.source, "input", () => {
+        if (r.mode !== "edit" || this._active(r)) return;
+        r.dirty = e.source.value !== r.editing?.source; this._controls(r);
+      }, r.cleanups);
       e.source.hidden = true;
       e.rendered = node("div", "rendered");
       const mdStatus = node("p", "md-status", "加载左侧预览，或点击“预览当前页”查看对应识别内容。"); mdStatus.setAttribute("role", "status");
-      right.append(mdbar, node("p", "md-note"), mdStatus, e.source, e.rendered);
+      const images = node("div", "image-statusbar");
+      images.append(node("span", "image-status"), button("retry-images", "重试图片", () => this._render(r)));
+      e["image-status"].setAttribute("role", "status"); e["retry-images"].hidden = true;
+      right.append(mdbar, node("p", "md-note"), mdStatus, images, e.source, e.rendered);
       columns.append(left, right);
       e.error = node("p", "error"); e.error.setAttribute("role", "alert");
       const repair = node("section", "repair");
@@ -236,11 +248,15 @@
     _active(r) { return Boolean(r.pending || r.stopping || r.state.busy); }
     _changed(r, config) {
       const old = r.state.config;
-      return r.el.source.value !== r.state.source || (old && configKey(old) !== configKey(config));
+      return Boolean(r.state.sourceChanged || (old && configKey(old) !== configKey(config)));
     }
     _state(r, state) {
+      const sourceChanged = r.state.source !== state.source || r.state.documentRevision !== state.documentRevision;
+      if (sourceChanged || (!r.state.busy && state.busy)) this._cancelImages(r);
       r.state = state;
-      if (!r.dirty && r.el.source.value !== (state.source || "")) r.el.source.value = state.source || "";
+      if (r.mode === "edit" && r.editing?.revision !== state.documentRevision) {
+        r.el["md-status"].textContent = "原文版本已改变，未保存草稿已保留；请复制需要的修改，取消后重新选择当前块。";
+      }
       if (!r.draftDirty && r.el.draft.value !== (state.draft || "")) r.el.draft.value = state.draft || "";
       r.el.current.textContent = state.currentSource || "";
       r.progressReceivedAt = Date.now();
@@ -248,9 +264,7 @@
       if (!r.localError) r.el.error.textContent = safeError(state.error || "");
       r.pages = r.pages || state.pageCount || 0;
       this._controls(r);
-      if (state.translated && state.translated !== r.renderedTranslation && !r.dirty && !state.busy) {
-        this._render(r); r.renderedTranslation = state.translated;
-      }
+      if (sourceChanged && r.mode !== "edit" && !this._active(r)) this._render(r);
     }
     _progressStatus(r) {
       const s = r.state, p = s.parseProgress;
@@ -330,39 +344,60 @@
     _controls(r) {
       if (!r.el || !this._current(r)) return;
       const e = r.el, s = r.state, busy = this._active(r), ready = Boolean(r.service);
-      let config, changed = false;
+      let config, changed = Boolean(s.sourceChanged);
       try { config = this.runtime.config(); changed = this._changed(r, config); e.destination.textContent = `解析会上传完整 PDF 至：${address(config.oxrBaseURL)}`; }
-      catch (error) { e.destination.textContent = safeError(error); }
+      catch (error) { changed = true; e.destination.textContent = safeError(error); }
       e.parse.disabled = !ready || busy || Boolean(s.importIntent && !s.chineseAttachmentID);
       e.parse.textContent = s.pageCount ? "重新上传并解析" : "上传 PDF 并解析";
-      e.confirm.disabled = !ready || busy || !s.pageCount || !e.source.value.trim() || r.draftDirty || (Boolean(s.translated) && !changed);
-      e.source.readOnly = !ready || busy;
+      e.confirm.disabled = !ready || busy || !s.pageCount || !s.source?.trim() || r.dirty || r.mode === "edit" || r.draftDirty || Boolean(s.documentError) || (Boolean(s.translated) && !changed);
+      e.source.readOnly = e.source.disabled = !ready || busy;
       e.pause.disabled = !ready || r.stopping || !busy;
-      e.finish.disabled = !ready || busy || !s.translated || Boolean(s.chineseAttachmentID) || Boolean(s.importIntent) || changed;
-      e.export.disabled = !ready || busy || !s.translated || changed;
+      e.finish.disabled = !ready || busy || !s.translated || Boolean(s.chineseAttachmentID) || Boolean(s.importIntent) || changed || r.dirty || r.mode === "edit" || Boolean(s.documentError);
+      e.export.disabled = !ready || busy || !s.translated || changed || r.dirty || r.mode === "edit" || Boolean(s.documentError);
       e.zh.disabled = e.en.disabled = !ready || busy || !s.chineseAttachmentID;
       e.repair.hidden = !s.currentID || busy || !s.error;
-      e.draft.readOnly = busy; e["save-draft"].disabled = busy || !ready || !s.currentID || !r.draftDirty;
+      e.draft.readOnly = e.draft.disabled = busy; e["save-draft"].disabled = busy || !ready || !s.currentID || !r.draftDirty;
       e.original.disabled = e.reload.disabled = !ready || busy;
       e.previous.disabled = !ready || busy || r.page <= 1;
       e.next.disabled = !ready || busy || r.page >= r.pages;
-      e.preview.disabled = !ready || busy || !s.pageCount;
-      e["md-title"].textContent = e.source.hidden ? `Markdown · 第 ${r.page} 页识别预览` : "Markdown · 全文编辑";
-      e["md-note"].textContent = e.source.hidden
-        ? "按当前页 OXR 识别块重建，可能与全文稿排版不同；全文编辑和中文译文不会改写此预览。"
-        : "正在编辑完整识别稿，用于确认、翻译与导出；不会改写逐页识别预览。参考文献条目保留原文。";
+      e.preview.disabled = e.full.disabled = !ready || busy || !s.pageCount;
+      const blocked = Boolean(s.documentError || (!s.editingReady && s.canEnableEditing === false) || (s.importIntent && !s.chineseAttachmentID));
+      e.edit.disabled = !ready || busy || blocked || r.mode !== "page" || r.previewPending || r.previewInvalid || !r.selected ||
+        r.selected.revision !== s.documentRevision;
+      e.save.disabled = !ready || busy || blocked || r.mode !== "edit" || !r.dirty || r.editing?.revision !== s.documentRevision;
+      e.cancel.disabled = !ready || busy;
+      e.save.hidden = e.cancel.hidden = r.mode !== "edit";
+      e.edit.hidden = r.mode !== "page";
+      e.source.hidden = r.mode !== "edit"; e.rendered.hidden = r.mode === "edit";
+      e["retry-images"].disabled = !ready || busy || r.mode === "edit" || r.previewPending;
+      e["md-title"].textContent = r.mode === "full" ? "Markdown · 全文原文预览" :
+        r.mode === "edit" ? `Markdown · 第 ${r.page} 页单块编辑` : `Markdown · 第 ${r.page} 页`;
+      e["md-note"].textContent = s.documentError ? safeError(s.documentError) : r.mode === "edit"
+        ? "仅编辑选中块；保存进入待译稿，不会发送模型请求。修改后须重新确认翻译。"
+        : s.editingReady ? "统一逐页原文稿（含已保存编辑），排版可能与 OXR 全文不同。当前页可点击或用键盘选择一块，再点“编辑一段”；全文仅供预览。"
+        : !s.pageCount ? "上传并解析后可核对原文、选择单块编辑或预览全文。"
+        : s.canEnableEditing === false ? "逐页识别信息不完整，无法启用编辑；请明确确认后重新上传并解析。现有旧稿和译文仍保留。"
+        : "旧任务：当前页是独立识别预览，全文显示旧原文稿。编辑前需确认迁移：替换旧手改稿、保留备份，并重新确认翻译。";
       e.page.textContent = r.pages ? `第 ${r.page} / ${r.pages} 页` : "尚无预览";
+      for (const entry of r.blockNodes) entry.node.setAttribute("aria-disabled", String(busy || blocked));
     }
     _error(r, error) { if (this._current(r)) { r.localError = true; r.el.error.textContent = safeError(error); } }
     _action(r, fn, after) {
       if (!this._current(r) || !r.service || this._active(r)) return Promise.resolve(false);
       const id = ++r.opSerial, doc = r.document;
+      this._cancelImages(r);
+      ++r.previewSerial;
+      if (r.previewPending) { r.previewPending = false; r.previewInvalid = true; }
       r.pending = true; r.localError = false; r.el.error.textContent = ""; this._controls(r);
       const valid = () => this._current(r) && r.document === doc && id === r.opSerial;
       const action = Promise.resolve().then(() => valid() ? fn(valid) : undefined).then(() => {
         if (valid()) { after?.(); this._state(r, r.service.snapshot()); } return valid();
       }).catch(error => { if (valid()) this._error(r, error); return false; }).finally(() => {
-        if (valid()) { r.pending = false; this._controls(r); }
+        if (valid()) {
+          r.pending = false;
+          if (r.mode !== "edit" && (r.renderedSource !== r.state.source || r.renderedRevision !== r.state.documentRevision)) this._render(r);
+          this._controls(r);
+        }
       });
       r.action = action; return action;
     }
@@ -371,29 +406,29 @@
       return this._action(r, async valid => {
         const config = this.runtime.config(), replaceApproved = Boolean(r.state.approvedHash);
         if (!r.window.confirm(`将完整 PDF 上传至 ${address(config.oxrBaseURL)} 进行解析？仍按页数和体积分块，不额外逐页请求。已提交的远端任务可能无法取消。`)) return;
-        if ((replaceApproved || r.dirty || r.draftDirty) && !r.window.confirm(
-          "重新解析会先归档已有确认稿的检查点；新解析成功后才切换，并需重新确认和翻译。失败保留旧任务；已有附件不会删除。未确认的全文编辑和未保存的段落修正将在成功后丢弃，是否继续？")) return;
+        if ((replaceApproved || r.state.pageCount || r.dirty || r.draftDirty) && !r.window.confirm(
+          "重新解析会先归档已有确认稿的检查点；新解析成功后才切换，并需重新确认和翻译。失败保留旧任务；已有附件不会删除。未确认的单块编辑和未保存的段落修正将在成功后丢弃，是否继续？")) return;
         if (this.runtime.config().oxrBaseURL !== config.oxrBaseURL) throw new Error("上传地址已经改变，请重新检查并确认。");
         if (valid()) {
-          ++r.previewSerial; r.previewPending = false;
+          ++r.previewSerial; r.previewPending = false; r.previewInvalid = true; this._clearBlocks(r);
           r.el.image.removeAttribute("src"); r.el.image.hidden = true; r.el.rendered.replaceChildren();
           r.el["md-status"].textContent = "正在重新解析，完成后加载对应页。";
           await r.service.parse({ consent: true, replaceApproved }); parsed = true;
         }
       }, () => {
-        if (parsed) { r.dirty = false; r.draftDirty = false; r.page = 1; r.pages = r.service.snapshot().pageCount; }
+        if (parsed) { r.dirty = false; r.draftDirty = false; r.editing = null; r.mode = "page"; r.page = 1; r.pages = r.service.snapshot().pageCount; }
       }).then(async ok => {
         if (!this._current(r)) return;
         if (!ok) r.el["md-status"].textContent = "解析未完成，旧任务已保留；可重新加载原有预览。";
         if (ok && parsed && r.state.pageCount) {
-          r.el.source.hidden = true; r.el.rendered.hidden = false;
           await this._preview(r);
         }
       });
     }
     _translate(r) {
+      if (r.mode === "edit" || r.dirty || r.draftDirty || r.state.documentError) return Promise.resolve(false);
       return this._action(r, async valid => {
-        const config = this.runtime.config(), source = r.el.source.value;
+        const config = this.runtime.config(), source = r.state.source;
         if (config.provider !== "deepseek") throw new Error("请在现有翻译服务设置中选择 DeepSeek，未发送任何内容。");
         const changed = this._changed(r, config);
         const plan = modules.FulltextMarkdown.createPlan?.(source);
@@ -403,7 +438,7 @@
         if (!r.window.confirm(`确认 Markdown 并向 DeepSeek 发送正文？\n地址：${address(config.endpoint)}\n模型：${String(config.model || "未配置")}\n每段会产生翻译和独立校对请求；格式失败可能重试并产生费用。全部通过后自动生成并保存独立中文 PDF 附件。${references}${reset}`)) return;
         if (!valid()) return;
         const unchanged = () => {
-          if (configKey(this.runtime.config()) !== configKey(config) || r.el.source.value !== source) {
+          if (configKey(this.runtime.config()) !== configKey(config) || r.state.source !== source) {
             throw new Error("原文或 DeepSeek 配置已在确认期间改变，未开始翻译；请重新检查并确认检查点。");
           }
         };
@@ -418,7 +453,7 @@
     }
     async _pause(r) {
       if (!this._current(r) || r.stopping) return;
-      r.stopping = true; ++r.opSerial; ++r.previewSerial;
+      r.stopping = true; ++r.opSerial; ++r.previewSerial; this._cancelImages(r);
       if (r.previewPending) { r.previewPending = false; r.el["md-status"].textContent = "预览已暂停，请重新加载。"; }
       this._controls(r);
       try {
@@ -426,10 +461,120 @@
       } catch (error) { this._error(r, error); }
       finally { if (this._current(r)) { r.pending = false; r.stopping = false; this._state(r, r.service.snapshot()); } }
     }
+    _discard(r) {
+      if (!this._current(r) || this._active(r)) return false;
+      if (r.dirty && !r.window.confirm("丢弃尚未保存的单块编辑？已保存的原文稿不变。")) return false;
+      r.dirty = false; r.editing = null; return true;
+    }
+    _navigate(r, page) {
+      if (!Number.isSafeInteger(page) || page < 1 || page > r.pages || !this._discard(r)) return;
+      r.page = page; r.mode = "page"; void this._preview(r);
+    }
+    _mode(r, mode) {
+      if (!this._discard(r)) return;
+      r.mode = mode; this._render(r);
+    }
+    _clearBlocks(r) {
+      ++r.renderSerial;
+      for (const cleanup of r.blockCleanups.splice(0)) cleanup();
+      r.blockNodes = []; r.selected = null;
+    }
+    _select(r, entry) {
+      if (!this._current(r) || this._active(r) || r.mode !== "page" || r.previewPending || r.previewInvalid ||
+          entry.serial !== r.renderSerial || entry.revision !== r.state.documentRevision) return;
+      r.selected = entry;
+      for (const item of r.blockNodes) item.node.setAttribute("aria-pressed", String(item === entry));
+      r.el["md-status"].textContent = `${r.renderWarning || ""}已选第 ${r.blockNodes.indexOf(entry) + 1} 块（${entry.kind}），点击“编辑一段”修改。`;
+      this._controls(r);
+    }
+    _block(r, node, block) {
+      const exact = r.blocks[block.index];
+      if (!exact || exact.index !== block.index || exact.start !== block.start || exact.end !== block.end || exact.source !== block.source) return; // Match exact metadata, never visual order or similar text.
+      const entry = { ...exact, node, serial: r.renderSerial, revision: r.state.documentRevision, page: r.page };
+      node.setAttribute("class", "spt-fulltext-block"); node.setAttribute("role", "button"); node.setAttribute("tabindex", "0");
+      node.setAttribute("aria-label", `选择第 ${r.blockNodes.length + 1} 块（${block.kind}）`); node.setAttribute("aria-pressed", "false");
+      listen(node, "click", () => this._select(r, entry), r.blockCleanups);
+      listen(node, "keydown", event => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault(); this._select(r, entry);
+      }, r.blockCleanups);
+      r.blockNodes.push(entry);
+    }
+    async _edit(r) {
+      if (!this._current(r) || this._active(r) || r.mode !== "page" || r.previewPending || r.previewInvalid || !r.selected ||
+          r.state.documentError || (!r.state.editingReady && r.state.canEnableEditing === false) || (r.state.importIntent && !r.state.chineseAttachmentID)) return;
+      const chosen = r.selected;
+      if (chosen.serial !== r.renderSerial || chosen.revision !== r.state.documentRevision) return;
+      if (!r.state.editingReady) {
+        if (!r.window.confirm("启用统一逐页编辑稿？将用完整逐页识别结果替换旧全文稿（包括旧手改内容），排版可能不同。旧稿和检查点会保留备份，迁移后须重新确认翻译。缺少完整页映射时不会迁移。")) return;
+        const ok = await this._action(r, () => r.service.enableEditing({ consent: true }));
+        if (ok && this._current(r) && r.state.editingReady) {
+          this._render(r); r.el["md-status"].textContent = "迁移已保存；请在当前稿重新选择块，再点击“编辑一段”。";
+        }
+        return; // No pre-migration selection may be written into a new revision.
+      }
+      this._cancelImages(r);
+      r.editing = { page: chosen.page, index: chosen.index, revision: chosen.revision, source: chosen.source };
+      r.el.source.value = chosen.source; r.dirty = false; r.mode = "edit";
+      this._controls(r); r.el.source.focus?.();
+    }
+    _save(r) {
+      const edit = r.editing;
+      if (r.mode !== "edit" || !r.dirty || !edit || !r.state.editingReady ||
+          edit.revision !== r.state.documentRevision || r.state.documentError || (r.state.importIntent && !r.state.chineseAttachmentID)) return Promise.resolve(false);
+      const text = r.el.source.value;
+      return this._action(r, () => r.service.editBlock({ page: edit.page, index: edit.index, revision: edit.revision, text }), () => {
+        r.dirty = false; r.editing = null; r.mode = "page";
+        r.renderedRevision = null; // Refresh even if an identical replacement kept the same revision.
+      });
+    }
+    _cancelImages(r) {
+      ++r.imageSerial;
+      if (r.service) this.runtime.cancelImages?.(r.service);
+      if (r.el?.["image-status"]) {
+        if (r.imagesPending) {
+          r.el["image-status"].textContent = "图片加载已暂停。";
+          r.el["retry-images"].hidden = false;
+        }
+        r.imagesPending = 0;
+      }
+    }
+    _remoteImages(r) {
+      const id = r.imageSerial, doc = r.document, page = r.page, mode = r.mode,
+        revision = r.state.documentRevision, source = r.state.source, request = r.previewSerial, jobs = new Map();
+      let failed = 0, loaded = 0, limited = false;
+      const valid = () => this._current(r) && r.document === doc && r.page === page && r.mode === mode &&
+        r.imageSerial === id && r.state.documentRevision === revision && r.state.source === source &&
+        r.previewSerial === request && (mode === "full" || (!r.previewPending && !r.previewInvalid)) && !this._active(r) && mode !== "edit";
+      const status = () => {
+        if (!valid()) return;
+        r.el["image-status"].textContent = `${r.imagesPending ? `正在加载 ${r.imagesPending} 张图片。` : loaded ? `已加载 ${loaded} 张图片。` : ""}${failed ? "部分图片加载失败，已保留原文，可重试。" : ""}${limited ? "本次预览最多加载 128 个不同图片地址，超出部分保留原文。" : ""}`;
+        r.el["retry-images"].hidden = !failed && !limited;
+      };
+      return (uri, commit) => {
+        if (!valid()) return;
+        if (!jobs.has(uri) && jobs.size >= 128) { limited = true; status(); return; }
+        r.imagesPending++;
+        if (!jobs.has(uri)) jobs.set(uri, Promise.resolve().then(() => {
+          if (!valid()) return null;
+          const cache = this.runtime.imageCacheFor?.(r.service);
+          if (!cache) throw new Error("图片缓存不可用");
+          return cache.resolve(uri, { isCurrent: valid });
+        }));
+        status();
+        jobs.get(uri).then(data => {
+          if (!valid()) return;
+          if (!data) throw new Error("图片不可用");
+          commit(data); loaded++;
+        }).catch(() => { if (valid()) failed++; }) // Never expose an untrusted URL or remote response in errors.
+          .finally(() => { if (valid()) { r.imagesPending--; status(); } });
+      };
+    }
     async _preview(r) {
       if (!this._current(r) || !r.service || this._active(r)) return;
+      this._cancelImages(r); this._clearBlocks(r);
       const id = ++r.previewSerial, doc = r.document, requestedPage = r.page;
-      r.previewPending = true;
+      r.previewPending = true; r.previewInvalid = true;
       r.el.image.removeAttribute("src"); r.el.image.hidden = true; r.el["preview-error"].textContent = "正在本地生成预览…";
       r.el.rendered.replaceChildren();
       if (r.el.source.hidden) r.el["md-status"].textContent = "正在加载对应页面…";
@@ -441,34 +586,64 @@
             (r.state.pageCount && result.pageCount !== r.state.pageCount)) throw new Error("本地预览页码与任务不一致。");
         if (typeof result.dataURI !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/u.test(result.dataURI) || result.dataURI.length > 45 * 1024 * 1024) throw new Error("本地预览图片无效。");
         r.el.image.setAttribute("src", result.dataURI); r.el.image.hidden = false;
-        r.previewPending = false;
+        r.previewPending = false; r.previewInvalid = false;
         r.page = result.page; r.pages = result.pageCount; r.el["preview-error"].textContent = ""; this._controls(r);
-        if (r.el.source.hidden) this._render(r);
+        if (r.mode === "page") this._render(r);
       } catch (error) {
         if (this._current(r) && r.document === doc && id === r.previewSerial) {
           r.previewPending = false; r.el["preview-error"].textContent = safeError(error);
-          r.el.rendered.replaceChildren(); r.el["md-status"].textContent = "左侧页面加载失败，未展示可能错位的内容。";
+          if (r.mode === "page") {
+            r.el.rendered.replaceChildren(); r.el["md-status"].textContent = "左侧页面加载失败，未展示可能错位的内容。";
+          }
         }
       }
     }
     _render(r) {
-      if (!this._current(r)) return;
-      r.el.source.hidden = true; r.el.rendered.hidden = false;
-      r.el.rendered.replaceChildren(); r.el.rendered.scrollTop = 0; this._controls(r);
-      if (r.previewPending) { r.el["md-status"].textContent = "正在加载对应页面…"; return; }
+      if (!this._current(r) || this._active(r) || r.mode === "edit") return;
+      this._cancelImages(r); this._clearBlocks(r);
+      r.el.rendered.replaceChildren(); r.el.rendered.scrollTop = 0;
+      r.el["image-status"].textContent = ""; r.el["retry-images"].hidden = true;
+      r.renderedSource = r.state.source; r.renderedRevision = r.state.documentRevision;
+      this._controls(r);
+      if (r.mode === "page" && r.previewPending) { r.el["md-status"].textContent = "正在加载对应页面…"; return; }
+      if (r.mode === "page" && r.previewInvalid) { r.el["md-status"].textContent = "左侧页面加载失败或已失效，请重新加载预览。"; return; }
+      let source;
+      r.blocks = []; r.renderWarning = "";
       try {
-        const source = r.service.getPageMarkdown(r.page);
-        if (source === null) {
-          r.el["md-status"].textContent = r.state.pagePreviewError || "本页缺少完整逐页识别信息，无法准确预览，需要重新解析。可点击“重新上传并解析”，确认后重建；不会自动上传。";
+        source = r.mode === "full" ? r.state.source : r.service.getPageMarkdown(r.page);
+        if (source === null || source === undefined) {
+          r.el["md-status"].textContent = r.state.documentError || r.state.pagePreviewError || "本页缺少完整逐页识别信息，无法准确预览，需要重新解析；不会自动上传。";
           return;
         }
+        r.blocks = r.mode === "page" ? r.service.getPageBlocks(r.page) : [];
         r.el["md-status"].textContent = source.trim() ? "" : "本页无识别内容。";
-        modules.FulltextMarkdown.renderMarkdown(r.document, r.el.rendered, source);
-      } catch (error) { r.el["md-status"].textContent = "本页无法安全渲染；未显示其他页面。"; this._error(r, error); }
+        modules.FulltextMarkdown.renderMarkdown(r.document, r.el.rendered, source, {
+          onBlock: r.mode === "page" ? (node, block) => this._block(r, node, block) : undefined,
+          onRemoteImage: this._remoteImages(r)
+        });
+      } catch (error) {
+        this._cancelImages(r); this._clearBlocks(r); r.el.rendered.replaceChildren();
+        // Literal text only: malformed Markdown remains repairable, never active HTML.
+        if (typeof source === "string") {
+          for (const block of r.mode === "page" ? r.blocks || [] : [{ source }]) {
+            const node = r.document.createElementNS("http://www.w3.org/1999/xhtml", "pre");
+            node.textContent = block.source; r.el.rendered.append(node);
+            if (r.mode === "page") this._block(r, node, block);
+          }
+        }
+        if (!r.el.rendered.children.length && typeof source === "string") {
+          const node = r.document.createElementNS("http://www.w3.org/1999/xhtml", "pre");
+          node.textContent = source; r.el.rendered.append(node);
+        }
+        r.renderWarning = "无法安全排版，已显示原文文字；可选择块修复。";
+        r.el["md-status"].textContent = r.renderWarning; this._error(r, error);
+      }
+      if (r.blockNodes.length) this._select(r, r.blockNodes[0]);
+      this._controls(r);
     }
     _close(r) {
       if (r.closing) return r.closing;
-      r.closed = true; ++r.opSerial; ++r.previewSerial; r.resolveClosed();
+      r.closed = true; ++r.opSerial; ++r.previewSerial; this._cancelImages(r); this._clearBlocks(r); r.resolveClosed();
       for (const cleanup of r.cleanups.splice(0)) { try { cleanup?.(); } catch (_) {} }
       r.el?.image.removeAttribute("src"); r.el?.rendered.replaceChildren();
       r.closing = (async () => {

@@ -27,6 +27,7 @@ function segment(source) {
 }
 class Node {
   constructor(name, value = "") { this.localName = name; this.value = value; this.children = []; this.attributes = new Map(); }
+  get childNodes() { return this.children; }
   get textContent() { return this.value + this.children.map(child => child.textContent).join(""); }
   set textContent(value) { this.value = value; this.children = []; }
   append(...children) {
@@ -61,6 +62,57 @@ test("IIFE registers FulltextMarkdown without startup, DOM or network side effec
   vm.runInNewContext(source, scope);
   assert.equal(typeof scope.SmartPaperTranslatorModules.FulltextMarkdown.createPlan, "function");
   for (const name of ["createPlan", "prepareSegment", "restoreTranslation", "validateRestored", "assemble", "renderMarkdown"]) assert.equal(typeof M[name], "function");
+});
+
+test("editable blocks carry exact offsets without swallowing whitespace or repeated text", () => {
+  const source = "# Title\r\n\r\nSame\r\n\r\nSame\r\n\r\n$$x$$\r\n\r\n| A | B |\r\n| --- | --- |\r\n| x | y |\r\n";
+  const blocks = M.editableBlocks(source);
+  assert.equal(blocks.length, 5);
+  blocks.forEach((b, i) => { assert.equal(b.index, i); assert.equal(source.slice(b.start, b.end), b.source); });
+  assert.notEqual(blocks[1].start, blocks[2].start);
+  assert.deepEqual(M.editableBlocks("\n<!-- comment -->\n\n"), []);
+  assert.equal(M.editableBlocks("$$unclosed")[0].kind, "source");
+  assert.throws(() => M.editableBlocks("$$unclosed", { strict: true }), /未闭合/u);
+  assert.throws(() => M.validateSource("bad\ud800"), /Unicode/u);
+});
+
+test("block rendering callbacks retain algorithm heading context and exact edit indexes", () => {
+  const source = "### Algorithm 1\n\n```pseudocode\nRequire: $x$\n```\n\nText\n";
+  const doc = new Document(), root = doc.createElement("div"), records = [];
+  M.renderMarkdown(doc, root, source, { onBlock: (node, block) => records.push({ node, block }) });
+  assert.equal(records.length, 3);
+  assert.deepEqual(records.map(r => r.block.index), [0, 1, 2]);
+  assert.equal(records[1].block.source, M.editableBlocks(source)[1].source);
+  assert.equal(descendants(records[1].node).filter(n => n.localName === "math").length, 1);
+  assert.equal(root.children.length, 3);
+});
+
+test("remote image resolver cannot bypass data-only signature or aggregate limits", () => {
+  const doc = new Document(), root = doc.createElement("div"), urls = [];
+  M.renderMarkdown(doc, root, "![figure](https://example.invalid/a.png)", { imageResolver: url => { urls.push(url); return png; } });
+  assert.deepEqual(urls, ["https://example.invalid/a.png"]);
+  assert.equal(descendants(root).find(n => n.localName === "img").getAttribute("src"), png);
+  for (const value of ["https://example.invalid/a.png", "file:///private/a.png", "data:image/svg+xml;base64,PHN2Zy8+"]) {
+    assert.throws(() => M.renderMarkdown(doc, root, "![figure](https://example.invalid/a.png)", { imageResolver: () => value }));
+  }
+  const lookedUp = [];
+  M.renderMarkdown(doc, root, "```\n![x](https://example.invalid/a.png)\n```", { imageResolver: uri => lookedUp.push(uri) });
+  assert.deepEqual(lookedUp, []);
+});
+
+test("asynchronous image commits update only the placeholder and enforce data validation", () => {
+  const doc = new Document(), root = doc.createElement("div"); let commit;
+  M.renderMarkdown(doc, root, "Intro\n\n![figure](https://example.invalid/a.png)\n\nEnd", {
+    onRemoteImage: (uri, update) => { assert.equal(uri, "https://example.invalid/a.png"); commit = update; }
+  });
+  const first = root.children[0], last = root.children.at(-1);
+  assert.equal(descendants(root).some(n => n.localName === "img"), false);
+  assert.throws(() => commit("https://example.invalid/a.png"), /本地/u);
+  assert.throws(() => commit("data:image/svg+xml;base64,PHN2Zy8+"));
+  commit(png); commit(png);
+  assert.equal(descendants(root).filter(n => n.localName === "img").length, 1);
+  assert.equal(root.children[0], first); assert.equal(root.children.at(-1), last);
+  assert.equal(root.textContent.includes("https://"), false);
 });
 
 test("lossless plan and assembly preserve CRLF, Unicode, headings, paragraphs and blank lines", () => {

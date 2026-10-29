@@ -20,7 +20,7 @@
   const Constants = Object.freeze({
     PLUGIN_ID: "smart-paper-translator@zotero.local",
     PLUGIN_NAME: "Smart Paper Translator",
-    VERSION: "0.1.53",
+    VERSION: "0.1.54",
     PREF_PREFIX,
     PREFS: Object.freeze({
       provider: PREF_PREFIX + "provider",

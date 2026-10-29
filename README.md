@@ -59,7 +59,7 @@ An interactive chart from the conversation, shown beside the passage it explains
 
 ## Get started
 
-The current version is **0.1.53 (test build)**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
+The current version is **0.1.54 (test build)**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
 
 PDF screenshots are enabled on the individually verified **9.0.6 and 10.0.4** versions. Use the original PDF view for screenshots; Zotero 10's reflowed Reading Mode is not supported for capture. Other patch versions keep screenshots disabled until their private PDF.js bridge has been checked.
 
@@ -71,7 +71,7 @@ Version 0.1.40 adds Windows drive/UNC path handling for shared runtime discovery
 2. Open Zotero's plugin manager, choose the option to install from a file, and select the downloaded XPI.
 3. Open a PDF in the main Zotero window. Find **Agents** in the right sidebar.
 
-Updates are installed manually from a newer XPI. The local 0.1.53 build is `dist/smart-paper-translator-0.1.53.xpi`; it adds page-specific recognition previews, confirmed reparsing of old tasks and math rendering in algorithm pseudocode. This build has not been tested in a running Zotero client.
+Updates are installed manually from a newer XPI. The local 0.1.54 build is `dist/smart-paper-translator-0.1.54.xpi`; it adds trusted OXR image caching, single-block editing and full-source previews. This build has not been tested in a running Zotero client.
 
 ### Connect an agent
 
@@ -121,13 +121,15 @@ This adds a separate PDF → Markdown → Chinese PDF workflow, not an Agent cha
 
 1. Select **DeepSeek** in the translation settings and configure its address, model and key. Full-paper translation shares these settings, but has separate translation/proofreading prompts and a fixed Simplified Chinese target.
 2. Under **论文全文翻译** (Full-paper translation), select an existing **Python 3.9+** environment with **PyMuPDF >=1.24.4,<2** and **requests >=2.31,<3**, then click **检测本地依赖**. You prepare dependencies yourself; the plugin never installs them. The default OXR address is `https://free-oxr.somark.ai/api/v1` and can be changed.
-3. Open a PDF attached to a regular paper in an editable library and click **全文译** in the main-window Reader toolbar. Opening the confirmation window is local. **上传 PDF 并解析** asks before uploading the PDF to OXR. A collapsible list shows each actual page range (up to 20 pages per block, split further by size), waiting-to-upload/queued/parsing/completed states, completed block counts and elapsed time—not an estimated percentage. Expand or collapse it at any time; updates preserve your choice. Closing pauses local work; submitted remote jobs may continue.
-4. The right pane shows recognition content for the PDF page on the left and follows page changes. It is rebuilt from OXR's per-page blocks, may differ from the full Markdown layout, and adds no per-page requests. Algorithm pseudocode keeps indentation while rendering math; ordinary program code stays literal. **编辑全文** edits the complete Markdown used for translation, not the per-page preview; translated text does not replace that preview either. Check equations, tables and the bibliography before confirming. References/Bibliography entries and inline citation markers are preserved; unsupported HTML remains source text. Old tasks without page data show a notice. **重新上传并解析** requires confirmation; approved checkpoints are archived before reparsing, and only a successful new parse replaces the task and requires fresh confirmation/translation. Failure keeps the old work; imported attachments are not deleted.
+3. Open a PDF attached to a regular paper in an editable library and click **全文译** in the main-window Reader toolbar. Opening the window does not upload the PDF or call a model; source previews can automatically download and cache trusted OXR images without another confirmation. **上传 PDF 并解析** asks before uploading the PDF to OXR. A collapsible list shows each actual page range (up to 20 pages per block, split further by size), waiting-to-upload/queued/parsing/completed states, completed block counts and elapsed time—not an estimated percentage. Expand or collapse it at any time; updates preserve your choice. Closing pauses local work; submitted remote jobs may continue.
+4. The right pane defaults to the source for the PDF page on the left. Select a paragraph, equation, table or image block, then use **编辑一段** to edit and save it. **预览全文** shows the complete source, including saved edits, with a return-to-page button; it does not show the translation. New parses assemble one editable document from OXR's page blocks, so page preview, full preview and translation share the same source. Layout may differ from OXR's original Markdown, which is kept as a backup; no extra per-page parsing requests are made. Older tasks require confirmation before conversion, with the previous source/checkpoint archived. Edits require fresh translation confirmation. Missing page data requires separately confirmed **重新上传并解析**; failure keeps the old work and imported attachments are not deleted. Algorithm pseudocode renders math while ordinary code remains literal. Check equations, tables and bibliography before confirming; References/Bibliography entries and inline citation markers stay unchanged, and unsupported HTML remains source text.
 5. Click **翻译 / 继续** and confirm the destination and model. Each paragraph is translated, proofread and checked; format failures retry up to three rounds, then pause for correction. Completed paragraphs are checkpointed. A successful, confirmed run automatically attempts PDF generation and import; if export fails, keep/export the Markdown and retry **生成 / 保存 PDF** later.
 
-The Chinese PDF is a **new attachment under the same paper**. The Reader's **中文 / 英文原文** control switches attachments; the original PDF and annotations are untouched. Reflow changes layout and page numbers, and annotations do not transfer. Markdown is exportable but is not added as a Zotero attachment. Unconfirmed edits may be lost when closing; confirmed work is kept locally.
+The Chinese PDF is a **new attachment under the same paper**. The Reader's **中文 / 英文原文** control switches attachments; the original PDF and annotations are untouched. Reflow changes layout and page numbers, and annotations do not transfer. Markdown is exportable but is not added as a Zotero attachment. Saved source edits persist before translation confirmation; closing warns before discarding unsaved edits. Approved work and completed paragraphs remain local.
 
-Local PDF copies, OCR results, confirmed Markdown and checkpoints are stored under `smart-paper-translator/fulltext/` in Zotero's data directory, unencrypted and outside Zotero sync. The imported Chinese attachment follows Zotero's normal attachment/sync settings. OXR receives uploaded PDF content; the configured DeepSeek endpoint receives paragraph text. Review each service's retention policy before proceeding.
+Automatic preview images are limited to trusted OXR file URLs: the official `.cn`/`.ai` hosts with fixed image paths, or the configured custom HTTPS service's own origin and directory. Arbitrary external URLs, local hosts and SVG are rejected. Downloads omit cookies/keys, reject redirects and enforce resource/signature checks before displaying local data. Failed images keep their Markdown and can be retried. This feature does not add remote-image downloads to PDF printing or Markdown export.
+
+Local PDF copies, OCR results, original backups, editable page documents, image caches, confirmed Markdown and checkpoints are stored under `smart-paper-translator/fulltext/` in Zotero's data directory, unencrypted and outside Zotero sync. The imported Chinese attachment follows Zotero's normal attachment/sync settings. OXR receives uploaded PDF content and preview-image download requests; the configured DeepSeek endpoint receives paragraph text, excluding protected image data and URLs. Review each service's retention policy before proceeding.
 
 ## Your data and agent permissions
 
@@ -149,7 +151,7 @@ Read [AGENTS.md](AGENTS.md) before changing plugin code. Runtime files live in `
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.53.xpi
+unzip -t dist/smart-paper-translator-0.1.54.xpi
 ```
 
 Build output goes to `dist/`. Automated tests and static archive checks are the default delivery checks; native Zotero parsing and UI testing run only when separately requested. The [technical reference (Chinese)](docs/technical-reference.zh-CN.md) covers adapter behavior, storage, rendering limits, and historical validation results.

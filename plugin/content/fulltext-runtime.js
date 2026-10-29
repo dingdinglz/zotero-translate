@@ -64,7 +64,7 @@
   }
   function storeAt(root) {
     const pathFor = name => {
-      if (!/^(?:state\.json|source\.md|approved(?:-[a-f0-9]{64})?\.md|translated\.md|(?:pages|history)-[a-f0-9]{64}\.json)$/u.test(name)) throw new Error("无效的全文任务文件名。");
+      if (!/^(?:state\.json|source\.md|approved(?:-[a-f0-9]{64})?\.md|original-[a-f0-9]{64}\.md|translated\.md|(?:pages|history|document)-[a-f0-9]{64}\.json)$/u.test(name)) throw new Error("无效的全文任务文件名。");
       const path = global.PathUtils.join(root, name); checkPath(path, "regular", true); return path;
     };
     return {
@@ -83,6 +83,48 @@
       },
       async writeJSON(name, value) { return this.writeText(name, JSON.stringify(value)); }
     };
+  }
+  function imageStorageAt(root) {
+    let writes = Promise.resolve();
+    // Count serialized bytes conservatively: base64 expands by at least 4/3.
+    // Including JSON overhead keeps decoded task bytes below 64 MiB across reopen.
+    const maxEntry = 17 * 1024 * 1024, maxDisk = Math.floor(64 * 1024 * 1024 * 4 / 3);
+    const pathFor = key => {
+      if (typeof key !== "string" || !/^[a-f0-9]{64}$/u.test(key)) throw new Error("图片缓存标识无效。");
+      return global.PathUtils.join(root, `${key}.json`);
+    };
+    const storage = {
+      idle() { return writes; },
+      async read(key) {
+        const path = pathFor(key); checkPath(root, "directory", true); checkPath(path, "regular", true);
+        if (!(await global.IOUtils.exists(root)) || !(await global.IOUtils.exists(path))) return null;
+        return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedRead(path, maxEntry)));
+      },
+      write(key, value) {
+        const task = writes.then(() => storage._write(key, value));
+        writes = task.catch(() => {}); return task;
+      },
+      async _write(key, value) {
+        const path = pathFor(key), bytes = new TextEncoder().encode(JSON.stringify(value));
+        if (bytes.length > maxEntry) throw new Error("图片缓存单项超限。");
+        await directory(root);
+        const entries = await global.IOUtils.getChildren(root);
+        if (entries.length > 256) throw new Error("图片缓存数量超限。");
+        let total = 0, count = 0, previous = 0;
+        for (const entry of entries) {
+          const leaf = global.PathUtils.filename(entry);
+          if (!/^[a-f0-9]{64}\.json(?:\.tmp)?$/u.test(leaf)) throw new Error("图片缓存目录内容无效。");
+          checkPath(entry, "regular");
+          const stat = await global.IOUtils.stat(entry); total += stat.size;
+          if (entry === path) previous = stat.size;
+          if (leaf.endsWith(".json")) count++;
+        }
+        if (count + (await global.IOUtils.exists(path) ? 0 : 1) > 128 || total - previous + bytes.length > maxDisk) throw new Error("图片缓存总量超限。");
+        checkPath(path, "regular", true); checkPath(path + ".tmp", "regular", true);
+        await global.IOUtils.write(path, bytes, { tmpPath: path + ".tmp" });
+      }
+    };
+    return storage;
   }
   function validateProgress(value) {
     if (!value || typeof value !== "object" || Array.isArray(value) || value.type !== "progress") throw new Error("本地转换进度无效。");
@@ -152,7 +194,8 @@
     constructor({ rootURI, getPreference, apiClient, credentials }) {
       Object.assign(this, { rootURI, getPreference, apiClient, credentials });
       this.root = global.PathUtils.join(global.Zotero.DataDirectory.dir, "smart-paper-translator", "fulltext");
-      this.processes = new Set(); this.services = new Map(); this.stopped = false; this.helperPromise = null; this.processFailure = false;
+      this.processes = new Set(); this.services = new Map(); this.taskRoots = new WeakMap(); this.imageStores = new WeakMap(); this.imageCaches = new Map();
+      this.stopped = false; this.helperPromise = null; this.processFailure = false;
     }
     config() {
       const config = modules.Logic.getProviderConfig(this.getPreference);
@@ -223,7 +266,27 @@
       }
       return result;
     }
+    imageCacheFor(service) {
+      if (this.stopped || !this.taskRoots.has(service)) throw new Error("图片预览任务已关闭。");
+      const baseURL = service.state.oxrBaseURL || this.config().oxrBaseURL;
+      const previous = this.imageCaches.get(service);
+      if (previous?.baseURL === baseURL) return previous.cache;
+      previous?.cache.dispose();
+      const platform = {};
+      const { XPCOMUtils } = global.ChromeUtils.importESModule("resource://gre/modules/XPCOMUtils.sys.mjs");
+      XPCOMUtils.defineLazyGlobalGetters(platform, ["fetch", "AbortController"]);
+      if (!this.imageStores.has(service)) this.imageStores.set(service, imageStorageAt(global.PathUtils.join(this.taskRoots.get(service), "images")));
+      const cache = new modules.FulltextImages.ImageCache({ baseURL,
+        fetch: (...args) => platform.fetch(...args), AbortController: platform.AbortController,
+        hash: text => hashBytes(new TextEncoder().encode(text)),
+        storage: this.imageStores.get(service),
+        validateImage: uri => modules.FulltextMarkdown.imageInfo(uri) });
+      this.imageCaches.set(service, { baseURL, cache }); return cache;
+    }
+    cancelImages(service) { this.imageCaches.get(service)?.cache.cancel(); }
     async release(service) {
+      this.imageCaches.get(service)?.cache.dispose(); this.imageCaches.delete(service);
+      await this.imageStores.get(service)?.idle(); this.imageStores.delete(service); this.taskRoots.delete(service);
       await service.pause();
       const entry = this.services.get(service.attachmentID);
       if (entry && await entry === service) this.services.delete(service.attachmentID);
@@ -334,6 +397,7 @@
           await global.IOUtils.writeUTF8(path, markdown, { tmpPath: path + ".spt-tmp" }); return true;
         }
       });
+      this.taskRoots.set(service, taskRoot);
       service.attachmentID = id; service.title = parent.getField("title") || item.getField("title") || "论文全文翻译";
       await service.load();
       if (this.stopped) { await service.shutdown(); throw new Error("插件已退出。"); }
@@ -413,12 +477,15 @@
     }
     async shutdown() {
       this.stopped = true;
+      for (const { cache } of this.imageCaches.values()) cache.dispose();
+      await Promise.all([...this.imageCaches.keys()].map(service => this.imageStores.get(service)?.idle()));
+      this.imageCaches.clear();
       for (const process of this.processes) { try { process.kill(0); } catch (_) {} }
       await Promise.allSettled([...this.services.values()].map(async promise => (await promise).shutdown()));
       await Promise.allSettled([...this.processes].map(process => process.wait()));
       this.services.clear();
     }
   }
-  modules.FulltextRuntime = { FulltextRuntime, validateOXRURL, collectProcess, storeAt, checkPath };
+  modules.FulltextRuntime = { FulltextRuntime, validateOXRURL, collectProcess, storeAt, imageStorageAt, checkPath };
   if (typeof module !== "undefined" && module.exports) module.exports = modules.FulltextRuntime;
 })(typeof globalThis !== "undefined" ? globalThis : this);

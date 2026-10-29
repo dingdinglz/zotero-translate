@@ -16,7 +16,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.53`
+- 当前版本：`0.1.54`
 - 目标平台：macOS Zotero 10.0.4；保留 Zotero 9.0.6 既有支持
 - 0.1.48 另在本机 Zotero 10.0.6 / Gecko 140.17.0 完成非安装式 XPI 解析和模拟后端的独立分支窗口验证；不代表完整插件/真实 Agent 验证，截图精确版本白名单不变。
 - 0.1.49 历史验证为 392 项自动测试及可复现 XPI；当轮因 AX 权限未完成原生解析/UI 验证。
@@ -61,8 +61,9 @@
 - Codex 公式固定使用 XPI 内置 KaTeX `0.18.4` 生成 MathML；必须保持 `trust: false`、宏展开/尺寸上限、每公式独立宏环境和 MathML 外部元素/资源属性过滤。不得使用 `innerHTML`、远程公式服务、运行时 CDN、KaTeX HTML 输出或可加载资源的可信命令。
 - Codex Mermaid 固定使用 XPI 内置 Mermaid `11.16.1`，只在出现 `mermaid` fenced code block 时按窗口延迟加载，不得使用 CDN 或运行时下载。由于 Zotero Item Pane 属于无 `body` 的 XUL 文档，运行时必须留在同窗口的本地 `about:blank` HTML iframe 与专用 Gecko sandbox 中；sandbox 必须以该 HTML 窗口为原型继承只读的 `window`/`document`，不得再次赋值，关闭插件时移除 iframe 并丢弃 sandbox 引用；不得在 Zotero 9.0.6 调用 `Cu.nukeSandbox()`。必须保持 `securityLevel: strict`、`htmlLabels: false`、安全配置锁定、源文本/边数/超时/SVG 大小与节点数上限。返回 SVG 只允许 Mermaid flowchart 生成的本地 `feDropShadow` 滤镜，不得放行其他滤镜原语，并继续拒绝活动元素、HTML、链接和非本地资源引用；结果需写入最长边不超过 4096 像素的固有尺寸并序列化为隔离的数据图片，宽图在侧栏横向滚动，不得作为活动 SVG 注入 Item Pane。解析、超限或安全校验失败时必须保留原始源码。
 - Codex 开发者模式必须默认关闭；关闭时不得采集或保留额外的可复制诊断日志，也不得显示复制入口。开启后仅允许在内存中有界记录当前实时 turn 的工具与思考诊断事件，脱敏常见密钥和用户主目录，不得自动落盘或上传；关闭模式、重建会话和插件退出必须清空。
-- 全文翻译持久契约见 `docs/fulltext-translation/SPEC.md`。任务绑定文库、原 PDF 附件 key 和文件 SHA-256；OXR 上传与 DeepSeek 翻译分别经用户确认。默认 OXR 地址可配置，仅 HTTPS/本机 HTTP，不跟随重定向；Python 使用用户选择的现成环境，固定插件脚本、独立 argv 和隔离模式，不运行 shell、不自动准备依赖。中间版面 PDF 只做本地逐页预览，不预先写文库。确认后的 Markdown 按内容哈希保存，逐段译文检查点原子写入；恢复复核原 PDF、模型/地址/提示词及保护内容，不混用新旧配置。参考文献条目整体保留，正文引用标记、公式、代码、图片/链接地址和 Markdown/HTML 表格结构不能被翻译改写。每段独立翻译、模型校对和程序校验，最多三轮，失败暂停，不静默缺段。只有全部通过才生成中文 MD/PDF 并导入原论文下的新附件，原 PDF 和批注不变；批注与页码不跨语言同步。关闭确认页暂停并保存进度，远端已提交 OXR 任务可能继续；导入事务结果不确定时阻止重复导入。全文预览/打印只用白名单静态 DOM、本地 KaTeX MathML 和有界签名验证的内嵌图片；不加载远程资源、file 引用或活动 HTML。Gecko 打印使用独立 settings，不修改全局打印偏好；未通过原生验证不得声称 PDF 导出已验证。
-- 全文逐页识别预览只使用 OXR JSON 的实际页归属与白名单块内容重建，不猜测全文 Markdown 的页界、不增加逐页请求。与原 PDF 哈希/解析原稿哈希绑定的 `pages-<内容哈希>.json` 独立持久化，服务核验哈希、页数及条目类型后才使用；缺失/损坏时不回退全文或整块内容。全文编辑与翻译继续使用原始 Markdown，不将重建预览当作编辑稿或中文译文。窗口默认逐页预览，翻页/重解析清除旧内容，PDF 返回复核当前窗口、请求与页码；失败、暂停和关闭不能让迟到结果显示旧页。算法伪代码只有明确围栏或紧邻编号算法标题且满足语法特征时渲染数学，保留缩进和其余字面内容；真实程序代码不解释为公式，具体契约同该 SPEC。重新解析已确认任务必须另行明确确认，先归档旧检查点到 `history-<内容哈希>.json`，新结果通过并保存后才清空旧翻译进度；失败保留旧确认稿/检查点，既有附件不删，导入结果不确定时禁止重建。
+- 全文翻译持久契约见 `docs/fulltext-translation/SPEC.md`。任务绑定文库、原 PDF 附件 key 和文件 SHA-256；OXR 上传与 DeepSeek 翻译分别经用户确认。默认 OXR 地址可配置，仅 HTTPS/本机 HTTP，不跟随重定向；Python 使用用户选择的现成环境，固定插件脚本、独立 argv 和隔离模式，不运行 shell、不自动准备依赖。中间版面 PDF 只做本地逐页预览，不预先写文库。确认后的 Markdown 按内容哈希保存，逐段译文检查点原子写入；恢复复核原 PDF、模型/地址/提示词及保护内容，不混用新旧配置。参考文献条目整体保留，正文引用标记、公式、代码、图片/链接地址和 Markdown/HTML 表格结构不能被翻译改写。每段独立翻译、模型校对和程序校验，最多三轮，失败暂停，不静默缺段。只有全部通过才生成中文 MD/PDF 并导入原论文下的新附件，原 PDF 和批注不变；批注与页码不跨语言同步。关闭确认页暂停并保存进度，远端已提交 OXR 任务可能继续；导入事务结果不确定时阻止重复导入。全文预览/打印只用白名单静态 DOM、本地 KaTeX MathML 和有界签名验证的内嵌图片；DOM 不直接加载远程资源、file 引用或活动 HTML。原文预览可由独立受控后端自动下载受信任 OXR 图片并缓存，不另弹确认；打印/导出不新增远程下载。Gecko 打印使用独立 settings，不修改全局打印偏好；未通过原生验证不得声称 PDF 导出已验证。
+- 全文逐页稿只使用 OXR JSON 的实际页归属与白名单块内容重建，不猜测全文 Markdown 页界、不增加逐页请求。`pages-<内容哈希>.json` 保留不可变识别页，只有完整页映射才构建 `document-<内容哈希>.json` 统一稿；校验 PDF/原稿/逐页文件绑定、页数与哈希。当前页、原文全文预览和翻译输入同源；原始 OXR 全文保留 `source.md` 与 `original-<哈希>.md` 备份。旧任务不自动迁移，首次编辑明确确认并归档旧稿/检查点；缺页/损坏禁编辑，不模糊定位。单块编辑用精确偏移与版本，原子保存成功才发布，取消/失败保留旧稿；已保存编辑可重开，未保存导航须确认。修改后保留旧批准稿/译文但禁止继续翻译或导出，重新确认后才重置。译文不替换原文预览，不声称跨语言页码对齐。翻页/重解析清除旧内容，PDF 返回复核窗口/请求/页码；图片切换/暂停/关闭同样丢弃迟到结果。算法数学及确认重解析/归档/不删既有附件/导入不确定拒绝等约束继续遵循该 SPEC。
+- 全文图片模块只授权官方 OXR `.cn`/`.ai` 固定文件路径或用户配置 HTTPS 服务同源目录下的同形状路径；不接受任意域、凭据、query/hash、IP/localhost、编码/点路径和 SVG。系统全局 fetch 固定无凭据、无 referrer、拒绝重定向，15 秒超时和流读取有界，MIME/签名/尺寸校验后才缓存。单图 12 MiB，任务累计 64 MiB/128 张，磁盘按 base64 膨胀率保守计数，重开不能绕过总量；缓存仅保存哈希/MIME/data URI，逐级拒绝软链接并串行原子写，释放/退出等待在途写入。预览 DOM 仅接收再次校验的 data URI，异步仅替换对应占位节点；缓存与图片URL不作为额外模型输入。
 - 全文解析进度遵循 `docs/fulltext-translation/SPEC.md`：只展示实际页码与已观察状态，不虚构百分比或缓存命中的远端经历；运行及完成后可展开/收起且刷新不重置，普通分块通知合并，暂停/关闭使迟到事件与计时器失效。
 - 悬浮面板术语删除仅清理当前论文中同一规范化原文的全部 selection 缓存配置变体；原子写入成功后更新列表与计数，不改摘要、智能标签或其他论文。删除必须使此前在途的对应划线请求及缓存探测失效，防止旧结果恢复缓存；异步列表刷新和删除回调复核 Reader、论文与请求序号，失败保留术语并允许重试。
 - 划线译文和摘要译文必须支持原生拖选与复制；仅在译文节点阻止 Reader 的 pointerdown 冒泡，不取消默认选择。复制只接受完全位于当前译文节点内的选区，清除 Reader 可能添加的批注格式后仅写入所选纯文本，不修改译文或全局复制行为。
@@ -129,12 +130,13 @@ zotero-translate/
 │       ├── pdf-screenshot.js         # Zotero 9.0.6/10.0.4 精确版本桥、原页框选/跨页拆图、PNG 校验与资源保护
 │       ├── api.js                    # OpenAI Chat Completions 客户端与安全错误映射
 │       ├── service.js                # 翻译/摘要、智能标签生成/本地保存、缓存探测、术语删除及在途失效
-│       ├── fulltext-service.js       # 全文确认、逐页记录校验/重解析归档、分块进度、翻译/校对、暂停与导入
-│       ├── fulltext-markdown.js      # 无损分段、参考文献/格式保护、检查点校验、算法数学与静态安全排版
-│       ├── fulltext-runtime.js       # Python有界JSONL进度桥/路径诊断、附件身份、本机预览、PDF打印及导入/切换
-│       ├── fulltext-ui.js            # 确认窗口、逐页识别预览/全文编辑/重解析确认、时间轴及迟到隔离
+│       ├── fulltext-service.js       # 统一逐页稿/单块原子编辑/迁移归档、确认检查点、进度、翻译/暂停/导入
+│       ├── fulltext-markdown.js      # 无损分段/精确块偏移、格式保护、算法数学、安全DOM与异步本地图片提交
+│       ├── fulltext-images.js        # 受信任OXR地址、无凭据有界下载、签名/缓存校验、取消与任务限额
+│       ├── fulltext-runtime.js       # Python进度/附件身份、图片系统fetch与串行文件适配、本机预览/打印/导入
+│       ├── fulltext-ui.js            # 单块选择/编辑、原文页/全文预览、自动图片、确认/进度及迟到隔离
 │       ├── fulltext.xhtml            # 固定本地chrome页面与无网络CSP
-│       ├── fulltext.css              # 左PDF/右Markdown、可滚动分块时间轴及状态/修正/输出操作区
+│       ├── fulltext.css              # 左PDF/右Markdown、选块/编辑/图片状态、分块时间轴及输出操作区
 │       ├── fulltext-python/          # 随XPI打包的固定脚本，不打包Python解释器或第三方库
 │       │   ├── worker.py             # 隔离入口，check/convert/preview有界JSON协议
 │       │   ├── pdf_to_markdown.py    # 分块/进度JSONL、OXR缓存、逐页识别块重建/哈希记录、安全HTTP与逐页图片
@@ -200,10 +202,11 @@ zotero-translate/
 │   ├── main.test.js                  # ACP 设置/只读发现/FilePicker、分支 chrome 注册和窗口关闭顺序
 │   ├── preferences.test.js           # 路径下拉/编辑/刷新/空路径发现/迟到结果、Tab/表单保留与检测锁
 │   ├── service.test.js               # 摘要、手动标签/迟到生成、缓存探测、术语删除/在途失效、并发与取消
-│   ├── fulltext-service.test.js      # 逐页记录/哈希/重解析归档/取消、分块进度、上传/翻译确认与导入防重复
-│   ├── fulltext-markdown.test.js     # 无损结构、引用/占位符保护、算法公式/真实代码边界与安全DOM
-│   ├── fulltext-runtime.test.js      # OXR地址、路径诊断、JSONL分帧/限额/迟到隔离、打印/图片解码/取消
-│   ├── fulltext-ui.test.js           # 逐页联动/重解析确认/迟到拒绝、时间轴/耗时清理、编辑保护与关闭暂停
+│   ├── fulltext-service.test.js      # 统一稿绑定/迁移/精确编辑/重开/取消、确认检查点/进度及导入防重复
+│   ├── fulltext-markdown.test.js     # 块偏移/异步图片、引用/占位符、算法公式/真实代码边界与安全DOM
+│   ├── fulltext-images.test.js       # URL权限/跨域流、凭据/重定向/超时/取消、图片缓存/签名/限额
+│   ├── fulltext-runtime.test.js      # JSONL/路径、图片系统fetch/存储/重开限额/回收、打印解码及取消
+│   ├── fulltext-ui.test.js           # 单块编辑/迁移/未保存保护、原文全文/自动图片/迟到隔离、进度与关闭
 │   ├── fulltext_worker_test.py       # Python离线PDF/HTTP及无第三方依赖的进度/逐页重建/缓存/哈希/路径测试
 │   ├── item-tree-ui.test.js          # 标签编辑/聚合/分页/定位、手动优先、失败重试、异步隔离与清理
 │   └── reader-ui.test.js             # 选区/截图 Agents 入口、划线翻译/禁用、术语删除/重试、Tabs、拖拽缩放和陈旧 UI 防护
@@ -212,7 +215,8 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.53.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.54.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.53.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.52.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.51.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.50.xpi         # 上一版本归档

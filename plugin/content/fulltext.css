@@ -23,6 +23,13 @@ textarea { resize: vertical; border: 1px solid light-dark(#bbc8dc, #626c7e); bor
 #spt-fulltext-source { flex: 1; width: 100%; min-height: 120px; resize: none; }
 #spt-fulltext-rendered { flex: 1; min-height: 0; overflow: auto; overflow-wrap: anywhere; user-select: text; -moz-user-select: text; }
 #spt-fulltext-rendered img { max-width: 100%; height: auto; }
+.spt-fulltext-block { padding: 6px 8px; margin: 4px 2px; border: 2px solid transparent; border-radius: 5px; cursor: text; user-select: text; -moz-user-select: text; }
+.spt-fulltext-block:hover { border-color: light-dark(#bbc8dc, #657189); }
+.spt-fulltext-block[aria-pressed="true"] { border-color: light-dark(#315fd0, #a6c1ff); background: light-dark(#f0f5ff, #303b50); }
+.spt-fulltext-block:focus-visible { outline: 2px solid #6795ed; outline-offset: 2px; }
+#spt-fulltext-image-statusbar { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+#spt-fulltext-image-status:empty { display: none; }
+#spt-fulltext-save { background: #315fd0; color: white; }
 #spt-fulltext-rendered pre { white-space: pre-wrap; }
 #spt-fulltext-rendered .spt-fulltext-algorithm { line-height: 1.8; tab-size: 4; }
 #spt-fulltext-rendered .spt-fulltext-algorithm math { white-space: normal; }

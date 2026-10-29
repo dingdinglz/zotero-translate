@@ -234,6 +234,107 @@ test("cancelling a delayed print never commits its late temporary output", async
   assert.ok(!x.calls.some(call => call[0] === "move")); assert.ok(x.frame().removed);
 });
 
+function storageFixture() {
+  const vm = require("node:vm"), fs = require("node:fs"), pathModule = require("node:path").posix;
+  const files = new Map(), dirs = new Set(["/", "/task"]), links = new Set(), sizes = new Map(), writes = [], caches = [], imports = [];
+  let beforeWrite = async () => {};
+  const file = path => ({ path, initWithPath(value) { this.path = value; },
+    get parent() { return this.path === "/" ? null : file(pathModule.dirname(this.path)); },
+    exists() { return files.has(this.path) || dirs.has(this.path) || links.has(this.path); },
+    isFile() { return files.has(this.path); }, isDirectory() { return dirs.has(this.path); }, isSymlink() { return links.has(this.path); } });
+  class Cache { constructor(options) { this.options = options; caches.push(this); } cancel() { this.cancelled = true; } dispose() { this.disposed = true; } }
+  const scope = { TextEncoder, TextDecoder, URL, setTimeout, clearTimeout,
+    SmartPaperTranslatorModules: { ACP: { toNativeAbsolutePath: value => value.startsWith("/") ? value : null },
+      FulltextImages: { ImageCache: Cache }, FulltextMarkdown: { imageInfo() {} } },
+    PathUtils: { join: pathModule.join, filename: pathModule.basename }, Ci: {}, Zotero: { DataDirectory: { dir: "/data" } },
+    Cc: { "@mozilla.org/file/local;1": { createInstance: () => file() } },
+    IOUtils: { exists: async path => files.has(path) || dirs.has(path), stat: async path => ({ size: sizes.get(path) ?? files.get(path).length }),
+      read: async path => files.get(path), makeDirectory: async path => dirs.add(path),
+      getChildren: async root => [...files.keys(), ...links].filter(path => pathModule.dirname(path) === root),
+      write: async (path, bytes, options) => { writes.push({ path, options }); await beforeWrite(); files.set(path, bytes); } },
+    ChromeUtils: { importESModule: uri => { imports.push(uri); return { XPCOMUtils: { defineLazyGlobalGetters(target, names) {
+      assert.deepEqual(Array.from(names), ["fetch", "AbortController"]); target.fetch = () => { throw new Error("No real network in tests"); }; target.AbortController = AbortController;
+    } } }; } }
+  };
+  vm.runInNewContext(fs.readFileSync(require.resolve("../plugin/content/fulltext-runtime.js"), "utf8"), scope);
+  const api = scope.SmartPaperTranslatorModules.FulltextRuntime;
+  return { api, files, dirs, links, sizes, writes, caches, imports, beforeWrite: fn => { beforeWrite = fn; } };
+}
+
+test("task storage allows only content-addressed document and original backup names", async () => {
+  const f = storageFixture(), store = f.api.storeAt("/task");
+  for (const name of [`document-${"a".repeat(64)}.json`, `original-${"b".repeat(64)}.md`]) {
+    await store.writeText(name, "content"); assert.equal(await store.readText(name), "content");
+  }
+  for (const name of ["document-other.json", "original.md", "../source.md", "images/a.json"]) await assert.rejects(store.readText(name), /文件名/u);
+});
+
+test("image storage uses bounded local atomic files and rejects symlinks at every level", async () => {
+  const f = storageFixture(), store = f.api.imageStorageAt("/task/images"), key = "a".repeat(64), path = `/task/images/${key}.json`;
+  assert.equal(await store.read(key), null); assert.equal(f.writes.length, 0);
+  await store.write(key, { schema: 1 }); assert.equal((await store.read(key)).schema, 1);
+  assert.equal(f.writes[0].options.tmpPath, path + ".tmp");
+  await assert.rejects(store.read("../escape"), /标识/u);
+  for (const link of ["/task", "/task/images", path]) {
+    f.links.add(link); await assert.rejects(store.read(key), /软链接/u); f.links.delete(link);
+  }
+  f.links.add(path + ".tmp"); await assert.rejects(store.write(key, {}), /软链接/u); f.links.clear();
+  f.sizes.set(path, 18 * 1024 * 1024); await assert.rejects(store.read(key), /资源上限/u);
+  f.sizes.clear(); f.files.set("/task/images/foreign.json", new Uint8Array());
+  await assert.rejects(store.write(key, {}), /目录内容/u);
+});
+
+test("image storage enforces on-disk count and aggregate limits across reopened caches", async () => {
+  const f = storageFixture(); f.dirs.add("/task/images");
+  for (let i = 0; i < 128; i++) f.files.set(`/task/images/${i.toString(16).padStart(64, "0")}.json`, new TextEncoder().encode("{}"));
+  const store = f.api.imageStorageAt("/task/images");
+  await assert.rejects(store.write("f".repeat(64), {}), /总量/u);
+  await store.write("0".repeat(64), {});
+  for (const path of f.files.keys()) f.sizes.set(path, 1024 * 1024);
+  await assert.rejects(store.write("0".repeat(64), {}), /总量/u);
+});
+
+test("serialized disk budget conservatively preserves 64MiB decoded limit after reopen", async () => {
+  const f = storageFixture(); f.dirs.add("/task/images");
+  const encodedTenMiB = Math.ceil(10 * 1024 * 1024 / 3) * 4;
+  for (let i = 0; i < 6; i++) {
+    const path = `/task/images/${i.toString(16).padStart(64, "0")}.json`;
+    f.files.set(path, new TextEncoder().encode("{}")); f.sizes.set(path, encodedTenMiB + 256);
+  }
+  const reopened = f.api.imageStorageAt("/task/images");
+  await assert.rejects(reopened.write("f".repeat(64), { dataURI: "data:image/png;base64," + "A".repeat(encodedTenMiB) }), /总量/u);
+  assert.equal(f.writes.length, 0);
+});
+
+test("image writes are serialized and idle waits for committed bytes", async () => {
+  const f = storageFixture(), store = f.api.imageStorageAt("/task/images"); let release;
+  const gate = new Promise(resolve => { release = resolve; }); f.beforeWrite(() => gate);
+  const first = store.write("a".repeat(64), {}), second = store.write("b".repeat(64), {});
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(f.writes.length, 1);
+  let idle = false; const waiting = store.idle().then(() => { idle = true; });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(idle, false);
+  release(); await Promise.all([first, second, waiting]); assert.equal(f.writes.length, 2);
+});
+
+test("runtime image caches use system-global fetch, stay task-bound and drain writes on release", async () => {
+  const f = storageFixture(), runtime = new f.api.FulltextRuntime({}), service = { state: { oxrBaseURL: "https://free-oxr.somark.cn/api/v1" }, pause: async () => {} };
+  assert.throws(() => runtime.imageCacheFor(service), /已关闭/u);
+  runtime.taskRoots.set(service, "/task");
+  const first = runtime.imageCacheFor(service); assert.equal(runtime.imageCacheFor(service), first);
+  assert.equal(f.imports[0], "resource://gre/modules/XPCOMUtils.sys.mjs");
+  runtime.cancelImages(service); assert.equal(first.cancelled, true);
+  service.state.oxrBaseURL = "https://free-oxr.somark.ai/api/v1";
+  const second = runtime.imageCacheFor(service); assert.equal(first.disposed, true);
+  assert.equal(first.options.storage, second.options.storage);
+  let release; const gate = new Promise(resolve => { release = resolve; }); f.beforeWrite(() => gate);
+  const write = second.options.storage.write("a".repeat(64), {});
+  await new Promise(resolve => setImmediate(resolve));
+  let closed = false; const closing = runtime.release(service).then(() => { closed = true; });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(second.disposed, true); assert.equal(closed, false);
+  release(); await write; await closing;
+  assert.throws(() => runtime.imageCacheFor(service), /已关闭/u);
+});
+
 test("Python diagnostic stderr is not leaked into public errors", async () => {
   const process = processMock("not json", 1); process.stderr = pipe(["PRIVATE_PAPER_CONTENT secret-key"]);
   await assert.rejects(collectProcess(process, { timeoutMS: 1000 }), error => !error.message.includes("PRIVATE") && !error.message.includes("secret"));

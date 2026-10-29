@@ -18,7 +18,7 @@ def main() -> None:
     manifest = json.loads((PLUGIN / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest["applications"]["zotero"]
     assert manifest["manifest_version"] == 2
-    assert manifest["version"] == "0.1.53"
+    assert manifest["version"] == "0.1.54"
     assert zotero["id"] == "smart-paper-translator@zotero.local"
     assert zotero["strict_min_version"] == "9.0"
     assert zotero["strict_max_version"] == "10.0.*"
@@ -27,7 +27,7 @@ def main() -> None:
     ElementTree.parse(PLUGIN / "content" / "preferences.xhtml")
     ElementTree.parse(PLUGIN / "content" / "branch-chat.xhtml")
     ElementTree.parse(PLUGIN / "content" / "fulltext.xhtml")
-    for name in ("fulltext-service.js", "fulltext-runtime.js", "fulltext-ui.js", "fulltext-markdown.js"):
+    for name in ("fulltext-service.js", "fulltext-runtime.js", "fulltext-ui.js", "fulltext-markdown.js", "fulltext-images.js"):
         source = (PLUGIN / "content" / name).read_text(encoding="utf-8")
         assert ".innerHTML" not in source, f"active HTML injection: {name}"
     for path in (PLUGIN / "content" / "fulltext-python").glob("*.py"):
@@ -66,6 +66,10 @@ def main() -> None:
     assert 'this.acp.request("session/delete"' not in branch
     assert "IOUtils.writeJSON" not in branch
     assert ".innerHTML" not in branch_ui
+    assert '"content/fulltext-images.js"' in bootstrap
+    image_source = (PLUGIN / "content" / "fulltext-images.js").read_text(encoding="utf-8")
+    assert 'credentials: "omit"' in image_source and 'redirect: "error"' in image_source
+    assert 'referrerPolicy: "no-referrer"' in image_source
     assert '"content/branch-chat.js"' in bootstrap
     assert '"content/branch-chat-ui.js"' in bootstrap
     assert "registerChrome" in bootstrap and "destruct()" in bootstrap
