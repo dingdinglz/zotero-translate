@@ -16,12 +16,13 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.51`
+- 当前版本：`0.1.52`
 - 目标平台：macOS Zotero 10.0.4；保留 Zotero 9.0.6 既有支持
 - 0.1.48 另在本机 Zotero 10.0.6 / Gecko 140.17.0 完成非安装式 XPI 解析和模拟后端的独立分支窗口验证；不代表完整插件/真实 Agent 验证，截图精确版本白名单不变。
 - 0.1.49 历史验证为 392 项自动测试及可复现 XPI；当轮因 AX 权限未完成原生解析/UI 验证。
 - 0.1.50 为全文翻译测试包：通过 461 项 JavaScript 测试与 37 项 Python 离线测试。早期候选包在 Zotero 10.0.6 / Gecko 140.17.0 通过非安装式解析、本地 Python 检测、合成 PDF 预览和 MathML 显示，但 PDF 打印出现 iframe 加载超时；修正内容域 load 事件监听后，原生复测因模态窗口阻塞并按用户要求停止。最终包未完成原生复测，不得宣称中文 PDF 导出、真实附件导入、真实 OXR/DeepSeek 或完整安装流程已验证。候选/最终哈希见技术参考。
 - 0.1.51 修复全文翻译工具栏对齐及 Python/PDF 路径诊断，通过 467 项 JavaScript 测试、静态检查与可复现 XPI 检查。本轮 Python 离线测试因现成环境版本/依赖不符未能运行，未修改 Python 脚本；未执行真机、上传、模型或导入验证。
+- 0.1.52 增加全文解析的可折叠页码分块时间轴与耗时，仅点亮实际观察状态，通过 479 项 JavaScript 测试、17 项无第三方依赖 Python 进度测试及可复现 XPI 检查。Python 完整 PDF 套件因缺少 PyMuPDF 未能运行（进度专用模式跳过 38 项）；未执行真机、真实 OXR/DeepSeek、PDF 导出或附件导入验证。
 - 清单兼容范围：Zotero `9.0`–`10.0.*`；私有 PDF.js 截图桥仅开放 `9.0.6` / `10.0.4`
 - 插件源码根目录：`plugin/`
 - 最终 XPI 中只能包含 `plugin/` 下的运行时文件，不得包含 `.agents/`、测试、文档或构建工具。
@@ -60,6 +61,7 @@
 - Codex Mermaid 固定使用 XPI 内置 Mermaid `11.16.1`，只在出现 `mermaid` fenced code block 时按窗口延迟加载，不得使用 CDN 或运行时下载。由于 Zotero Item Pane 属于无 `body` 的 XUL 文档，运行时必须留在同窗口的本地 `about:blank` HTML iframe 与专用 Gecko sandbox 中；sandbox 必须以该 HTML 窗口为原型继承只读的 `window`/`document`，不得再次赋值，关闭插件时移除 iframe 并丢弃 sandbox 引用；不得在 Zotero 9.0.6 调用 `Cu.nukeSandbox()`。必须保持 `securityLevel: strict`、`htmlLabels: false`、安全配置锁定、源文本/边数/超时/SVG 大小与节点数上限。返回 SVG 只允许 Mermaid flowchart 生成的本地 `feDropShadow` 滤镜，不得放行其他滤镜原语，并继续拒绝活动元素、HTML、链接和非本地资源引用；结果需写入最长边不超过 4096 像素的固有尺寸并序列化为隔离的数据图片，宽图在侧栏横向滚动，不得作为活动 SVG 注入 Item Pane。解析、超限或安全校验失败时必须保留原始源码。
 - Codex 开发者模式必须默认关闭；关闭时不得采集或保留额外的可复制诊断日志，也不得显示复制入口。开启后仅允许在内存中有界记录当前实时 turn 的工具与思考诊断事件，脱敏常见密钥和用户主目录，不得自动落盘或上传；关闭模式、重建会话和插件退出必须清空。
 - 全文翻译持久契约见 `docs/fulltext-translation/SPEC.md`。任务绑定文库、原 PDF 附件 key 和文件 SHA-256；OXR 上传与 DeepSeek 翻译分别经用户确认。默认 OXR 地址可配置，仅 HTTPS/本机 HTTP，不跟随重定向；Python 使用用户选择的现成环境，固定插件脚本、独立 argv 和隔离模式，不运行 shell、不自动准备依赖。中间版面 PDF 只做本地逐页预览，不预先写文库。确认后的 Markdown 按内容哈希保存，逐段译文检查点原子写入；恢复复核原 PDF、模型/地址/提示词及保护内容，不混用新旧配置。参考文献条目整体保留，正文引用标记、公式、代码、图片/链接地址和 Markdown/HTML 表格结构不能被翻译改写。每段独立翻译、模型校对和程序校验，最多三轮，失败暂停，不静默缺段。只有全部通过才生成中文 MD/PDF 并导入原论文下的新附件，原 PDF 和批注不变；批注与页码不跨语言同步。关闭确认页暂停并保存进度，远端已提交 OXR 任务可能继续；导入事务结果不确定时阻止重复导入。全文预览/打印只用白名单静态 DOM、本地 KaTeX MathML 和有界签名验证的内嵌图片；不加载远程资源、file 引用或活动 HTML。Gecko 打印使用独立 settings，不修改全局打印偏好；未通过原生验证不得声称 PDF 导出已验证。
+- 全文解析进度遵循 `docs/fulltext-translation/SPEC.md`：只展示实际页码与已观察状态，不虚构百分比或缓存命中的远端经历；运行及完成后可展开/收起且刷新不重置，普通分块通知合并，暂停/关闭使迟到事件与计时器失效。
 - 悬浮面板术语删除仅清理当前论文中同一规范化原文的全部 selection 缓存配置变体；原子写入成功后更新列表与计数，不改摘要、智能标签或其他论文。删除必须使此前在途的对应划线请求及缓存探测失效，防止旧结果恢复缓存；异步列表刷新和删除回调复核 Reader、论文与请求序号，失败保留术语并允许重试。
 - 划线译文和摘要译文必须支持原生拖选与复制；仅在译文节点阻止 Reader 的 pointerdown 冒泡，不取消默认选择。复制只接受完全位于当前译文节点内的选区，清除 Reader 可能添加的批注格式后仅写入所选纯文本，不修改译文或全局复制行为。
 - 当前 PDF 的划线翻译禁用开关默认关闭，禁用附件 ID 列表仅持久化在本机 Zotero 偏好中；命中禁用状态时不得追加插件划线翻译 UI、查询划线缓存或发起翻译请求，且不得影响其他 PDF 或独立的“添加到 Agents”入口。
@@ -80,7 +82,7 @@ zotero-translate/
 ├── package.json                      # Node 测试和静态检查入口
 ├── .gitattributes                    # 固定 D3 bundle 的 LF 换行与跨平台字节一致性
 ├── .gitignore
-├── .thinkrail/context/mockups/       # 本地忽略的工具栏修复示意，不随 XPI 分发
+├── .thinkrail/context/mockups/       # 本地忽略的工具栏/全文解析进度示意，不随 XPI 分发
 ├── .agents/
 │   └── skills/
 │       └── develop-zotero-plugins/   # 插件开发、版本迁移、静态检查与可选真机调试指南
@@ -196,9 +198,9 @@ zotero-translate/
 │   ├── main.test.js                  # ACP 设置/只读发现/FilePicker、分支 chrome 注册和窗口关闭顺序
 │   ├── preferences.test.js           # 路径下拉/编辑/刷新/空路径发现/迟到结果、Tab/表单保留与检测锁
 │   ├── service.test.js               # 摘要、手动标签/迟到生成、缓存探测、术语删除/在途失效、并发与取消
-│   ├── fulltext-service.test.js      # 上传/翻译确认、逐段校对、恢复/变更/取消与导入防重复
+│   ├── fulltext-service.test.js      # 分块进度/观察记录/万块合并、上传/翻译确认、恢复/取消与导入防重复
 │   ├── fulltext-markdown.test.js     # 无损结构、参考文献/占位符保护、资源上限与安全DOM
-│   ├── fulltext-runtime.test.js      # OXR地址、Python/PDF路径诊断、子进程边界、静态打印契约/图片解码/迟到取消
+│   ├── fulltext-runtime.test.js      # OXR地址、路径诊断、JSONL分帧/限额/迟到隔离、打印/图片解码/取消
 │   ├── fulltext-ui.test.js           # 确认门控、分块时间轴/折叠/耗时清理、编辑保护、窗口迟到与关闭暂停
 │   ├── fulltext_worker_test.py       # Python离线分块/恢复/版面/预览/路径/HTTP及无第三方依赖进度协议测试
 │   ├── item-tree-ui.test.js          # 标签编辑/聚合/分页/定位、手动优先、失败重试、异步隔离与清理
@@ -208,7 +210,8 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.51.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.52.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.51.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.50.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.49.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.48.xpi         # 上一版本归档

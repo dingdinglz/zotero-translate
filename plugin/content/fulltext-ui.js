@@ -183,7 +183,11 @@
       progress.open = true; progress.hidden = true;
       summary.append(node("span", "parse-heading", "PDF 解析进度"), node("span", "parse-toggle", "收起"));
       progress.append(summary, node("p", "parse-note"), node("ol", "parse-list"));
-      listen(progress, "toggle", () => { if (this._current(r)) e["parse-toggle"].textContent = progress.open ? "收起" : "展开"; }, r.cleanups);
+      listen(progress, "toggle", () => {
+        if (!this._current(r)) return;
+        e["parse-toggle"].textContent = progress.open ? "收起" : "展开";
+        if (progress.open) this._progress(r);
+      }, r.cleanups);
       r.progressRows = [];
       r.cleanups.push(() => { global.clearTimeout(r.progressTimer); r.progressTimer = null; r.progressRows = []; });
       upload.append(uploadbar, progress);
@@ -251,7 +255,7 @@
       const parsing = s.stage === "parsing" && s.busy && p && !["complete", "failed", "paused"].includes(p.phase);
       const elapsed = p ? duration(p.elapsedMS + (parsing ? Math.max(0, Date.now() - r.progressReceivedAt) : 0)) : "";
       const count = p?.chunks?.length || 0;
-      const completed = p?.chunks?.filter(c => c.status === "complete").length || 0;
+      const completed = p?.completed ?? (p?.chunks?.filter(c => c.status === "complete").length || 0);
       const countText = count && p.phase !== "planning" ? `已完成 ${completed} / ${count} 块` : (parsePhases[p?.phase] || "正在准备 PDF");
       if (s.stage === "parsing" || (p && s.stage === "paused" && !s.approvedHash)) {
         r.el.status.textContent = `${parsePhases[p?.phase] || "正在准备 PDF"}${count && p.phase !== "planning" ? ` · ${countText}` : ""}${p ? ` · 已耗时 ${elapsed}` : ""}`;
@@ -282,7 +286,8 @@
         paused: "本地任务已暂停，已完成的解析缓存保留；远端已提交任务可能继续。",
         failed: "任务未完成，请查看下方错误提示；已完成的解析缓存保留。"
       };
-      e["parse-note"].textContent = notes[p.phase] || "";
+      e["parse-note"].textContent = (notes[p.phase] || "") + " 灰色节点表示未收到该阶段状态。";
+      if (!e["parse-progress"].open) return;
       const chunks = p.chunks || [];
       if (r.progressRows.length > chunks.length || r.progressRows.some((row, i) => row.start !== chunks[i]?.start || row.end !== chunks[i]?.end)) {
         e["parse-list"].replaceChildren(); r.progressRows = [];
@@ -306,13 +311,17 @@
           item.append(range, timeline, status); e["parse-list"].append(item);
           row = { start: chunk.start, end: chunk.end, item, status, steps }; r.progressRows.push(row);
         }
-        if (row.value === chunk.status) return;
-        row.value = chunk.status;
+        const observed = chunk.observed || [chunk.status];
+        const value = JSON.stringify([chunk.status, observed]);
+        if (row.value === value) return;
+        row.value = value;
         row.status.textContent = chunkStates[chunk.status] || "等待状态";
         row.item.setAttribute("data-state", chunk.status);
-        const current = ["queuing", "processing", "complete"].indexOf(chunk.status);
         row.steps.forEach((step, i) => {
-          step.setAttribute("data-stage", current > i || current === 2 ? "done" : current === i ? "active" : "waiting");
+          const stage = ["queuing", "processing", "complete"][i];
+          const seen = observed.includes(stage);
+          step.setAttribute("data-stage", !seen ? "waiting" : stage === "complete" ? "done" : chunk.status === stage ? "active" : "observed");
+          step.setAttribute("title", seen ? `已收到${chunkStates[stage]}状态` : "未收到此阶段状态");
         });
       });
     }

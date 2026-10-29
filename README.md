@@ -59,7 +59,7 @@ An interactive chart from the conversation, shown beside the passage it explains
 
 ## Get started
 
-The current version is **0.1.51 (test build)**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
+The current version is **0.1.52 (test build)**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
 
 PDF screenshots are enabled on the individually verified **9.0.6 and 10.0.4** versions. Use the original PDF view for screenshots; Zotero 10's reflowed Reading Mode is not supported for capture. Other patch versions keep screenshots disabled until their private PDF.js bridge has been checked.
 
@@ -71,7 +71,7 @@ Version 0.1.40 adds Windows drive/UNC path handling for shared runtime discovery
 2. Open Zotero's plugin manager, choose the option to install from a file, and select the downloaded XPI.
 3. Open a PDF in the main Zotero window. Find **Agents** in the right sidebar.
 
-Updates are installed manually from a newer XPI. The local 0.1.51 build is `dist/smart-paper-translator-0.1.51.xpi`; it aligns the full-paper toolbar controls and distinguishes Python setup errors from PDF path errors. This build has not been tested in a running Zotero client.
+Updates are installed manually from a newer XPI. The local 0.1.52 build is `dist/smart-paper-translator-0.1.52.xpi`; it adds collapsible per-page-range parsing timelines and elapsed time for full-paper translation. This build has not been tested in a running Zotero client.
 
 ### Connect an agent
 
@@ -121,7 +121,7 @@ This adds a separate PDF → Markdown → Chinese PDF workflow, not an Agent cha
 
 1. Select **DeepSeek** in the translation settings and configure its address, model and key. Full-paper translation shares these settings, but has separate translation/proofreading prompts and a fixed Simplified Chinese target.
 2. Under **论文全文翻译** (Full-paper translation), select an existing **Python 3.9+** environment with **PyMuPDF >=1.24.4,<2** and **requests >=2.31,<3**, then click **检测本地依赖**. You prepare dependencies yourself; the plugin never installs them. The default OXR address is `https://free-oxr.somark.ai/api/v1` and can be changed.
-3. Open a PDF attached to a regular paper in an editable library and click **全文译** in the main-window Reader toolbar. Opening the confirmation window is local. **解析 / 继续** asks before uploading the PDF to OXR. Closing pauses local work; submitted remote jobs may continue.
+3. Open a PDF attached to a regular paper in an editable library and click **全文译** in the main-window Reader toolbar. Opening the confirmation window is local. **上传 PDF 并解析** asks before uploading the PDF to OXR. A collapsible list shows each actual page range (up to 20 pages per block, split further by size), waiting-to-upload/queued/parsing/completed states, completed block counts and elapsed time—not an estimated percentage. Expand or collapse it at any time; updates preserve your choice. Closing pauses local work; submitted remote jobs may continue.
 4. Compare the layout PDF preview (or switch to the original PDF) with editable Markdown. Check equations, tables and the recognized bibliography before confirming. References/Bibliography entries and inline citation markers are preserved; quoted prose is translated. Unsupported HTML remains source text. After edits, click **确认 Markdown**.
 5. Click **翻译 / 继续** and confirm the destination and model. Each paragraph is translated, proofread and checked; format failures retry up to three rounds, then pause for correction. Completed paragraphs are checkpointed. A successful, confirmed run automatically attempts PDF generation and import; if export fails, keep/export the Markdown and retry **生成 / 保存 PDF** later.
 
@@ -149,9 +149,9 @@ Read [AGENTS.md](AGENTS.md) before changing plugin code. Runtime files live in `
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.51.xpi
+unzip -t dist/smart-paper-translator-0.1.52.xpi
 ```
 
-Build output goes to `dist/`. Runtime changes also require non-installing XPI parsing in the target Zotero version. The [technical reference (Chinese)](docs/technical-reference.zh-CN.md) covers adapter behavior, storage, rendering limits, and historical validation results.
+Build output goes to `dist/`. Automated tests and static archive checks are the default delivery checks; native Zotero parsing and UI testing run only when separately requested. The [technical reference (Chinese)](docs/technical-reference.zh-CN.md) covers adapter behavior, storage, rendering limits, and historical validation results.
 
 If you report a bug, include your plugin and Zotero versions, the selected agent, and steps to reproduce it. Remove API keys and private paper content from logs and screenshots.

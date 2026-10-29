@@ -32,7 +32,7 @@
       this.listeners = new Set(); this.cancellers = new Set(); this.serial = 0; this.operation = null;
       this.cancelled = false; this.previewSerial = 0; this.previewCancellers = new Set(); this.previews = new Set();
       this.source = ""; this.plan = null; this.translated = "";
-      this.parseProgress = null; this.parseStartedAt = null;
+      this.parseProgress = null; this.parseStartedAt = null; this.parseNotifyTimer = null;
       this.state = { schema: 1, identity, stage: "new", translations: {}, pageCount: 0, error: "", currentID: "", draft: "" };
     }
     snapshot() {
@@ -45,7 +45,17 @@
         currentSource: this.plan?.segments.find(s => s.id === this.state.currentID)?.source || "" };
     }
     subscribe(listener) { this.listeners.add(listener); listener(this.snapshot()); return () => this.listeners.delete(listener); }
-    emit() { for (const listener of this.listeners) { try { listener(this.snapshot()); } catch (_) {} } }
+    emit() {
+      global.clearTimeout(this.parseNotifyTimer); this.parseNotifyTimer = null;
+      for (const listener of this.listeners) { try { listener(this.snapshot()); } catch (_) {} }
+    }
+    emitParsing() {
+      if (this.parseNotifyTimer !== null) return;
+      this.parseNotifyTimer = global.setTimeout(() => {
+        this.parseNotifyTimer = null;
+        if (!this.cancelled && this.parseStartedAt !== null) this.emit();
+      }, 50);
+    }
     async save() { await this.storage.writeJSON("state.json", copy(this.state)); this.emit(); }
     async load() {
       if (this.operation) return this.snapshot();
@@ -94,6 +104,7 @@
     }
     async pause() {
       ++this.serial; ++this.previewSerial; this.cancelled = true;
+      global.clearTimeout(this.parseNotifyTimer); this.parseNotifyTimer = null;
       const operation = this.operation;
       for (const cancel of [...this.cancellers, ...this.previewCancellers]) { try { cancel(); } catch (_) {} }
       await Promise.allSettled([operation, ...this.previews]);
@@ -108,21 +119,23 @@
       } else if (event.phase === "chunk") {
         if (event.status === "pending") {
           if (p.phase !== "planning" || event.start !== (p.chunks.at(-1)?.end || 0) + 1 || event.end > p.pageCount) return invalid();
-          p.chunks.push({ start: event.start, end: event.end, status: "pending" });
+          p.chunks.push({ start: event.start, end: event.end, status: "pending", observed: [] });
         } else {
-          const chunk = p.chunks.find(c => c.start === event.start && c.end === event.end);
-          if (p.phase !== "parsing" || !chunk || ["complete", "failed"].includes(chunk.status) ||
-              p.chunks.find(c => c.status !== "complete") !== chunk) return invalid();
+          const chunk = p.chunks[p.completed];
+          if (p.phase !== "parsing" || !chunk || chunk.start !== event.start || chunk.end !== event.end || chunk.status === "failed") return invalid();
           chunk.status = event.status;
+          if (["queuing", "processing", "complete"].includes(event.status) && !chunk.observed.includes(event.status)) chunk.observed.push(event.status);
+          if (event.status === "complete") p.completed++;
         }
       } else if (event.phase === "parsing") {
         if (p.phase !== "planning" || p.chunks.at(-1)?.end !== p.pageCount) return invalid();
         p.phase = "parsing";
       } else if (event.phase === "assembling") {
-        if (p.phase !== "parsing" || !p.chunks.every(c => c.status === "complete")) return invalid();
+        if (p.phase !== "parsing" || p.completed !== p.chunks.length) return invalid();
         p.phase = "assembling";
       } else return invalid();
-      this.emit();
+      if (event.phase === "chunk" && event.status !== "failed") this.emitParsing();
+      else this.emit();
     }
     async parse({ consent = false } = {}) {
       if (!consent) throw new Error("必须先确认 PDF 上传地址。");
@@ -130,7 +143,7 @@
       if (this.operation || this.parseStartedAt !== null) throw new Error("当前任务仍在运行或回收，请稍后再试。");
       const config = this.getConfig();
       this.parseStartedAt = Date.now();
-      this.parseProgress = { phase: "preparing", pageCount: 0, chunks: [], elapsedMS: 0 };
+      this.parseProgress = { phase: "preparing", pageCount: 0, chunks: [], completed: 0, elapsedMS: 0 };
       try {
         await this.run("parsing", async serial => {
           const result = await this.convert({ baseURL: config.oxrBaseURL, pythonPath: config.pythonPath,

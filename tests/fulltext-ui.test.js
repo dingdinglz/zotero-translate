@@ -281,12 +281,16 @@ test("parse timeline uses page ranges and native disclosure remains user-control
   assert.equal(r.progressRows.length, 3);
   assert.equal(r.progressRows[1].item.children[0].textContent, "第 21–40 页");
   assert.equal(r.progressRows[1].steps[1].getAttribute("data-stage"), "active");
+  assert.equal(r.progressRows[0].steps[0].getAttribute("data-stage"), "waiting");
+  assert.equal(r.progressRows[0].steps[1].getAttribute("data-stage"), "waiting");
+  assert.equal(r.progressRows[0].steps[2].getAttribute("data-stage"), "done");
   assert.equal(r.progressRows[2].status.textContent, "待上传");
   const row = r.progressRows[1].item;
   r.el["parse-progress"].open = false; r.el["parse-progress"].dispatchEvent({ type: "toggle" });
   assert.equal(r.el["parse-toggle"].textContent, "展开");
   s.emit(parsing(chunks.map(c => ({ ...c, status: "complete" })), "assembling", 150000));
   assert.equal(r.el["parse-progress"].open, false); assert.equal(r.progressRows[1].item, row);
+  assert.equal(r.progressRows[1].status.textContent, "解析中"); // Hidden rows update on expansion.
   assert.match(r.el.status.textContent, /正在整理解析结果/u);
   assert.match(r.el["parse-note"].textContent, /本地整理/u);
   s.emit({ stage: "review", busy: false, parseProgress: { ...s.state.parseProgress, phase: "complete" } });
@@ -294,16 +298,19 @@ test("parse timeline uses page ranges and native disclosure remains user-control
   assert.equal(r.progressTimer, null); assert.ok(!r.el.status.textContent.includes("段"));
   r.el["parse-progress"].open = true; r.el["parse-progress"].dispatchEvent({ type: "toggle" });
   assert.equal(r.el["parse-toggle"].textContent, "收起");
+  assert.equal(r.progressRows[1].status.textContent, "解析完成");
   s.emit({ stage: "translating", busy: true, total: 8, completed: 1 });
   assert.match(r.el.status.textContent, /1 \/ 8 段/u);
   await h.ui.shutdown(); assert.equal(r.el["parse-progress"].listenerCount, 0);
 });
-test("elapsed time updates while remote state is unchanged and stops on pause or close", async () => {
-  const h = setup(); await h.ui.open(h.owner, 1); const r = h.record(), s = r.service;
+test("elapsed time updates while remote state is unchanged and stops on pause or close", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 100000 });
+  const h = setup(); t.after(() => h.ui.shutdown());
+  await h.ui.open(h.owner, 1); const r = h.record(), s = r.service;
   s.emit(parsing([{ start: 1, end: 20, status: "queuing" }], "parsing", 5000));
   const row = r.progressRows[0].item;
   assert.ok(r.progressTimer);
-  await new Promise(resolve => setTimeout(resolve, 1050));
+  t.mock.timers.tick(1000);
   assert.match(r.el.status.textContent, /00:06/u); assert.equal(r.progressRows[0].item, row);
   s.emit({ stage: "paused", busy: false, parseProgress: { ...s.state.parseProgress, phase: "paused", elapsedMS: 6200,
     chunks: [{ start: 1, end: 20, status: "paused" }] } });
@@ -322,6 +329,14 @@ test("parse failures keep complete rows, expose failure and leave pending rows u
   assert.deepEqual(r.progressRows.map(row => row.status.textContent), ["解析完成", "失败", "待上传"]);
   assert.match(r.el.status.textContent, /解析失败.*1 \/ 3 块/u);
   assert.equal(r.progressTimer, undefined); assert.equal(r.el.error.textContent, "remote_task_failed");
+  s.emit({ parseProgress: { ...s.state.parseProgress, chunks: [
+    { start: 1, end: 20, status: "complete", observed: ["complete"] },
+    { start: 21, end: 40, status: "failed", observed: ["queuing", "processing"] },
+    { start: 41, end: 48, status: "pending", observed: [] }
+  ] } });
+  assert.equal(r.progressRows[1].steps[0].getAttribute("data-stage"), "observed");
+  assert.equal(r.progressRows[1].steps[1].getAttribute("data-stage"), "observed");
+  assert.equal(r.progressRows[1].steps[2].getAttribute("data-stage"), "waiting");
   await h.ui.shutdown();
 });
 test("fixed XHTML has no scripts or remote resources; implementation never injects HTML", () => {

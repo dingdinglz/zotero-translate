@@ -47,6 +47,7 @@ textarea { resize: vertical; border: 1px solid light-dark(#bbc8dc, #626c7e); bor
 .spt-parse-step::before { content: ""; position: absolute; top: -6px; left: calc(50% - 5px); width: 10px; height: 10px; border: 2px solid currentColor; border-radius: 50%; background: light-dark(#fff, #292c32); }
 .spt-parse-step[data-stage="done"] { color: light-dark(#237452, #79d5ab); border-color: currentColor; }
 .spt-parse-step[data-stage="done"]::before { background: currentColor; }
+.spt-parse-step[data-stage="observed"] { color: light-dark(#315fd0, #a6c1ff); border-color: currentColor; }
 .spt-parse-step[data-stage="active"] { color: light-dark(#315fd0, #a6c1ff); font-weight: 600; }
 .spt-parse-step[data-stage="active"]::before { background: currentColor; outline: 3px solid light-dark(#e8eeff, #414f6b); }
 .spt-parse-state { text-align: right; font-size: 12px; overflow-wrap: anywhere; }

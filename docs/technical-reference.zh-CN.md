@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.51 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.52 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -177,10 +177,28 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.51.xpi
+unzip -t dist/smart-paper-translator-0.1.52.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.52：可折叠的全文解析进度
+
+上传后显示实际分块页码及排队/解析/完成阶段，不再使用翻译的「0 / 0 段」表示解析。列表默认展开，运行和完成后均可收起、展开，刷新不重置选择；隐藏行延后刷新。未提交、上传中、等待远端首个状态、暂停和失败分别标明。仅点亮实际观察到的阶段，缓存命中不补造排队记录；顶部显示完成块数和本次耗时，所有块完成后的本地结果整理单独显示。
+
+Python 先有界规划页码范围，再逐块提取，保留原来的 20 页/9.5 MB 限制与缓存摘要。固定脚本用专用 stdout 描述符实时 flush 进度 JSONL，仍屏蔽第三方库输出；runtime 校验帧结构和资源上限，service 复核范围/顺序并隔离迟到事件。普通分块通知按 50 ms 合并，阶段/失败/结束即时更新。耗时和观察状态仅存当前服务内存，重开不自动联网，再次确认后由现有缓存恢复进度。
+
+通过 **479 项 JavaScript 测试**、JS/静态/XHTML/Python 3.9 语法检查、两次逐字节一致构建、`unzip -t` 与 SHA-256 校验；XPI 内 **58 个文件**与 `plugin/` 运行时源码逐字节一致，不含测试、文档或 mockup。初次全量检查超时；随后将新增耗时测试的真实等待改为确定性模拟时钟，并保证断言失败也会清理计时器，重新执行全量检查通过，未跳过 JavaScript 测试。
+
+Python 3.12 完整离线测试因缺少 PyMuPDF 而失败，未安装依赖。显式 progress-only 模式通过 **17 项**无第三方依赖测试，另 **38 项** PDF/依赖测试未选择；不代表完整 Python/PDF 验证通过。命令：
+
+```bash
+SPT_TEST_FULLTEXT_PROGRESS_ONLY=1 PYTHONDONTWRITEBYTECODE=1 /absolute/path/to/python -m unittest discover -s tests -p fulltext_worker_test.py -q
+```
+
+最终文件：`dist/smart-paper-translator-0.1.52.xpi`，**1,403,331 字节**；SHA-256：`2fd5329279a8fd32d13ee05f3a7de1679e1fa3b3fda47a58fd93e101ebc178d1`。
+
+证据边界：查阅[官方 Zotero 10 开发说明](https://www.zotero.org/support/dev/zotero_10_for_developers)及[官方插件示例](https://github.com/zotero/make-it-red/blob/main/src-2.0/bootstrap.js)，只读本机 Zotero 10.0.6 元数据与平台 `omni.ja` 的 `subprocess_common.sys.mjs` 中流式 `readString()`。未操作真机、安装、上传论文、调用 OXR/DeepSeek、验证 PDF 导出或导入附件；既有原生验证缺口保持不变。中英文 README 的旧「强制原生解析」表述同步纠正为项目现行的静态交付边界。
 
 ## 0.1.51：全文工具栏对齐与路径错误诊断
 

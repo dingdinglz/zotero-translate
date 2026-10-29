@@ -76,6 +76,8 @@ test("pause preserves completed chunks, freezes elapsed time and ignores late pa
   const snapshot = x.service.snapshot().parseProgress;
   assert.equal(snapshot.phase, "paused");
   assert.deepEqual(snapshot.chunks.map(c => c.status), ["complete", "paused"]);
+  assert.deepEqual(snapshot.chunks[1].observed, ["processing"]);
+  assert.equal(x.service.parseNotifyTimer, null);
   report({ phase: "chunk", start: 2, end: 2, status: "complete" });
   assert.deepEqual(x.service.snapshot().parseProgress, snapshot);
 });
@@ -93,6 +95,24 @@ test("parse errors retain completed rows and reject out-of-order plans", async (
     assert.equal(x.service.snapshot().parseProgress.phase, "failed");
     assert.equal(x.service.snapshot().parseProgress.chunks[0].status, invalid ? "pending" : "failed");
   }
+});
+test("large cached plans coalesce progress snapshots and keep constant-time chunk lookup", async () => {
+  const x = setup(); let updates = 0;
+  const unsubscribe = x.service.subscribe(() => updates++);
+  x.service.convert = async ({ onProgress }) => {
+    onProgress({ phase: "planning", pageCount: 10000 });
+    for (let start = 1; start <= 10000; start++) onProgress({ phase: "chunk", start, end: start, status: "pending" });
+    onProgress({ phase: "parsing" });
+    for (let start = 1; start <= 10000; start++) onProgress({ phase: "chunk", start, end: start, status: "complete" });
+    onProgress({ phase: "assembling" });
+    x.files.set("source.md", "Paper"); return { pageCount: 10000 };
+  };
+  await x.service.parse({ consent: true });
+  assert.ok(updates < 15, `unexpected full snapshot count: ${updates}`);
+  assert.equal(x.service.snapshot().parseProgress.completed, 10000);
+  assert.equal(x.service.parseNotifyTimer, null);
+  assert.deepEqual(x.service.snapshot().parseProgress.chunks[0].observed, ["complete"]);
+  unsubscribe();
 });
 test("opening is local; upload and translation each require consent", async () => {
   const x = setup(); await x.service.load(); assert.deepEqual(x.calls, []);
