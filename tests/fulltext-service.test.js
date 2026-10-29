@@ -33,6 +33,111 @@ async function prepared(setupResult) {
   await setupResult.service.parse({ consent: true });
   await setupResult.service.confirm(setupResult.service.source);
 }
+function withPageMap(x, pages = ["# Page one", "Second $x$"]) {
+  x.service.sourceHash = "a".repeat(64);
+  const convert = x.service.convert;
+  x.service.convert = async options => {
+    const result = await convert(options);
+    const raw = JSON.stringify({ schema: 1, sourceHash: x.service.sourceHash, markdownHash: hash(x.files.get("source.md")), pageCount: result.pageCount, pages });
+    const pageMapFile = `pages-${hash(raw)}.json`; x.files.set(pageMapFile, raw);
+    return { ...result, pageMapFile };
+  };
+  return x;
+}
+
+test("page previews use only hash-bound OCR pages and survive full-source edits and reload", async () => {
+  const x = withPageMap(setup()); await x.service.parse({ consent: true });
+  assert.equal(x.service.getPageMarkdown(1), "# Page one");
+  assert.equal(x.service.getPageMarkdown(2), "Second $x$");
+  assert.equal(x.service.getPageMarkdown(0), null);
+  assert.equal(x.service.getPageMarkdown(3), null);
+  assert.ok(!JSON.stringify(x.service.snapshot()).includes("# Page one"));
+  await x.service.confirm("Manually corrected entire source");
+  assert.equal(x.service.getPageMarkdown(1), "# Page one");
+  const loaded = new FulltextService({ ...x.args, sourceHash: x.service.sourceHash }); await loaded.load();
+  assert.equal(loaded.getPageMarkdown(2), "Second $x$");
+  x.files.set(loaded.state.pageMapFile, "{}");
+  await loaded.load();
+  assert.equal(loaded.getPageMarkdown(1), null);
+  assert.match(loaded.snapshot().pagePreviewError, /逐页/u);
+  assert.equal(loaded.source, "Manually corrected entire source");
+});
+
+test("page maps reject wrong hashes, PDF identity, count and malformed page entries before switching source", async () => {
+  for (const corrupt of [map => { map.sourceHash = "b".repeat(64); }, map => { map.markdownHash = "b".repeat(64); },
+    map => { map.pageCount = 3; }, map => { map.pages = ["only one"]; }, map => { map.pages[0] = {}; }]) {
+    const x = withPageMap(setup()), convert = x.service.convert;
+    x.service.source = "Old source";
+    x.service.convert = async options => {
+      const result = await convert(options), map = JSON.parse(x.files.get(result.pageMapFile)); corrupt(map);
+      const raw = JSON.stringify(map); result.pageMapFile = `pages-${hash(raw)}.json`; x.files.set(result.pageMapFile, raw);
+      return result;
+    };
+    await assert.rejects(x.service.parse({ consent: true }), /逐页/u);
+    assert.equal(x.service.source, "Old source");
+  }
+  const x = withPageMap(setup(), [null, ""]); await x.service.parse({ consent: true });
+  assert.equal(x.service.getPageMarkdown(1), null); assert.equal(x.service.getPageMarkdown(2), "");
+});
+
+test("reparse needs explicit reset consent, archives approved checkpoint, and only switches after success", async () => {
+  const x = withPageMap(setup()); await prepared(x); await x.service.translate({ consent: true });
+  const previous = x.service.snapshot(), approvedHash = x.service.state.approvedHash;
+  await assert.rejects(x.service.parse({ consent: true }), /确认稿/u);
+  x.service.convert = async () => { throw new Error("offline"); };
+  await assert.rejects(x.service.parse({ consent: true, replaceApproved: true }), /offline/u);
+  assert.equal(x.service.source, previous.source); assert.equal(x.service.translated, previous.translated);
+  assert.equal(x.service.state.approvedHash, approvedHash); assert.equal(x.service.getPageMarkdown(1), "# Page one");
+  const archives = [...x.files.keys()].filter(name => /^history-[a-f0-9]{64}\.json$/u.test(name));
+  assert.equal(archives.length, 1);
+  assert.equal(JSON.parse(x.files.get(archives[0])).approvedHash, approvedHash);
+  x.service.convert = async () => { x.files.set("source.md", "Fresh source"); return { pageCount: 1 }; };
+  await x.service.parse({ consent: true, replaceApproved: true });
+  assert.equal(x.service.source, "Fresh source"); assert.equal(x.service.translated, "");
+  assert.equal(x.service.state.approvedHash, undefined); assert.deepEqual(x.service.state.translations, {});
+  assert.equal(x.files.get(`approved-${approvedHash}.md`), previous.source);
+  assert.equal(x.service.getPageMarkdown(1), null); assert.equal(x.imports(), 0);
+});
+
+test("uncertain imports and failed archival/commit block destructive reparse", async () => {
+  const x = withPageMap(setup()); await prepared(x);
+  x.service.state.importIntent = true;
+  await assert.rejects(x.service.parse({ consent: true, replaceApproved: true }), /导入/u);
+  x.service.state.importIntent = false;
+  const convert = x.service.convert, write = x.service.storage.writeJSON;
+  let conversions = 0; x.service.convert = async options => { conversions++; return convert(options); };
+  x.service.storage.writeJSON = async (name, value) => {
+    if (name.startsWith("history-")) throw new Error("archive failed"); return write(name, value);
+  };
+  await assert.rejects(x.service.parse({ consent: true, replaceApproved: true }), /archive/u);
+  assert.equal(conversions, 0); assert.ok(x.service.state.approvedHash);
+  x.service.storage.writeJSON = async (name, value) => {
+    if (name === "state.json" && value.stage === "review") throw new Error("commit failed"); return write(name, value);
+  };
+  const before = x.service.source;
+  await assert.rejects(x.service.parse({ consent: true, replaceApproved: true }), /commit/u);
+  assert.equal(x.service.source, before); assert.ok(x.service.state.approvedHash);
+  assert.equal(x.service.getPageMarkdown(1), "# Page one");
+});
+
+test("cancelled page-map reads cannot switch an approved task or expose late page data", async () => {
+  const x = withPageMap(setup()); await prepared(x);
+  const before = x.service.source, map = x.service.pageMap;
+  let release, entered;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const read = x.service.storage.readText;
+  x.service.storage.readText = async name => {
+    if (name.startsWith("pages-")) { entered(); await new Promise(resolve => { release = resolve; }); }
+    return read(name);
+  };
+  const parsing = x.service.parse({ consent: true, replaceApproved: true });
+  await waiting;
+  const rejected = assert.rejects(parsing, /暂停/u), pausing = x.service.pause(); release();
+  await pausing; await rejected;
+  assert.equal(x.service.source, before); assert.equal(x.service.pageMap, map); assert.ok(x.service.state.approvedHash);
+  await assert.rejects(x.service.readPageMap("../secret.json", 2, hash(before)), /逐页/u);
+});
+
 test("parse progress tracks real ranges, isolates snapshots and is not persisted as live remote state", async () => {
   const x = setup(); const convert = x.service.convert; let late;
   x.service.convert = async options => {

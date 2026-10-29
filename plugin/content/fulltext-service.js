@@ -27,17 +27,18 @@
     return result.translation;
   }
   class FulltextService {
-    constructor({ identity, storage, hash, verifySource, getConfig, convert, preview, complete, createPDF, importPDF, exportMarkdown, markdown = Markdown }) {
-      Object.assign(this, { identity, storage, hash, verifySource, getConfig, convert, previewPage: preview, complete, createPDF, importPDF, exportMarkdown, markdown });
+    constructor({ identity, sourceHash, storage, hash, verifySource, getConfig, convert, preview, complete, createPDF, importPDF, exportMarkdown, markdown = Markdown }) {
+      Object.assign(this, { identity, sourceHash, storage, hash, verifySource, getConfig, convert, previewPage: preview, complete, createPDF, importPDF, exportMarkdown, markdown });
       this.listeners = new Set(); this.cancellers = new Set(); this.serial = 0; this.operation = null;
       this.cancelled = false; this.previewSerial = 0; this.previewCancellers = new Set(); this.previews = new Set();
-      this.source = ""; this.plan = null; this.translated = "";
+      this.source = ""; this.plan = null; this.translated = ""; this.pageMap = null; this.pagePreviewError = "";
       this.parseProgress = null; this.parseStartedAt = null; this.parseNotifyTimer = null;
       this.state = { schema: 1, identity, stage: "new", translations: {}, pageCount: 0, error: "", currentID: "", draft: "" };
     }
     snapshot() {
       const segments = this.plan?.segments.filter(s => s.translatable) || [];
       return { ...copy({ ...this.state, translations: undefined }), source: this.source, translated: this.translated,
+        pagePreviewError: this.pagePreviewError,
         parseProgress: this.parseProgress ? copy({ ...this.parseProgress,
           elapsedMS: this.parseStartedAt === null ? this.parseProgress.elapsedMS : Math.max(0, Date.now() - this.parseStartedAt) }) : null,
         busy: Boolean(this.operation), completed: segments.filter(s => Object.hasOwn(this.state.translations, s.id)).length,
@@ -79,9 +80,31 @@
         if (this.plan && this.plan.segments.every(s => !s.translatable || Object.hasOwn(saved.translations, s.id))) {
           this.translated = this.markdown.assemble(this.plan, saved.translations);
         }
+        this.pageMap = null; this.pagePreviewError = "";
+        try { this.pageMap = await this.readPageMap(saved.pageMapFile, saved.pageCount, saved.parsedMarkdownHash); }
+        catch (_) { this.pagePreviewError = "逐页识别预览记录无效，请明确确认后重新解析；全文稿和译文未改动。"; }
         if (saved.importIntent && !saved.chineseAttachmentID) this.state.error = "上次附件导入未确认完成。请检查文库，勿重复导入；Markdown 与 PDF 已保留。";
       }
       this.emit(); return this.snapshot();
+    }
+    async readPageMap(name, count, markdownHash) {
+      if (name == null) return null;
+      const invalid = () => { throw new Error("逐页识别预览记录无效，未切换到新解析结果。"); };
+      if (typeof name !== "string" || !/^pages-[a-f0-9]{64}\.json$/u.test(name)) return invalid();
+      const raw = await this.storage.readText(name);
+      if (typeof raw !== "string" || new TextEncoder().encode(raw).length > 128 * 1024 * 1024 ||
+          `pages-${await this.hash(raw)}.json` !== name) return invalid();
+      let map;
+      try { map = JSON.parse(raw); } catch (_) { return invalid(); }
+      if (!map || map.schema !== 1 || !/^[a-f0-9]{64}$/u.test(this.sourceHash || "") || map.sourceHash !== this.sourceHash ||
+          !/^[a-f0-9]{64}$/u.test(markdownHash || "") || map.markdownHash !== markdownHash ||
+          !Number.isSafeInteger(count) || count < 1 || count > 10000 || map.pageCount !== count ||
+          !Array.isArray(map.pages) || map.pages.length !== count || map.pages.some(page => page !== null && typeof page !== "string")) return invalid();
+      return map.pages;
+    }
+    getPageMarkdown(page) {
+      if (!Number.isSafeInteger(page) || page < 1 || page > this.state.pageCount) return null;
+      return this.pageMap?.[page - 1] ?? null;
     }
     check(serial) { if (serial !== this.serial) throw new Error("任务已暂停，进度已保留。"); }
     registerCancel(cancel) {
@@ -137,15 +160,22 @@
       if (event.phase === "chunk" && event.status !== "failed") this.emitParsing();
       else this.emit();
     }
-    async parse({ consent = false } = {}) {
+    async parse({ consent = false, replaceApproved = false } = {}) {
       if (!consent) throw new Error("必须先确认 PDF 上传地址。");
-      if (this.state.approvedHash) throw new Error("此任务已有确认稿。请先使用现有稿件；重新识别需显式重置任务，不能覆盖译文。");
+      if (this.state.importIntent && !this.state.chineseAttachmentID) throw new Error("存在未确认的附件导入，请先检查文库，不能重新解析。");
+      if (this.state.approvedHash && !replaceApproved) throw new Error("此任务已有确认稿。重新解析必须另行确认归档旧检查点并重新翻译。");
       if (this.operation || this.parseStartedAt !== null) throw new Error("当前任务仍在运行或回收，请稍后再试。");
       const config = this.getConfig();
+      const previous = { state: copy(this.state), source: this.source, plan: this.plan, translated: this.translated,
+        pageMap: this.pageMap, pagePreviewError: this.pagePreviewError };
       this.parseStartedAt = Date.now();
       this.parseProgress = { phase: "preparing", pageCount: 0, chunks: [], completed: 0, elapsedMS: 0 };
       try {
         await this.run("parsing", async serial => {
+          if (previous.state.approvedHash) {
+            const archive = JSON.stringify(previous.state);
+            await this.storage.writeJSON(`history-${await this.hash(archive)}.json`, previous.state); this.check(serial);
+          }
           const result = await this.convert({ baseURL: config.oxrBaseURL, pythonPath: config.pythonPath,
             onProgress: event => { if (serial === this.serial && this.state.stage === "parsing" && this.parseStartedAt !== null) this.parsingEvent(event); },
             isCurrent: () => serial === this.serial, registerCancel: cancel => this.registerCancel(cancel) });
@@ -153,11 +183,17 @@
           if (this.parseProgress.pageCount && (this.parseProgress.phase !== "assembling" || result.pageCount !== this.parseProgress.pageCount)) {
             throw new Error("本地转换结果与分块进度不一致。");
           }
-          this.source = await this.storage.readText("source.md"); this.check(serial);
-          if (typeof this.source !== "string") throw new Error("转换未生成完整 Markdown。");
-          this.state.pageCount = result.pageCount; this.state.oxrBaseURL = config.oxrBaseURL;
+          if (!Number.isSafeInteger(result.pageCount) || result.pageCount < 1 || result.pageCount > 10000) throw new Error("本地转换页数无效。");
+          const source = await this.storage.readText("source.md"); this.check(serial);
+          if (typeof source !== "string") throw new Error("转换未生成完整 Markdown。");
+          const parsedMarkdownHash = await this.hash(source); this.check(serial);
+          const pageMap = await this.readPageMap(result.pageMapFile, result.pageCount, parsedMarkdownHash); this.check(serial);
+          this.source = source; this.plan = null; this.translated = ""; this.pageMap = pageMap; this.pagePreviewError = "";
+          this.state = { schema: 1, identity: this.identity, translations: {}, currentID: "", draft: "", error: "", stage: "review",
+            pageCount: result.pageCount, oxrBaseURL: config.oxrBaseURL, parsedMarkdownHash, pageMapFile: result.pageMapFile };
+          try { await this.save(); }
+          catch (error) { Object.assign(this, previous); throw error; }
           this.parseProgress.phase = "complete";
-          this.state.stage = "review"; await this.save();
         });
       } catch (error) {
         this.parseProgress.phase = this.cancelled ? "paused" : "failed";

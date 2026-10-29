@@ -64,7 +64,7 @@
   }
   function storeAt(root) {
     const pathFor = name => {
-      if (!/^(?:state\.json|source\.md|approved(?:-[a-f0-9]{64})?\.md|translated\.md)$/u.test(name)) throw new Error("无效的全文任务文件名。");
+      if (!/^(?:state\.json|source\.md|approved(?:-[a-f0-9]{64})?\.md|translated\.md|(?:pages|history)-[a-f0-9]{64}\.json)$/u.test(name)) throw new Error("无效的全文任务文件名。");
       const path = global.PathUtils.join(root, name); checkPath(path, "regular", true); return path;
     };
     return {
@@ -286,7 +286,7 @@
       const previewRoot = await directory(global.PathUtils.join(taskRoot, "preview"));
       let previewQueue = Promise.resolve();
       const service = new modules.FulltextService.FulltextService({
-        identity, storage, hash: text => hashBytes(new TextEncoder().encode(text)), verifySource,
+        identity, sourceHash: digest, storage, hash: text => hashBytes(new TextEncoder().encode(text)), verifySource,
         getConfig: () => this.config(),
         convert: options => this.python("convert", { sourcePath, outputDir: taskRoot, baseURL: validateOXRURL(options.baseURL) }, options),
         preview: options => {

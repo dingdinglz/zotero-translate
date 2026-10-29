@@ -1,6 +1,6 @@
 """Offline worker regressions. Run with an existing Python containing PyMuPDF/requests.
 No tests install dependencies, contact OXR, or touch Zotero data.
-SPT_TEST_FULLTEXT_PROGRESS_ONLY=1 explicitly runs only dependency-free progress tests.
+SPT_TEST_FULLTEXT_PROGRESS_ONLY=1 runs dependency-free progress/page-map tests.
 """
 import contextlib
 import hashlib
@@ -29,6 +29,11 @@ fitz = worker.pymupdf
 
 def layout_page(number, blocks=None):
     return {"page_num": number, "page_size": {"w": 612, "h": 792}, "blocks": blocks or []}
+
+
+def recognition_block(index=0, content="正文 α", kind="Text", format="text", **extra):
+    return {"bbox": [1, 1, 200, 50], "idx": index, "type": kind,
+            "content": content, "format": format, **extra}
 
 
 def success(count=1, markdown="Paper α", pages=None):
@@ -214,7 +219,10 @@ class WorkerTest(unittest.TestCase):
         blocks = [{"type": "text", "bbox": [10, 10, 200, 50]}]
         result, session = self.convert_with([Response({"task_id": "../../REMOTE_SECRET"}),
                                              Response(success(pages=[layout_page(0, blocks)]))])
-        self.assertEqual(result, {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf", "pageCount": 1})
+        page_map = (self.output / result["pageMapFile"]).read_bytes()
+        self.assertEqual(result, {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf",
+                                 "pageMapFile": "pages-" + hashlib.sha256(page_map).hexdigest() + ".json", "pageCount": 1})
+        self.assertEqual(json.loads(page_map)["pages"], [None])
         self.assertFalse(session.trust_env)
         self.assertEqual(self.source.read_bytes(), self.before)
         with fitz.open(self.output / "layout.pdf") as layout:
@@ -562,6 +570,221 @@ class ProgressTest(unittest.TestCase):
 
         self.enter_patch(mock.patch.object(worker, "load_layout", return_value=mock.Mock(write_layout_pdf=write_layout)))
 
+    def test_page_preview_whitelist_order_and_no_document_slicing(self):
+        blocks = [recognition_block(7, "  后段\n", remote_secret="discard", start_line=1),
+                  recognition_block(2, "标题", "Title", "markdown")]
+        data = success(markdown="Unrelated FULL document", pages=[layout_page(0, blocks)])
+        markdown, pages = worker.read_result(data, 1)
+        self.assertEqual(markdown, "Unrelated FULL document")
+        self.assertEqual([b["idx"] for b in pages[0]["blocks"]], [7, 2])  # layout order unchanged
+        self.assertEqual(set(pages[0]["blocks"][0]), {"idx", "type", "content", "format", "bbox"})
+        self.assertEqual(worker.page_markdown(pages[0]), "# 标题\n\n  后段\n")
+        self.assertEqual(worker.page_markdown(layout_page(0)), "")
+        self.assertIsNone(worker.page_markdown({}))
+        self.assertNotIn("remote_secret", json.dumps(pages))
+
+    def test_page_preview_missing_or_invalid_field_never_drops_partial_content(self):
+        invalid = []
+        for field in ("idx", "content", "format", "type"):
+            block = recognition_block(1)
+            del block[field]
+            invalid.append(block)
+        for field, values in {
+            "idx": [-1, True, 1.5, "1", None, []],
+            "content": [None, False, 1, [], {}],
+            "format": [None, "", "HTML", "script", False, [], {}],
+            "type": [None, False, 1, [], {}],
+        }.items():
+            invalid.extend(dict(recognition_block(1), **{field: value}) for value in values)
+        invalid.append(recognition_block(0))  # duplicate, including an empty block
+        invalid.append(recognition_block(0, ""))
+        for block in invalid:
+            with self.subTest(block=block):
+                raw = layout_page(0, [recognition_block(0, "valid text"), block])
+                self.assertIsNone(worker.page_markdown(raw))
+                _, pages = worker.read_result(success(pages=[raw]), 1)
+                self.assertIsNone(worker.page_markdown(pages[0]))
+                # Re-normalizing completed caches must not turn invalid into valid.
+                _, replay = worker.read_result(success(pages=pages), 1)
+                self.assertEqual(replay, pages)
+                self.assertIsNone(worker.page_markdown(replay[0]))
+
+    def test_page_preview_formula_delimiters_and_untrusted_content(self):
+        for content in ("x + α", "$$x + α$$", "$x + α$", r"\[x + α\]", r"\(x + α\)", "  $$\nx + α\n$$  "):
+            with self.subTest(content=content):
+                page = layout_page(0, [recognition_block(0, content, "Formula", "latex")])
+                self.assertEqual(worker.page_markdown(page), "$$\nx + α\n$$")
+        for content in (r"\begin{align}x&=1\end{align}", "$$unpaired$", r"\[mismatch\)"):
+            page = layout_page(0, [recognition_block(0, content, "Formula", "latex")])
+            self.assertEqual(worker.page_markdown(page), "$$\n" + content + "\n$$")
+        for format in ("text", "html", "latex", "markdown"):
+            content = '<script>throw "never execute"</script>\n![x](https://invalid/x)'
+            page = layout_page(0, [recognition_block(0, content, "Table", format)])
+            self.assertEqual(worker.page_markdown(page), content)
+
+    def test_page_preview_code_fences_are_preserved_or_collision_safe(self):
+        for content in ("```python\nprint('你好')\n```", "~~~js\nalert(1)\n~~~~", "  ```\nx\n  ```\n"):
+            with self.subTest(content=content):
+                page = layout_page(0, [recognition_block(0, content, "Code Block", "markdown")])
+                self.assertEqual(worker.page_markdown(page), content)
+        for content in ("print('你好')", "```\ninside\n````\nmore", "~~~\nmissing close", "x`````y", ""):
+            with self.subTest(content=content):
+                page = layout_page(0, [recognition_block(0, content, "Code Block")])
+                result = worker.page_markdown(page)
+                fence, rest = result.split("\n", 1)
+                self.assertGreaterEqual(len(fence), 3)
+                self.assertNotIn(fence, content)
+                self.assertEqual(rest, content + "\n" + fence)
+
+    def test_page_map_convert_exact_unicode_hashes_order_and_cache_rebuild(self):
+        self.fake_pdf(21)
+        first_pages = [layout_page(i, [recognition_block(8, "尾 " + str(i)),
+                                      recognition_block(0, "页😀 " + str(i), "Title")]) for i in range(20)]
+        first_pages[4] = layout_page(4)
+        first_pages[7] = layout_page(7, [{"bbox": [1, 1, 2, 2], "type": "Text"}])
+        final_page = layout_page(0, [recognition_block(0, "末页 α")])
+        self.http.side_effect = [{"task_id": "first"}, success(20, "  原全文一😀\n", list(reversed(first_pages))),
+                                 {"task_id": "second"}, success(1, "原全文二", [final_page])]
+        result = worker.convert(self.request, self.frames.append)
+        exact_md = "<!-- PDF pages 1-20 -->\n\n原全文一😀\n\n<!-- PDF pages 21-21 -->\n\n原全文二\n\n".encode("utf-8")
+        self.assertEqual((self.output / "source.md").read_bytes(), exact_md)
+        payload = {"schema": 1, "sourceHash": hashlib.sha256(self.source.read_bytes()).hexdigest(),
+                   "markdownHash": hashlib.sha256(exact_md).hexdigest(), "pageCount": 21,
+                   "pages": [worker.page_markdown(page) for page in first_pages] + ["末页 α"]}
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        name = "pages-" + hashlib.sha256(raw).hexdigest() + ".json"
+        self.assertEqual(result, {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf",
+                                  "pageMapFile": name, "pageCount": 21})
+        self.assertEqual((self.output / name).read_bytes(), raw)
+        self.assertEqual(payload["pages"][0], "# 页😀 0\n\n尾 0")
+        self.assertEqual(payload["pages"][4], "")
+        self.assertIsNone(payload["pages"][7])
+        self.assertEqual(self.http.call_count, 4)  # no per-page requests
+        self.assertNotIn("页", json.dumps(self.frames, ensure_ascii=False))
+        (self.output / name).unlink()
+        self.frames.clear()
+        self.http.reset_mock()
+        self.http.side_effect = AssertionError("Completed cache must stay offline")
+        self.assertEqual(worker.convert(self.request, self.frames.append), result)
+        self.assertEqual((self.output / name).read_bytes(), raw)
+        self.http.assert_not_called()
+
+    def test_v1_cache_is_preserved_but_not_reused_for_page_preview(self):
+        options = {"baseURL": self.request["baseURL"], "image": "base64", "formula": "latex", "table": "html",
+                   "keep_header_footer": False, "formats": ["markdown", "json"], "version": 1,
+                   "source": "source-hash", "start": 0, "end": 1}
+        digest = hashlib.sha256(self.chunk[2] + json.dumps(options, sort_keys=True).encode()).hexdigest()
+        name = "cache/" + digest + ".json"
+        self.store.cache_write(name, {"markdown": "OLD", "layout_pages": [layout_page(0)]})
+        old_bytes = self.store.path(name).read_bytes()
+        pages = [layout_page(0, [recognition_block()])]
+        result = self.parse([{"task_id": "new"}, success(pages=pages)])
+        self.assertEqual(result, ("Paper α", pages))
+        self.assertEqual(self.http.call_count, 2)
+        self.assertEqual(self.store.path(name).read_bytes(), old_bytes)
+        self.assertEqual(len(list(self.store.cache.iterdir())), 2)
+        self.http.reset_mock()
+        self.assertEqual(self.parse([]), result)
+        self.http.assert_not_called()
+
+    def test_page_map_output_names_links_and_source_aliases(self):
+        name = "pages-" + "a" * 64 + ".json"
+        for bad in ("pages.json", "pages-" + "A" * 64 + ".json", "pages-" + "a" * 63 + ".json",
+                    "../" + name, "sub/" + name, name + ".tmp", name + "\n", "/" + name):
+            with self.subTest(name=bad), self.assertRaisesRegex(worker.WorkerError, "invalid_output_name"):
+                self.store.write(bad, b"bad")
+        path = self.output / name
+        for target in (self.source, self.output / "missing"):
+            path.symlink_to(target)
+            with self.assertRaisesRegex(worker.WorkerError, "symlink_path"):
+                self.store.write(name, b"bad")
+            path.unlink()
+        os.link(self.source, path)
+        with self.assertRaisesRegex(worker.WorkerError, "source_alias"):
+            self.store.write(name, b"bad")
+        path.unlink()
+        path.write_bytes(b"source")
+        alias_store = worker.Output(str(self.output), path)
+        with self.assertRaisesRegex(worker.WorkerError, "source_alias"):
+            alias_store.write(name, b"bad")
+        self.assertEqual(path.read_bytes(), b"source")
+        path.unlink()
+        path.mkdir()
+        with self.assertRaisesRegex(worker.WorkerError, "source_alias"):
+            self.store.write(name, b"bad")
+        self.assertEqual(self.source.read_bytes(), b"%PDF-synthetic")
+
+    def test_page_map_limits_include_utf8_content_and_json_overhead(self):
+        page = layout_page(0, [recognition_block(0, "😀😀")])
+        with mock.patch.object(worker, "MAX_PAGE_MAP", 7), self.assertRaisesRegex(worker.WorkerError, "page_content_limit"):
+            worker.page_markdown(page)
+        pages = [layout_page(i, [recognition_block(0, "α" * 5)]) for i in range(2)]
+        with mock.patch.object(worker, "MAX_PAGE_MAP", 15), self.assertRaisesRegex(worker.WorkerError, "page_content_limit"):
+            worker.write_page_map(self.store, pages, "s", "m")
+        # Escaped characters, keys and quotes all count in the JSON byte budget.
+        value = {"pages": ["\x00😀"]}
+        exact = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        with mock.patch.object(worker, "MAX_PAGE_MAP", len(exact)):
+            self.assertEqual(worker.page_json(value), exact)
+        with mock.patch.object(worker, "MAX_PAGE_MAP", len(exact) - 1), self.assertRaisesRegex(worker.WorkerError, "page_map_limit"):
+            worker.page_json(value)
+        data = success(pages=[page])
+        for layout in (data["result"]["outputs"]["json"], json.dumps(data["result"]["outputs"]["json"])):
+            data["result"]["outputs"]["json"] = layout
+            with mock.patch.object(worker, "MAX_PAGE_MAP", 40), self.assertRaisesRegex(worker.WorkerError, "page_map_limit"):
+                worker.read_result(data, 1)
+
+    def test_page_map_aggregate_content_limit_across_chunks_preserves_old_outputs(self):
+        self.fake_pdf(21)
+        (self.output / "source.md").write_bytes(b"old markdown")
+        (self.output / "layout.pdf").write_bytes(b"old layout")
+        # Each result JSON fits; aggregate recognized content does not. Missing
+        # idx means unavailable, but must not evade the raw-content budget.
+        first = [layout_page(i, [dict(recognition_block(content="x" * 1000), idx=None)]) for i in range(20)]
+        last = [layout_page(0, [recognition_block(content="x" * 10000)])]
+        self.http.side_effect = [{"task_id": "a"}, success(20, pages=first), {"task_id": "b"}, success(pages=last)]
+        with mock.patch.object(worker, "MAX_PAGE_MAP", 25000), self.assertRaisesRegex(worker.WorkerError, "page_content_limit"):
+            worker.convert(self.request, self.frames.append)
+        self.assertEqual((self.output / "source.md").read_bytes(), b"old markdown")
+        self.assertEqual((self.output / "layout.pdf").read_bytes(), b"old layout")
+        self.assertEqual(list(self.output.glob("pages-*.json")), [])
+
+    def test_page_map_json_limit_preserves_old_outputs(self):
+        self.fake_pdf(1)
+        self.http.side_effect = [{"task_id": "a"}, success()]
+        (self.output / "source.md").write_bytes(b"old markdown")
+        (self.output / "layout.pdf").write_bytes(b"old layout")
+        # Empty page content and the layout JSON fit. The final map, including
+        # its two SHA-256 fields, must still enforce the serialized-byte limit.
+        with mock.patch.object(worker, "MAX_PAGE_MAP", 150), self.assertRaisesRegex(worker.WorkerError, "page_map_limit"):
+            worker.convert(self.request, self.frames.append)
+        self.assertEqual((self.output / "source.md").read_bytes(), b"old markdown")
+        self.assertEqual((self.output / "layout.pdf").read_bytes(), b"old layout")
+        self.assertEqual(list(self.output.glob("pages-*.json")), [])
+        self.assertEqual(list(self.output.glob(".spt-*")), [])
+
+    def test_page_map_write_failure_preserves_old_outputs_and_cleans_staging(self):
+        self.fake_pdf(1)
+        self.http.side_effect = [{"task_id": "a"}, success(pages=[layout_page(0, [recognition_block()])])]
+        (self.output / "source.md").write_bytes(b"old markdown")
+        (self.output / "layout.pdf").write_bytes(b"old layout")
+        replace = worker.os.replace
+        def replace_except_map(source, destination):
+            if Path(destination).name.startswith("pages-"):
+                raise OSError("map write failed")
+            return replace(source, destination)
+        with mock.patch.object(worker.os, "replace", side_effect=replace_except_map), self.assertRaisesRegex(OSError, "map write failed"):
+            worker.convert(self.request, self.frames.append)
+        self.assertEqual((self.output / "source.md").read_bytes(), b"old markdown")
+        self.assertEqual((self.output / "layout.pdf").read_bytes(), b"old layout")
+        self.assertEqual(list(self.output.glob(".spt-*")), [])
+        self.assertEqual(list(self.output.glob("pages-*.json")), [])
+        self.http.reset_mock()
+        self.http.side_effect = AssertionError("Resume must use completed cache")
+        result = worker.convert(self.request, self.frames.append)
+        self.assertEqual(json.loads((self.output / result["pageMapFile"]).read_bytes())["pages"], ["正文 α"])
+        self.http.assert_not_called()
+
     def test_remote_observations_are_deduped_without_fabricated_states(self):
         self.parse([{"task_id": "SECRET_TASK"}, {"status": " QUEUING "}, {"status": "queuing"},
                     {"status": "processing"}, {"status": "PROCESSING"}, success()])
@@ -583,7 +806,7 @@ class ProgressTest(unittest.TestCase):
         self.http.side_effect = [{"task_id": "task"}, success()]
         worker.parse_chunk(self.session, self.chunk, self.request["baseURL"], self.store, "source-hash")
         options = {"baseURL": self.request["baseURL"], "image": "base64", "formula": "latex", "table": "html",
-                   "keep_header_footer": False, "formats": ["markdown", "json"], "version": 1,
+                   "keep_header_footer": False, "formats": ["markdown", "json"], "version": 2,
                    "source": "source-hash", "start": 0, "end": 1}
         digest = hashlib.sha256(self.chunk[2] + json.dumps(options, sort_keys=True).encode()).hexdigest()
         self.assertEqual([p.name for p in self.store.cache.iterdir()], [digest + ".json"])
@@ -763,7 +986,8 @@ def convert(request, progress):
         progress({"type": "progress", "phase": "chunk", "start": 1, "end": 1, "status": "failed"})
         core.fail("request_failed")
     progress({"type": "progress", "phase": "assembling"})
-    return {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf", "pageCount": 1}
+    return {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf",
+            "pageMapFile": "pages-" + "0" * 64 + ".json", "pageCount": 1}
 core.convert = convert
 sys.exit(core.main(["convert", '{"sourcePath":"SECRET","outputDir":"SECRET","baseURL":"SECRET"}']))
 '''
@@ -787,7 +1011,8 @@ sys.exit(core.main(["convert", '{"sourcePath":"SECRET","outputDir":"SECRET","bas
                     else:
                         self.assertEqual(process.returncode, 0)
                         self.assertEqual(frames[2], {"type": "progress", "phase": "assembling"})
-                        self.assertEqual(frames[3], {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf", "pageCount": 1})
+                        self.assertEqual(frames[3], {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf",
+                                                   "pageMapFile": "pages-" + "0" * 64 + ".json", "pageCount": 1})
                         self.assertEqual(errors, "")
                     self.assertNotIn("SECRET", output + errors)
                 finally:

@@ -8,7 +8,8 @@ Only convert uses the network, after the caller obtains upload consent.
 
 Limits: source/output PDF 512 MiB, 10,000 pages, 20 pages / 9,500,000 bytes per
 upload, 64 MiB decoded HTTP response / cache entry, 256 MiB aggregate cache,
-128 MiB aggregate Markdown, 100,000 layout blocks (10,000/page). Requests use
+128 MiB aggregate Markdown, page content and page-map JSON (each),
+100,000 layout blocks (10,000/page). Requests use
 15s connect / 120s read timeouts and a 120s streaming deadline, at most 3 retries;
 polling is every 5s for at most 1 hour/chunk. Submission retries can create
 remote duplicates (OXR has no idempotency key). Signals interrupt local work;
@@ -37,6 +38,8 @@ MAX_SOURCE = 512 * MIB
 MAX_RESPONSE = 64 * MIB
 MAX_CACHE = 256 * MIB
 MAX_MARKDOWN = 128 * MIB
+MAX_PAGE_MAP = 128 * MIB
+BLOCK_FORMATS = {"text", "html", "latex", "markdown"}
 MAX_PAGES = 10000
 MAX_BLOCKS = 100000
 MAX_CHUNK = 9500000
@@ -152,7 +155,7 @@ class Output:
                 fail("invalid_cache")
 
     def path(self, name):
-        if name not in {"source.md", "layout.pdf", "preview.png"} and not re.fullmatch(r"cache/[a-f0-9]{64}\.json", name):
+        if name not in {"source.md", "layout.pdf", "preview.png"} and not re.fullmatch(r"(?:cache/|pages-)[a-f0-9]{64}\.json", name):
             fail("invalid_output_name")
         path = self.root / name
         no_symlinks(path.parent)
@@ -361,16 +364,22 @@ def read_result(data, count):
         fail("markdown_limit")
     layout = outputs.get("json")
     if isinstance(layout, str):
+        if len(layout.encode("utf-8")) > MAX_PAGE_MAP:
+            fail("page_map_limit")
         try:
             layout = json.loads(layout)
         except (ValueError, RecursionError):
             fail("invalid_layout")
+    # Bound JSON supplied as an object as well as the string form. This also
+    # applies to completed caches, which re-enter through this same validator.
+    page_json(layout)
     pages = layout.get("pages") if isinstance(layout, dict) else None
     if not isinstance(pages, list) or len(pages) != count:
         fail("incomplete_layout")
     normalized = []
     seen = set()
     block_count = 0
+    content_size = 0
     for page in pages:
         if not isinstance(page, dict):
             fail("invalid_layout")
@@ -391,16 +400,129 @@ def read_result(data, count):
             if not isinstance(block, dict):
                 fail("invalid_layout")
             box = block.get("bbox")
-            kind = block.get("type", "Unknown")
+            kind = block.get("type")
             if not isinstance(box, list) or len(box) != 4 or not all(type(v) in (int, float) and math.isfinite(v) for v in box):
                 fail("invalid_layout")
             x1, y1, x2, y2 = box
             if x1 >= x2 or y1 >= y2 or max(0, x1) >= min(width, x2) or max(0, y1) >= min(height, y2):
                 fail("invalid_layout")
-            # Keep only fields consumed by the local renderer; no service text.
-            clean.append({"bbox": box, "type": kind[:64] if isinstance(kind, str) else "Unknown"})
+            # Keep only layout/recognition fields, never arbitrary service
+            # metadata. Missing/invalid fields stay absent across cache replay;
+            # page_markdown rejects the whole page rather than dropping a block.
+            item = {"bbox": box}
+            if isinstance(kind, str):
+                item["type"] = kind[:64]
+            if type(block.get("idx")) is int and block["idx"] >= 0:
+                item["idx"] = block["idx"]
+            if isinstance(block.get("format"), str) and block["format"] in BLOCK_FORMATS:
+                item["format"] = block["format"]
+            if isinstance(block.get("content"), str):
+                content_size += len(block["content"].encode("utf-8"))
+                if content_size > MAX_PAGE_MAP:
+                    fail("page_content_limit")
+                item["content"] = block["content"]
+            clean.append(item)
         normalized.append({"page_num": number, "page_size": {"w": width, "h": height}, "blocks": clean})
     return markdown, sorted(normalized, key=lambda page: page["page_num"])
+
+
+def page_json(value):
+    """Compact UTF-8 JSON, bounded including escapes, keys and separators."""
+    data = bytearray()
+    try:
+        encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        for part in encoder.iterencode(value):
+            encoded = part.encode("utf-8")
+            if len(data) + len(encoded) > MAX_PAGE_MAP:
+                fail("page_map_limit")
+            data.extend(encoded)
+    except (ValueError, TypeError, RecursionError, UnicodeError):
+        fail("invalid_layout")
+    return bytes(data)
+
+
+def page_markdown(page):
+    """Independent recognition preview; never slice the document Markdown.
+
+    The layout retains service array order for its existing arrows/labels. Only
+    this preview uses the official per-page idx ordering. All content is data.
+    """
+    blocks = page.get("blocks") if isinstance(page, dict) else None
+    if not isinstance(blocks, list):
+        return None
+    seen = set()
+    content_size = 0
+    for block in blocks:
+        if not isinstance(block, dict):
+            return None
+        index = block.get("idx")
+        if (type(index) is not int or index < 0 or index in seen
+                or not isinstance(block.get("content"), str)
+                or not isinstance(block.get("type"), str)
+                or not isinstance(block.get("format"), str)
+                or block["format"] not in BLOCK_FORMATS):
+            return None
+        seen.add(index)
+        content_size += len(block["content"].encode("utf-8"))
+        if content_size > MAX_PAGE_MAP:
+            fail("page_content_limit")
+    parts = []
+    total = 0
+    for block in sorted(blocks, key=lambda item: item["idx"]):
+        content = block["content"]
+        if block["type"] == "Title":
+            content = "# " + content
+        elif block["type"] == "Formula":
+            content = content.strip()
+            for opening, closing in (("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)"), ("$", "$")):
+                if (len(content) >= len(opening) + len(closing)
+                        and content.startswith(opening) and content.endswith(closing)
+                        and (opening != "$" or not (content.startswith("$$") or content.endswith("$$")))):
+                    content = content[len(opening):-len(closing)].strip()
+                    break
+            content = "$$\n" + content + "\n$$"
+        elif block["type"] == "Code Block" and not fenced_code(content):
+            # Longer than every run, even embedded non-line-start runs, so an
+            # untrusted code block cannot terminate our generated fence early.
+            length = max((len(match[0]) for match in re.finditer(r"`+", content)), default=0)
+            fence = "`" * max(3, length + 1)
+            content = fence + "\n" + content + "\n" + fence
+        total += len(content.encode("utf-8")) + (2 if parts else 0)
+        if total > MAX_PAGE_MAP:
+            fail("page_content_limit")
+        parts.append(content)
+    return "\n\n".join(parts)
+
+
+def fenced_code(content):
+    lines = content.strip().splitlines()
+    if len(lines) < 2:
+        return False
+    opening = re.fullmatch(r" {0,3}(`{3,}|~{3,})([^\r\n]*)", lines[0])
+    if not opening or (opening[1][0] == "`" and "`" in opening[2]):
+        return False
+    closing = r" {0,3}" + re.escape(opening[1][0]) + "{" + str(len(opening[1])) + r",}[ \t]*"
+    for index, line in enumerate(lines[1:], 1):
+        if re.fullmatch(closing, line):
+            return index == len(lines) - 1
+    return False
+
+
+def write_page_map(output, pages, source_hash, markdown_hash):
+    previews = []
+    total = 0
+    for page in pages:
+        preview = page_markdown(page)
+        if preview is not None:
+            total += len(preview.encode("utf-8"))
+            if total > MAX_PAGE_MAP:
+                fail("page_content_limit")
+        previews.append(preview)
+    data = page_json({"schema": 1, "sourceHash": source_hash, "markdownHash": markdown_hash,
+                      "pageCount": len(pages), "pages": previews})
+    name = "pages-" + hashlib.sha256(data).hexdigest() + ".json"
+    output.write(name, data)
+    return name
 
 
 def no_progress(_frame):
@@ -423,7 +545,7 @@ def parse_chunk(session, chunk, base, output, source_hash, progress=no_progress)
 def _parse_chunk(session, chunk, base, output, source_hash, progress):
     start, end, pdf = chunk
     options = {"baseURL": base, "image": "base64", "formula": "latex", "table": "html",
-               "keep_header_footer": False, "formats": ["markdown", "json"], "version": 1,
+               "keep_header_footer": False, "formats": ["markdown", "json"], "version": 2,
                "source": source_hash, "start": start, "end": end}
     digest = hashlib.sha256(pdf + json.dumps(options, sort_keys=True).encode()).hexdigest()
     name = "cache/" + digest + ".json"
@@ -496,6 +618,8 @@ def convert(request, progress=no_progress):
     pages = []
     total = 0
     blocks = 0
+    content_size = 0
+    markdown_hash = hashlib.sha256()
     with open_pdf(source) as doc:
         count = len(doc)
         progress({"type": "progress", "phase": "planning", "pageCount": count})
@@ -524,6 +648,11 @@ def convert(request, progress=no_progress):
                 if total > MAX_MARKDOWN:
                     fail("markdown_limit")
                 markdown_file.write(data)
+                markdown_hash.update(data)
+                content_size += sum(len(block.get("content", "").encode("utf-8"))
+                                    for page in layout for block in page["blocks"])
+                if content_size > MAX_PAGE_MAP:
+                    fail("page_content_limit")
                 blocks += sum(len(page["blocks"]) for page in layout)
                 if blocks > MAX_BLOCKS:
                     fail("layout_limit")
@@ -541,7 +670,13 @@ def convert(request, progress=no_progress):
                         fail("incomplete_layout")
                 if fingerprint(source) != before:
                     fail("source_changed")
-    return {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf", "pageCount": count}
+                # Commit the content-addressed map before either existing final
+                # output. A map write failure must not replace source.md.
+                page_map_file = write_page_map(output, pages, before, markdown_hash.hexdigest())
+                if fingerprint(source) != before:
+                    fail("source_changed")
+    return {"ok": True, "markdownFile": "source.md", "layoutFile": "layout.pdf",
+            "pageMapFile": page_map_file, "pageCount": count}
 
 
 def preview(request):
