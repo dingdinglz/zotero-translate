@@ -55,35 +55,22 @@ test("IIFE has no startup effects and registers the pure API", () => {
   assert.equal(typeof scope.SmartPaperTranslatorModules.FulltextImages.validateURL, "function");
 });
 
-test("official cn/ai cross-suffix compatibility is granted only by an official base", () => {
-  for (const base of [CN, AI, BASE, AI + "/api/v1/"]) {
-    for (const host of [CN, AI]) assert.equal(validateURL(host + path(1), base), host + path(1));
+test("custom API images accept public HTTP(S), arbitrary paths, signed queries and relative references", () => {
+  for (const base of [BASE, "https://custom.example/api/v2/"]) {
+    for (const target of [url(), AI + path(1), "https://cdn.example:8443/object?signature=sample%3Bvalue", "http://images.example/download?id=42"]) {
+      assert.equal(validateURL(target, base), target);
+    }
   }
-  assert.equal(validateURL(url().replace("https:", "HTTPS:").replace(".cn/", ".cn:443/"), BASE), url());
-  assert.throws(() => validateURL(url(), "https://custom.example/api/v1"), /地址不受信任/);
-  assert.throws(() => validateURL(AI + path(1), "https://custom.example/api/v1"), /地址不受信任/);
+  assert.equal(validateURL("files/pic?token=sample", "https://custom.example/api/v2/"), "https://custom.example/api/v2/files/pic?token=sample");
+  assert.equal(validateURL("//cdn.example/a%20b.PNG#preview", BASE), "https://cdn.example/a%20b.PNG");
+  assert.equal(validateURL("../image", "https://custom.example/api/v2/"), "https://custom.example/api/image");
 });
 
-test("custom base permits only its exact HTTPS origin and directory files path", () => {
-  const custom = "https://images.example:8443/oxr/v2";
-  const target = custom + path(1).replace("/api/v1", "");
-  assert.equal(validateURL(target, custom + "/"), target);
-  for (const bad of [target.replace(":8443", ""), target.replace("/oxr/v2", "/oxr"), target.replace("images.example", "other.example"), target.replace("https", "http")]) {
-    assert.throws(() => validateURL(bad, custom), /地址不受信任/);
-  }
-  for (const badBase of ["http://images.example/api/v1", "https://localhost/api/v1", "https://x.localhost/api/v1", "https://127.0.0.1/api/v1", "https://2130706433/api/v1", "https://0x7f000001/api/v1", "https://[::1]/api/v1", "https://images.example/a/../api/v1"]) {
-    assert.throws(() => validateURL(url(), badBase), /地址不受信任/);
-  }
-});
-
-test("URL variants are rejected without reflecting the input", () => {
-  const bad = [null, "", path(1), "//free-oxr.somark.cn" + path(1), url() + "?secret=abc", url() + "#", url() + "?",
-    url().replace("https://", "https://secret@"), url().replace("https://", "https://@"), url().replace(".cn/", ".cn:444/"),
-    url().replace("/api/", "/%61pi/"), url().replace("/api/", "\\api/"), "\n" + url(), url() + " ", url() + "\u0085",
-    url().replace("/api/", "/x/../api/"), url().replace("/api/", "/./api/"), url().replace(".png", ".svg"),
-    url().replace(".png", ".PNG"), url().replace(".cn", ".cn.evil.example"), url().replace(".cn", ".cn."),
-    url().replace("https://", "https:///"), url().replace("https://", "https:////"),
-    url().replace("a".repeat(32), "a".repeat(31)), url().replace(".png", ".png/extra")];
+test("non-network schemes, credentials, private endpoints and malformed URLs fail without reflecting input", () => {
+  const bad = [null, "", "data:image/png;base64,abc", "file:///private/image.png", "javascript:alert(1)",
+    "https://secret:password@cdn.example/a", "\n" + url(), url() + " ", url() + "\u0085", url().replace("/api/", "\\api/"),
+    "http://localhost/a", "http://x.localhost/a", "http://host.local/a", "http://intranet/a", "http://host.home.arpa/a",
+    "http://127.0.0.1/a", "http://2130706433/a", "http://0x7f000001/a", "http://10.0.0.1/a", "http://169.254.169.254/a", "http://[::1]/a", "http://[fc00::1]/a"];
   for (const value of bad) assert.throws(() => validateURL(value, BASE), error => error.message === "全文图片：地址不受信任");
 });
 
@@ -96,7 +83,7 @@ test("get never fetches; resolve uses credential-free GET and persists only vali
   assert.equal(await f.cache.resolve(url()), URI);
   assert.equal(f.calls.length, 1);
   const { signal, ...options } = f.calls[0].options;
-  assert.deepEqual(options, { method: "GET", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store" });
+  assert.deepEqual(options, { method: "GET", credentials: "omit", redirect: "manual", referrerPolicy: "no-referrer", cache: "no-store" });
   assert.equal(signal.aborted, false);
   assert.deepEqual(f.writes, [{ key: hash(url()), value: validRecord() }]);
   assert.equal(JSON.stringify(f.writes).includes(CN), false);
@@ -222,23 +209,68 @@ test("stale queued or initially stale requests never start a download", async ()
   await assert.rejects(f.cache.resolve(url(3), { isCurrent: () => { throw new Error("secret"); } }), /请求已失效/);
 });
 
-test("redirects, final URL differences, non-200, wrong or parameterized MIME fail closed", async () => {
+test("automatic redirects, unexpected final URLs, non-200 and active MIME fail closed", async () => {
   for (const overrides of [{ redirected: true }, { url: AI + path(1) }, { url: "" }, { status: 201 }, { status: 302 },
-    { mime: "image/jpeg" }, { mime: "image/png; charset=utf-8" }, { mime: "image/svg+xml" }, { mime: "IMAGE/PNG" }, { body: null }]) {
+    { mime: "image/jpeg" }, { mime: "image/svg+xml" }, { mime: "text/html" }, { body: null }]) {
     const f = fixture({ fetch: async target => response(target, overrides) });
-    await assert.rejects(f.cache.resolve(url()), /下载失败/);
+    await assert.rejects(f.cache.resolve(url()), /下载失败|校验失败|地址不受信任/);
     assert.equal(f.writes.length, 0);
   }
 });
 
-test("each allowed URL extension requires its exact raster MIME", async () => {
-  for (const [ext, mime] of Object.entries({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" })) {
-    const target = url().replace(/png$/, ext);
-    const f = fixture({ fetch: async value => response(value, { mime }), validateImage: () => ({ size: PNG.length, width: 1, height: 1 }) });
-    assert.equal(await f.cache.resolve(target), `data:${mime};base64,${PNG.toString("base64")}`);
-    const wrong = fixture({ fetch: async value => response(value, { mime: "application/octet-stream" }) });
-    await assert.rejects(wrong.cache.resolve(target), /下载失败/);
+test("extensionless signed endpoints and generic binary MIME use validated image signatures", async () => {
+  for (const mime of ["image/png", "IMAGE/PNG", "image/png; charset=utf-8", "application/octet-stream", "binary/octet-stream", ""]) {
+    const f = fixture({ fetch: async target => response(target, { mime }) });
+    assert.equal(await f.cache.resolve("https://cdn.example/download?signature=sample"), URI);
+    assert.equal(f.writes[0].value.mime, "image/png");
   }
+  const wrong = fixture({ fetch: async target => response(target, { bytes: Buffer.from("<svg>not an image</svg>"), mime: "application/octet-stream" }) });
+  await assert.rejects(wrong.cache.resolve(url()), /校验失败/);
+});
+
+function redirect(target, location, status = 307) {
+  return { status, redirected: false, url: target, headers: { get: key => key === "location" ? location : null }, body: null };
+}
+
+test("real OXR 307 shape follows signed cross-origin URLs without persisting the target or signature", async () => {
+  const final = "https://storage.example/bucket/assets/image?signature=sample%3Bvalue";
+  const requests = [];
+  const f = fixture({ fetch: async (target, options) => { requests.push({ target, options }); return target === url() ? redirect(target, final) : response(target); } });
+  assert.equal(await f.cache.resolve(url()), URI);
+  assert.deepEqual(requests.map(r => r.target), [url(), final]);
+  assert.equal(requests[0].options.signal, requests[1].options.signal);
+  assert.ok(requests.every(r => r.options.redirect === "manual" && r.options.credentials === "omit"));
+  assert.equal(JSON.stringify(f.writes).includes("signature"), false);
+  assert.equal(JSON.stringify(f.writes).includes("storage.example"), false);
+  assert.equal(f.writes[0].key, hash(url()));
+});
+
+test("all standard redirect codes and relative Locations are supported", async () => {
+  for (const status of [301, 302, 303, 307, 308]) {
+    let requests = 0;
+    const f = fixture({ fetch: async target => ++requests === 1 ? redirect(target, "/assets/image?sig=sample", status) : response(target) });
+    assert.equal(await f.cache.resolve(url()), URI); assert.equal(requests, 2);
+  }
+});
+
+test("redirect loops, hop limits and prohibited targets stop before another request", async () => {
+  for (const location of [url(), "file:///private/image", "http://127.0.0.1/admin", "https://user:secret@host.example/a", "javascript:alert(1)", "http://[::1]/a"]) {
+    let calls = 0;
+    const f = fixture({ fetch: async target => { calls++; return redirect(target, location); } });
+    await assert.rejects(f.cache.resolve(url())); assert.equal(calls, 1);
+  }
+  let calls = 0;
+  const endless = fixture({ fetch: async target => redirect(target, `https://storage.example/image-${++calls}`) });
+  await assert.rejects(endless.cache.resolve(url()), /资源超过上限/); assert.equal(calls, 6);
+});
+
+test("cancellation between redirects prevents the next hop and retains one timeout across the chain", async () => {
+  let current = true, calls = 0, timers = 0;
+  const f = fixture({ fetch: async target => { calls++; current = false; return redirect(target, "https://storage.example/image"); } });
+  await assert.rejects(f.cache.resolve(url(), { isCurrent: () => current }), /请求已失效/); assert.equal(calls, 1);
+  const timed = fixture({ fetch: async target => target === url() ? redirect(target, "https://storage.example/image") : response(target),
+    timers: { setTimeout(fn, delay) { timers++; assert.equal(delay, 15000); return setTimeout(fn, delay); }, clearTimeout } });
+  assert.equal(await timed.cache.resolve(url()), URI); assert.equal(timers, 1);
 });
 
 test("signature, pixel dimensions and validator size mismatch never enter cache", async () => {

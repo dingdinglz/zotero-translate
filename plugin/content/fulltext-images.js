@@ -6,8 +6,9 @@
   const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
   const MAX_ENTRIES = 128;
   const TIMEOUT_MS = 15000;
-  const OFFICIAL = new Set(["https://free-oxr.somark.cn", "https://free-oxr.somark.ai"]);
-  const TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+  const Network = modules.FulltextImageNetwork || (typeof require === "function" ? require("./fulltext-image-network.js") : null);
+  const TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+  const REDIRECTS = new Set([301, 302, 303, 307, 308]);
   const MESSAGES = {
     url: "全文图片：地址不受信任", invalid: "全文图片：图片或缓存校验失败",
     network: "全文图片：下载失败", limit: "全文图片：资源超过上限",
@@ -16,37 +17,30 @@
   };
   function fail(kind) { throw new Error(MESSAGES[kind]); }
 
-  // Check the raw spelling BEFORE URL normalization erases dot segments, whitespace
-  // or default ports. Absolute HTTPS only; the base grants no additional hosts.
-  function parseURL(value) {
-    if (typeof value !== "string" || value.length > 4096 || !/^https:\/\/[^/]+(?:\/|$)/i.test(value)
-      || /[\s\u0000-\u001f\u007f-\u009f\\%?#@]/u.test(value)
-      || /(?:^|\/)\.{1,2}(?:\/|$)/u.test(value)) fail("url");
+  function parseURL(value, base) {
+    if (typeof value !== "string" || !value || value.length > 8192 || /[\s\u0000-\u001f\u007f-\u009f\\]/u.test(value)) fail("url");
     let url;
-    try { url = new URL(value); } catch (_) { fail("url"); }
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash
-      || url.hostname === "localhost" || url.hostname.endsWith(".localhost")
-      || !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]$/u.test(url.hostname)
-      || /^\d+(?:\.\d+){3}$/u.test(url.hostname)) fail("url");
+    try { url = new URL(value, base); } catch (_) { fail("url"); }
+    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) fail("url");
+    url.hash = "";
     return url;
   }
   function validateURL(value, baseURL) {
-    const base = parseURL(baseURL);
-    const url = parseURL(value);
-    let prefix;
-    if (OFFICIAL.has(base.origin)) {
-      if (!OFFICIAL.has(url.origin)) fail("url");
-      prefix = "/api/v1/files/";
-    }
-    else {
-      if (url.origin !== base.origin) fail("url");
-      prefix = base.pathname.replace(/\/+$/u, "") + "/files/";
-    }
-    if (!url.pathname.startsWith(prefix)
-      || !/^[a-fA-F0-9]{32}\/[a-fA-F0-9]{64}\.(?:png|jpg|jpeg|gif|webp)$/u.test(url.pathname.slice(prefix.length))) fail("url");
+    const url = parseURL(value, baseURL), host = url.hostname.toLowerCase().replace(/\.$/u, "");
+    if (host === "localhost" || /\.(?:localhost|local|internal|lan|home\.arpa)$/u.test(host)) fail("url");
+    if (host.includes(":") || /^[\d.]+$/u.test(host)) {
+      if (!Network?.isPublicAddress(host.replace(/^\[|\]$/gu, ""))) fail("url");
+    } else if (!host.includes(".")) fail("url");
     return url.href;
   }
-  function mimeFor(url) { return TYPES[url.slice(url.lastIndexOf(".") + 1)]; }
+  function sniffMime(bytes) {
+    if (bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((b, i) => bytes[i] === b)) return "image/png";
+    if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
+    const ascii = (start, length) => String.fromCharCode(...bytes.subarray(start, start + length));
+    if (["GIF87a", "GIF89a"].includes(ascii(0, 6))) return "image/gif";
+    if (ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") return "image/webp";
+    fail("invalid");
+  }
   function ignore(promise) { Promise.resolve(promise).catch(() => {}); }
   function toBase64(bytes) {
     // No DOM, Buffer, binary-string copy or privileged runtime dependency.
@@ -74,7 +68,7 @@
       if (typeof fetch !== "function" || typeof AbortController !== "function" || typeof hash !== "function"
         || typeof validateImage !== "function" || !storage || typeof storage.read !== "function"
         || typeof storage.write !== "function") fail("adapter");
-      this.#base = baseURL; this.#fetch = fetch; this.#Controller = AbortController;
+      this.#base = parseURL(baseURL).href.replace(/\/+$/u, "") + "/"; this.#fetch = fetch; this.#Controller = AbortController;
       this.#hash = hash; this.#storage = storage; this.#validate = validateImage;
       this.#timers = timers || { setTimeout: (...args) => global.setTimeout(...args), clearTimeout: id => global.clearTimeout(id) };
       if (typeof this.#timers.setTimeout !== "function" || typeof this.#timers.clearTimeout !== "function") fail("adapter");
@@ -175,19 +169,18 @@
         this.#budget(0);
         const urlHash = await this.#digest(job, url);
         const record = await this.#wait(job, () => this.#storage.read(urlHash));
-        const mime = mimeFor(url);
-        let dataURI, contentHash, size;
+        let mime, dataURI, contentHash, size;
         if (record !== null && record !== undefined) {
           if (!record || typeof record !== "object" || Array.isArray(record)
             || Object.keys(record).sort().join(",") !== "contentHash,dataURI,mime,schema,urlHash"
-            || record.schema !== 1 || record.urlHash !== urlHash || record.mime !== mime) fail("invalid");
-          dataURI = record.dataURI;
+            || record.schema !== 1 || record.urlHash !== urlHash || !TYPES.has(record.mime)) fail("invalid");
+          mime = record.mime; dataURI = record.dataURI;
           size = this.#image(dataURI, mime);
           contentHash = await this.#digest(job, dataURI);
           if (contentHash !== record.contentHash) fail("invalid");
         }
         else {
-          dataURI = await this.#download(url, mime, job);
+          ({ dataURI, mime } = await this.#download(url, job));
           this.#check(job);
           size = this.#image(dataURI, mime);
           contentHash = await this.#digest(job, dataURI);
@@ -206,17 +199,29 @@
         fail("invalid");
       }
     }
-    async #download(url, mime, job) {
+    async #download(url, job) {
       this.#check(job);
       job.controller = new this.#Controller();
       const timer = this.#timers.setTimeout(() => this.#stop(job, "timeout"), TIMEOUT_MS);
       try {
-        const response = await this.#wait(job, () => this.#fetch(url, {
-          method: "GET", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer",
-          cache: "no-store", signal: job.controller.signal
-        }));
-        if (!response || response.status !== 200 || response.redirected !== false || response.url !== url
-          || response.headers?.get("content-type") !== mime || !response.body || typeof response.body.getReader !== "function") fail("network");
+        let response, target = url;
+        const seen = new Set([target]);
+        for (let hop = 0; ; hop++) {
+          response = await this.#wait(job, () => this.#fetch(target, {
+            method: "GET", credentials: "omit", redirect: "manual", referrerPolicy: "no-referrer",
+            cache: "no-store", signal: job.controller.signal
+          }));
+          if (!response || response.redirected !== false || response.url !== target) fail("network");
+          if (!REDIRECTS.has(response.status)) break;
+          if (hop >= 5) fail("limit");
+          const next = validateURL(response.headers?.get("location"), target);
+          if (seen.has(next)) fail("network");
+          if (response.body?.cancel) await this.#wait(job, () => response.body.cancel());
+          seen.add(next); target = next;
+        }
+        const declaredMime = String(response.headers?.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+        if (response.status !== 200 || (!TYPES.has(declaredMime) && !["", "application/octet-stream", "binary/octet-stream"].includes(declaredMime))
+          || !response.body || typeof response.body.getReader !== "function") fail("network");
         const declared = response.headers.get("content-length");
         if (declared !== null && declared !== undefined) {
           if (!/^(?:0|[1-9]\d*)$/u.test(declared)) fail("network");
@@ -244,7 +249,9 @@
         const bytes = new Uint8Array(size);
         let offset = 0;
         for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-        return `data:${mime};base64,${toBase64(bytes)}`;
+        const mime = sniffMime(bytes);
+        if (TYPES.has(declaredMime) && declaredMime !== mime) fail("invalid");
+        return { mime, dataURI: `data:${mime};base64,${toBase64(bytes)}` };
       }
       catch (error) {
         this.#stop(job, Object.keys(MESSAGES).find(key => error instanceof Error && MESSAGES[key] === error.message) || "network");
