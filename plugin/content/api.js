@@ -62,8 +62,11 @@
     throw new Logic.SmartTranslatorError("API_RESPONSE_EMPTY", "API 返回内容为空");
   }
 
-  function extractTranslation(xhr) {
+  function extractTranslation(xhr, { rejectTruncated = false } = {}) {
     const response = readResponseJSON(xhr);
+    if (rejectTruncated && response?.choices?.[0]?.finish_reason === "length") {
+      throw new Logic.SmartTranslatorError("API_RESPONSE_TRUNCATED", "模型输出因 token 或上下文额度不足被截断，未接受为完整译文；请拆分当前段落后重试");
+    }
     const content = response?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
       throw new Logic.SmartTranslatorError(
@@ -84,7 +87,7 @@
       this.timeoutMS = timeoutMS || Constants.REQUEST_TIMEOUT_MS;
     }
 
-    async complete({ config, apiKey, prompt, systemMessage, maxTokens, registerCancel }) {
+    async complete({ config, apiKey, prompt, systemMessage, maxTokens, timeoutMS, rejectTruncated, registerCancel }) {
       if (config.provider === "deepseek" && !apiKey) {
         throw new Logic.SmartTranslatorError("CONFIG_API_KEY", "请先保存 DeepSeek API Key");
       }
@@ -107,7 +110,7 @@
           body: JSON.stringify(payload),
           headers,
           responseType: "json",
-          timeout: this.timeoutMS,
+          timeout: Number.isSafeInteger(timeoutMS) && timeoutMS > 0 ? timeoutMS : this.timeoutMS,
           errorDelayMax: 0,
           anon: true,
           noCache: true,
@@ -117,7 +120,7 @@
             unregisterCancel = registerCancel?.(cancel) || null;
           }
         });
-        return extractTranslation(xhr);
+        return extractTranslation(xhr, { rejectTruncated });
       }
       catch (error) {
         throw mapAPIError(error);

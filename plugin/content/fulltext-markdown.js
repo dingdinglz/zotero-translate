@@ -3,7 +3,8 @@
 
   const modules = global.SmartPaperTranslatorModules = global.SmartPaperTranslatorModules || {};
   const MAX_SOURCE_BYTES = 128 * 1024 * 1024;
-  const MAX_SEGMENT_LENGTH = 16000;
+  const MAX_SEGMENT_LENGTH = 128000;
+  const MAX_TRANSLATION_LENGTH = 256000;
   const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
   const MAX_TOTAL_IMAGE_BYTES = 64 * 1024 * 1024;
   const MAX_IMAGE_PIXELS = 40 * 1024 * 1024;
@@ -430,7 +431,7 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
       tokens.push({ marker, kind: part.kind, value: part.value });
       return marker;
     }).join("");
-    if (text.length > MAX_SEGMENT_LENGTH) fail(`段落 ${segment.id} 超过 ${MAX_SEGMENT_LENGTH} UTF-16 单元的模型输入上限，请手动拆分结构，未截断`);
+    if (text.length > MAX_SEGMENT_LENGTH) fail(`段落 ${segment.id} 超过插件单块输入上限 ${MAX_SEGMENT_LENGTH} UTF-16 单元，请手动拆分结构，未截断`);
     return { version: 1, id: segment.id, text, prefix, tokens, source: segment.source };
   }
   function explanation(text) {
@@ -461,14 +462,14 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
     const translatedParts = lex(translatedSource);
     const proseLength = translatedParts.reduce((sum, part) => sum + (part.kind === "text" ? part.value.length : 0), 0);
     const protectedLength = prepared.text.length - originalParts.reduce((sum, part) => sum + (part.kind === "text" ? part.value.length : 0), 0);
-    if (proseLength + protectedLength > MAX_SEGMENT_LENGTH) fail("译文段落超过模型输出上限");
+    if (proseLength + protectedLength > MAX_TRANSLATION_LENGTH) fail("译文段落超过插件单块输出上限，未截断");
     compareParts(segment.source, translatedSource);
     return translatedSource;
   }
   function restoreTranslation(prepared, responseText) {
     assertString(responseText);
     if (!prepared || prepared.version !== 1 || !Array.isArray(prepared.tokens) || typeof prepared.prefix !== "string") fail("无效保护元数据");
-    if (responseText.length > MAX_SEGMENT_LENGTH) fail("模型输出超过上限");
+    if (responseText.length > MAX_TRANSLATION_LENGTH) fail("模型输出超过插件单块输出上限，未截断");
     checkSource(responseText);
     const expected = prepared.tokens.map(token => token.marker);
     const found = responseText.match(/⟦SPT_[^⟧\r\n]*⟧/gu) || [];
@@ -863,7 +864,7 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
   }
 
   modules.FulltextMarkdown = {
-    MAX_SOURCE_BYTES, MAX_SEGMENT_LENGTH, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, MAX_IMAGE_PIXELS,
+    MAX_SOURCE_BYTES, MAX_SEGMENT_LENGTH, MAX_TRANSLATION_LENGTH, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, MAX_IMAGE_PIXELS,
     PRINT_CSS, validateSource: checkSource, editableBlocks, imageInfo, createPlan, prepareSegment, restoreTranslation, validateRestored, assemble, renderMarkdown
   };
   if (typeof module !== "undefined" && module.exports) module.exports = modules.FulltextMarkdown;
