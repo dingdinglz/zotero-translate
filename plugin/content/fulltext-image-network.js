@@ -63,6 +63,16 @@
       && !(words[0] === 0x3fff && words[1] < 0x1000);
   }
 
+  function isAllowedDNSAddress(value, hostname) {
+    if (isPublicAddress(value)) return true;
+    const bytes = typeof value === "string" ? ipv4(value) : null;
+    const host = hostname.toLowerCase().replace(/\.$/u, "");
+    // Domain-only proxy exception; literal-IP policy remains in isPublicAddress().
+    return Boolean(bytes && bytes[0] === 198 && (bytes[1] === 18 || bytes[1] === 19)
+      && host.includes(".") && !host.includes(":") && !/^[\d.]+$/u.test(host)
+      && !/(?:^|\.)(?:localhost|local|internal|lan|home\.arpa)$/u.test(host));
+  }
+
   function createFetch({ Services, ChromeUtils, Cc, Ci, Cr, Components }) {
     const success = status => Components.isSuccessCode(status);
     const error = cancelled => new Error(cancelled ? ABORTED : FAILURE);
@@ -287,7 +297,7 @@
                 record = record.QueryInterface(Ci.nsIDNSAddrRecord);
                 let count = 0;
                 while (record.hasMore()) {
-                  if (++count > MAX_ADDRESSES || !isPublicAddress(record.getNextAddrAsString())) throw error(false);
+                  if (++count > MAX_ADDRESSES || !isAllowedDNSAddress(record.getNextAddrAsString(), uri.asciiHost)) throw error(false);
                 }
                 if (!count) throw error(false);
                 openChannel();

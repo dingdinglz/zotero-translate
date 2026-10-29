@@ -70,7 +70,7 @@ test("non-network schemes, credentials, private endpoints and malformed URLs fai
   const bad = [null, "", "data:image/png;base64,abc", "file:///private/image.png", "javascript:alert(1)",
     "https://secret:password@cdn.example/a", "\n" + url(), url() + " ", url() + "\u0085", url().replace("/api/", "\\api/"),
     "http://localhost/a", "http://x.localhost/a", "http://host.local/a", "http://intranet/a", "http://host.home.arpa/a",
-    "http://127.0.0.1/a", "http://2130706433/a", "http://0x7f000001/a", "http://10.0.0.1/a", "http://169.254.169.254/a", "http://[::1]/a", "http://[fc00::1]/a"];
+    "http://127.0.0.1/a", "http://2130706433/a", "http://0x7f000001/a", "http://10.0.0.1/a", "http://198.18.0.103/a", "http://198.19.255.255/a", "http://169.254.169.254/a", "http://[::1]/a", "http://[fc00::1]/a"];
   for (const value of bad) assert.throws(() => validateURL(value, BASE), error => error.message === "全文图片：地址不受信任");
 });
 
