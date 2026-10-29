@@ -10,7 +10,7 @@
 
 随后按照该 Skill 的路由说明，读取本次任务需要的 references。不得仅凭通用 WebExtension 或旧版 Zotero 经验推断 Zotero 9/10 API；迁移时核对官方对应版本开发文档与本机 `omni.ja`。
 
-macOS 原生验证默认使用 Skill 的 `references/cli-native-probes.md`：CLI + Accessibility + Run JavaScript，不依赖 Computer Use。每次核对 PID/版本，只操作自建探针窗口；完整保留剪贴板后粘贴短包装，以本轮 JSON 与最终 XPI 哈希确认结果，不输出真实文库 AX 树，不覆盖用户已有脚本或修改 profile/TCC。
+开发完成后仅执行静态检查、自动测试和 XPI 归档检查，不要求操控真机 Zotero 做原生解析、运行时探针或 UI 验证，也不为完成交付请求辅助功能权限。只有用户另行明确要求真机调试或验证时，才按 Skill 的可选 `references/cli-native-probes.md` 执行：每次核对 PID/版本，只操作自建探针窗口，完整保留剪贴板，以本轮 JSON 与最终 XPI 哈希确认结果；不输出真实文库 AX 树，不覆盖用户已有脚本或修改 profile/TCC。未执行真机验证时如实披露，不阻塞交付。
 
 ## 项目概要
 
@@ -81,14 +81,14 @@ zotero-translate/
 ├── .gitignore
 ├── .agents/
 │   └── skills/
-│       └── develop-zotero-plugins/   # 插件开发、版本迁移与原生验证指南
+│       └── develop-zotero-plugins/   # 插件开发、版本迁移、静态检查与可选真机调试指南
 │           ├── SKILL.md              # 按任务路由与交付/授权边界
 │           ├── agents/
 │           │   └── openai.yaml       # Skill 发现与界面元数据
 │           ├── references/
 │           │   ├── implementation-patterns.md    # 生命周期、Reader 与设置模式
 │           │   ├── source-and-debugging.md       # 官方来源、XPI 解析、CLI 入口、隔离探针与跨域调试
-│           │   ├── cli-native-probes.md         # 无 Computer Use：动态 PID/AX、保留剪贴板粘贴、JSON 和合成窗口验证
+│           │   ├── cli-native-probes.md         # 仅另行请求真机调试时使用：PID/AX、剪贴板保护、JSON 和合成窗口
 │           │   ├── zotero-10-migration.md        # 9→10 API 检查、Reading Mode 与精确版本桥
 │           │   └── abstract-popup-case-study.md  # 历史悬浮窗/兼容报错案例
 │           └── scripts/
@@ -287,4 +287,4 @@ shasum -a 256 -c dist/SHA256SUMS
 
 可选的已准备 Pi 适配器验证：设置 `SPT_TEST_PI_ACP_ENTRY=/absolute/path/to/pi-acp/dist/index.js`，执行 `node --test tests/pi-acp-compat.test.js`。只对现成模块做初始化握手和使用假 Pi RPC 的配置方法验证，不下载、不创建真实 Pi 会话、不调用模型。
 
-涉及运行时文件的修改还必须遵循 `develop-zotero-plugins` Skill：检查 XPI 根目录、运行 `unzip -t`，并在目标 Zotero 版本中使用 `AddonManager.getInstallForFile()` 对最终 XPI 做非安装式解析。实际安装和 UI 冒烟测试需要用户单独授权。
+涉及运行时文件的修改还必须遵循 `develop-zotero-plugins` Skill：检查 XPI 根目录并运行 `unzip -t`。不再要求在真机 Zotero 中使用 `AddonManager.getInstallForFile()` 解析最终 XPI，也不要求运行时探针或 UI 冒烟测试；这些操作及实际安装仅在用户另行明确请求并授权相应范围时执行。静态检查通过不得表述为已完成真机验证。

@@ -1,4 +1,4 @@
 interface:
   display_name: "Zotero 插件开发"
-  short_description: "开发、调试、打包，并用 CLI 原生验证 Zotero 插件"
-  default_prompt: "使用 $develop-zotero-plugins 开发并验证这个 Zotero 桌面插件需求。"
+  short_description: "开发、调试、打包 Zotero 插件，执行静态检查与自动测试"
+  default_prompt: "使用 $develop-zotero-plugins 开发这个 Zotero 桌面插件需求，完成静态检查与自动测试；不操控真机 Zotero 验证，除非我另行明确要求。"

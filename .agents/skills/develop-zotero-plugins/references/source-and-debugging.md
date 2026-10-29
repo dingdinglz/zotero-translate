@@ -1,5 +1,7 @@
 # Zotero 插件资料查找与调试
 
+本文保留原生解析和运行时探针作为可选调试资料，不属于开发完成后的必做验证。默认只做静态检查、自动测试与归档检查；只有用户另行明确请求真机调试或验证时，才执行本文涉及操控 Zotero 的步骤。未执行原生验证不阻塞交付，也不得宣称已通过。
+
 ## 目录
 
 - 证据优先级
@@ -42,7 +44,7 @@
 
 ## 检查目标版本
 
-在 Zotero 的“工具 → 开发者 → Run JavaScript”中执行：
+默认读取安装目录的 `application.ini` 等版本元数据，或询问用户，不为查询版本启动或操控客户端。仅在用户另行请求真机调试时，可在 Zotero 的“工具 → 开发者 → Run JavaScript”中执行：
 
 ```javascript
 return {
@@ -56,7 +58,7 @@ return {
 
 ## 无 Computer Use 时的 CLI 原生验证
 
-不把 Computer Use 工具当作验证前提。macOS 上默认按 [cli-native-probes.md](cli-native-probes.md) 使用终端、Swift/osascript 与 Accessibility 定位本轮新建的 Run JavaScript 窗口；完整探针保存在自有临时文件中，保留剪贴板后整段粘贴短包装，再从本轮 JSON 结果确认执行与最终 XPI 哈希。
+仅在用户另行请求原生验证时采用此路线，不把 Computer Use 工具当作前提。macOS 上按 [cli-native-probes.md](cli-native-probes.md) 使用终端、Swift/osascript 与 Accessibility 定位本轮新建的 Run JavaScript 窗口；完整探针保存在自有临时文件中，保留剪贴板后整段粘贴短包装，再从本轮 JSON 结果确认执行与最终 XPI 哈希。
 
 该路线已在 Zotero 10.0.6 / Gecko 140.17.0 完成非安装解析与模拟后端窗口验证。每次重新确认 PID/版本，不覆盖用户已有脚本，不打印真实文库的 AX 树。找不到窗口或没有执行结果是自动化未完成，不应误判插件 API/兼容性；系统权限不足时请用户授权或手动执行，不更改 profile、TCC 或远程调试设置。
 
@@ -114,7 +116,7 @@ python3 scripts/inspect_zotero_source.py 'update_url not provided' \
 
 ## 用 Zotero 原生安装器解析 XPI
 
-静态 ZIP/JSON 校验不能证明 Zotero 会接受插件。打包后，在 Run JavaScript 中勾选异步模式并执行：
+静态 ZIP/JSON 校验不能证明 Zotero 会接受插件，但原生解析不再是交付要求。只有用户另行请求解析时，才在 Run JavaScript 中勾选异步模式并执行：
 
 ```javascript
 var { AddonManager } = ChromeUtils.importESModule(

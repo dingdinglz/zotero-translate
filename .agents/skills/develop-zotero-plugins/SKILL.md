@@ -5,13 +5,13 @@ description: Develop, modify, migrate, debug, package, and validate bootstrapped
 
 # Develop Zotero Plugins
 
-Build against the user's actual Zotero version and prefer public plugin APIs. For a runtime deliverable, finish with an XPI parsed by that Zotero version. Documentation-only work needs documentation validation, not a plugin installation or rebuild.
+Build against the user's actual Zotero version and prefer public plugin APIs. For a runtime deliverable, finish with automated tests and static XPI checks. Do not operate the user's live Zotero client for completion checks; native parsing, runtime probes, installation, and UI smoke testing are not required and must only be performed if separately requested by the user. Documentation-only work needs documentation validation, not a plugin installation or rebuild.
 
 ## Load only the needed references
 
 - Read [references/implementation-patterns.md](references/implementation-patterns.md) before implementing lifecycle, reader UI, item access, events, or settings.
 - Read [references/source-and-debugging.md](references/source-and-debugging.md) whenever an API, version rule, install error, DOM surface, or Mozilla behavior is uncertain.
-- Read [references/cli-native-probes.md](references/cli-native-probes.md) before macOS native parsing or isolated UI probes. Default to CLI + Accessibility + Run JavaScript; do not assume Computer Use tools or a remote debugger are available.
+- Read [references/cli-native-probes.md](references/cli-native-probes.md) only if the user separately requests macOS native parsing or isolated UI probes. This is an optional debugging reference, not a completion step.
 - Read [references/zotero-10-migration.md](references/zotero-10-migration.md) for Zotero 9 → 10 migration, compatibility-range changes, or Reader/PDF.js behavior in Zotero 10.
 - Read [references/abstract-popup-case-study.md](references/abstract-popup-case-study.md) for floating reader UI, auto/manual open state, or a misleading compatibility error.
 
@@ -28,7 +28,7 @@ Determine:
 - data read/written, network access, file access, and privacy constraints;
 - whether the user wants source only, an XPI, live installation, or all three.
 
-Do not infer compatibility from the latest Zotero release alone. Read the installed version with `Services.appinfo.version` or ask for it if no client is available.
+Do not infer compatibility from the latest Zotero release alone. Read the installed version from local application metadata (for example, `application.ini`) or ask the user; do not open or control Zotero just to obtain it.
 
 ### 2. Establish evidence before coding
 
@@ -94,11 +94,8 @@ For runtime changes, validate the affected behavior and final package:
 2. Relevant regression tests for state transitions, async cancellation, and compatibility boundaries; add tests when existing coverage misses the changed behavior.
 3. XML parsing for preference fragments and SVG assets.
 4. Manifest and XPI structure checks.
-5. Native AddonManager parsing in the exact target Zotero version.
 
-Targeted native probes can check isolated features without installing the plugin; see [references/source-and-debugging.md](references/source-and-debugging.md). On macOS, use the [CLI-native route](references/cli-native-probes.md): rediscover the PID and verify the app, operate only an owned Run JavaScript window, paste a short wrapper with clipboard preservation, and verify a fresh structured result against the final artifact hash. Do not dump the library's accessibility tree or overwrite an existing editor. Missing system permissions require user help, not profile/TCC changes. A successful parser result does not verify startup or UI behavior.
-
-When installation and UI testing are authorized, use a separate development profile where practical. Cover open/close, repeated toggle, tab switch, empty data, preference change, disable cleanup, and restart as relevant. Verify accessibility names and selected state. If those actions are outside the task's authorization, deliver the completed non-installing checks and label UI smoke testing as unperformed.
+These checks are the default completion boundary. Do not launch or control Zotero, open Run JavaScript, use Accessibility automation, or request system permissions to finish a development task. Native parsing and UI testing are not delivery gates. If the user separately requests live debugging or testing, use the relevant reference and keep all actions within that authorization; otherwise report live checks as not performed.
 
 For Skill/reference-only edits, validate frontmatter, links, examples, and the documented directory layout. Do not bump the plugin version or rebuild an unchanged XPI.
 
@@ -114,20 +111,7 @@ Use the repository's build entry point when one exists. Pass only the runtime so
 
 Never broaden `strict_max_version` merely to silence an install dialog. Base the declared range on verification and report the exact client version tested. The manifest range and a private feature's exact-version allowlist are separate decisions.
 
-### 9. Let Zotero parse the final artifact
-
-Use the non-installing `AddonManager.getInstallForFile()` diagnostic from [references/source-and-debugging.md](references/source-and-debugging.md) against the final deliverable path. Require:
-
-- `error === 0`;
-- a non-null addon with the expected ID and version;
-- `isCompatible === true`;
-- `appDisabled === false` unless intentionally disabled.
-
-If parsing fails, inspect Error Console before editing. Treat the dialog's compatibility wording as a symptom, not a root cause.
-
-Actual installation runs privileged third-party code and changes Zotero state. Install only when the user explicitly requests or confirms it; otherwise stop after native parsing and provide the XPI.
-
-### 10. Deliver with evidence
+### 9. Deliver with evidence
 
 Provide:
 
@@ -135,9 +119,9 @@ Provide:
 - versioned source archive or repository changes;
 - exact installation path/menu steps;
 - supported and actually tested Zotero versions;
-- tests run and native parser result;
+- automated tests and static package checks run; explicitly note that native parsing and UI testing were not performed when applicable;
 - known limitations, private/internal APIs, network behavior, and update behavior;
-- one short manual acceptance checklist.
+- optional manual acceptance suggestions for the user, not a required execution step.
 
 Point users to the new versioned file when older XPIs remain nearby. Never claim live installation if only static or parser validation was performed.
 
@@ -151,7 +135,6 @@ When the answer is uncertain or likely version-dependent:
 2. inspect the official sample;
 3. search the installed `app/omni.ja` for the public symbol and its caller;
 4. compare the same file on the official GitHub branch/tag matching the client;
-5. run a read-only probe in Tools → Developer → Run JavaScript;
-6. ask `zotero-dev` with version, minimal reproduction, logs, and source link if ambiguity remains.
+5. if ambiguity remains, report it and suggest a `zotero-dev` question with version, minimal reproduction, available logs, and source link. Do not run a live probe unless the user separately requests it.
 
 State the boundary: “verified on Zotero x.y.z”, “documented public API”, “internal implementation”, or “inference”. If live verification is unavailable, say so and do not upgrade an inference into a compatibility promise.

@@ -1,6 +1,8 @@
 # 不依赖 Computer Use 的 Zotero 原生验证
 
-适用于只有终端、文件工具时的 macOS Zotero 调试。默认尝试 **CLI → macOS Accessibility（AX）→ Zotero「执行 JavaScript」→ 结构化结果文件**，不把 Computer Use、远程调试端口或浏览器自动化工具当作前提。
+仅在用户另行明确请求真机调试或验证时使用；本指南不是开发完成后的必做步骤，不应自动启动、操控 Zotero 或请求系统权限。默认交付只做静态检查、自动测试与归档检查。
+
+获此授权后，只有终端、文件工具时的 macOS Zotero 调试可采用 **CLI → macOS Accessibility（AX）→ Zotero「执行 JavaScript」→ 结构化结果文件**，不把 Computer Use、远程调试端口或浏览器自动化工具当作前提。
 
 本指南来自 macOS **Zotero 10.0.6 / Gecko 140.17.0** 的实际非安装式 XPI 解析和模拟后端窗口验证。AX 定位和编辑器细节不是 Zotero 公共 API，其他版本应先核对本机源码；其他操作系统不能照搬 Swift/AppKit 路线。通用 API、XPI 解析及模块隔离见 [source-and-debugging.md](source-and-debugging.md)。
 
