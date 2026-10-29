@@ -13,11 +13,31 @@ test("fulltext toolbar uses bound Reader identity and removes both controls on d
     openFulltextVersion: async (reader, language) => calls.push([language, reader.itemID]) });
   const reader = { tabID: "pdf-tab", itemID: 42 }, doc = new FakeDocument();
   const state = { reader, doc, domCleanups: [], destroyed: false }; ui.states.set(reader, state);
-  const controls = []; ui._appendFulltextControls(state, node => controls.push(node));
+  const appended = []; ui._appendFulltextControls(state, node => appended.push(node));
+  assert.equal(appended.length, 1);
+  const group = appended[0], controls = group.children;
+  assert.equal(group.className, "spt-fulltext-controls");
+  assert.equal(group.getAttribute("role"), "group");
+  assert.equal(group.getAttribute("aria-label"), "论文全文翻译");
   assert.equal(controls.length, 2); assert.deepEqual(calls, []);
   await controls[0].dispatch("click"); controls[1].value = "zh"; await controls[1].dispatch("change");
   assert.deepEqual(calls, [["open", 42], ["zh", 42]]);
   ui._disposeDOM(state); assert.equal(controls[0].listeners.size, 0); assert.equal(controls[1].listeners.size, 0);
+  assert.equal(group.isConnected, false);
+});
+
+test("fulltext toolbar styles use a centered nonshrinking group and native-height controls", () => {
+  const css = fs.readFileSync(path.join(__dirname, "../plugin/content/reader.css"), "utf8");
+  const rule = selector => css.slice(css.indexOf(selector)).split("}")[0];
+  const group = rule(".spt-fulltext-controls {");
+  for (const declaration of ["display: flex", "align-items: center", "gap: 4px", "flex-shrink: 0"]) {
+    assert.ok(group.includes(declaration), declaration);
+  }
+  const shared = rule(".spt-fulltext-controls .spt-fulltext-button,");
+  assert.ok(shared.includes(".spt-fulltext-version"));
+  assert.ok(shared.includes("height: 28px"));
+  assert.ok(shared.includes("box-sizing: border-box"));
+  assert.ok(rule(".spt-fulltext-controls .spt-fulltext-button {").includes("width: auto"));
 });
 
 class FakeElement {

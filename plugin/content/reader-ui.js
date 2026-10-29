@@ -608,6 +608,9 @@
     _appendFulltextControls(state, append) {
       if (!this.openFulltext || !this.openFulltextVersion) return;
       const { doc, reader } = state;
+      const group = createElement(doc, "div", "spt-fulltext-controls");
+      group.setAttribute("role", "group");
+      group.setAttribute("aria-label", "论文全文翻译");
       const button = createElement(doc, "button", "toolbar-button spt-fulltext-button", "全文译");
       button.type = "button"; button.title = "PDF → Markdown → 中文 PDF";
       button.setAttribute("aria-label", "打开全文翻译确认页");
@@ -631,8 +634,9 @@
       const open = () => act(() => this.openFulltext(reader));
       const change = () => { const language = select.value; if (language) return act(() => this.openFulltextVersion(reader, language)); };
       button.addEventListener("click", open); select.addEventListener("change", change);
-      state.domCleanups.push(() => { button.removeEventListener("click", open); select.removeEventListener("change", change); button.remove(); select.remove(); });
-      append(button); append(select);
+      state.domCleanups.push(() => { button.removeEventListener("click", open); select.removeEventListener("change", change); group.remove(); });
+      group.append(button, select);
+      append(group);
     }
 
     _bindPanelEvents(state) {
