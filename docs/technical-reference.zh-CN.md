@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.55 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.56 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -177,10 +177,20 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.55.xpi
+unzip -t dist/smart-paper-translator-0.1.56.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.56：代理 Fake-IP 图片兼容
+
+用户手动诊断确认Zotero10.0.6中0.1.55已启用，图片域名返回198.18.0.103，且正在使用代理。旧版DNS预检将这个Fake-IP作为非公网地址，在HTTP请求前拒绝。回归测试用相同地址复现，不需要读取论文或重新提交解析。
+
+现在只对非本机/内部名称的多标签域名DNS结果允许标准IPv4的198.18.0.0/15，仍使用原URL/Host请求，让现有代理完成映射，不修改系统代理或DNS。直接访问该IP段、映射IPv6形式的Fake-IP、内部域名、混入其他私网地址的DNS结果仍拒绝；各跳同样检查，公网IP分类函数本身不放宽。该特殊网段不必然来自代理，策略信任当前网络的路由，不能承诺抵御特殊网段服务、DNS重绑定或代理重路由。Cookie/认证头隔离、跳数、取消、大小/签名与缓存边界不变。
+
+验证：`npm run check`通过**661项JavaScript测试**及静态/语法检查。新增9项通道测试（总105项），覆盖范围端点、用户回传地址、混合DNS、字面IP/内部名称拒绝、重定向目标保护，以及两跳都经Fake-IP解析到ImageCache校验并缓存PNG的模拟集成。修复前7项失败，修复后通过。Python未修改；显式progress-only模式29项通过、38项跳过，完整PDF套件未重跑（现成环境此前缺少PyMuPDF）。两次构建一致；ZIP与60个运行时文件逐字节检查通过。
+
+交付：`dist/smart-paper-translator-0.1.56.xpi`，**1,423,535字节**；SHA-256：`452763fbf10ff4a29376fa7b18990a048442983e6cb4089a200c8082afbe37e6`。用户回传的是旧版的原生DNS诊断，不代表新包的图片显示已经验证；本轮未操控/安装Zotero、请求真实图片、上传PDF、调用模型或验证PDF导出/附件导入。
 
 ## 0.1.55：真实图片跳转与可更换 API
 

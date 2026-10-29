@@ -59,7 +59,7 @@ An interactive chart from the conversation, shown beside the passage it explains
 
 ## Get started
 
-The current version is **0.1.55 (test build)**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
+The current version is **0.1.56 (test build)**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
 
 PDF screenshots are enabled on the individually verified **9.0.6 and 10.0.4** versions. Use the original PDF view for screenshots; Zotero 10's reflowed Reading Mode is not supported for capture. Other patch versions keep screenshots disabled until their private PDF.js bridge has been checked.
 
@@ -71,7 +71,7 @@ Version 0.1.40 adds Windows drive/UNC path handling for shared runtime discovery
 2. Open Zotero's plugin manager, choose the option to install from a file, and select the downloaded XPI.
 3. Open a PDF in the main Zotero window. Find **Agents** in the right sidebar.
 
-Updates are installed manually from a newer XPI. The local 0.1.55 build is `dist/smart-paper-translator-0.1.55.xpi`; it fixes redirected images and supports public image paths and signed URLs from different APIs, while retaining single-block editing and full-source previews. This build has not been tested in a running Zotero client.
+Updates are installed manually from a newer XPI. The local 0.1.56 build is `dist/smart-paper-translator-0.1.56.xpi`; it fixes image requests blocked by proxy Fake-IP DNS, while retaining cross-API redirects, single-block editing and full-source previews. This build has not been tested in a running Zotero client.
 
 ### Connect an agent
 
@@ -127,7 +127,7 @@ This adds a separate PDF → Markdown → Chinese PDF workflow, not an Agent cha
 
 The Chinese PDF is a **new attachment under the same paper**. The Reader's **中文 / 英文原文** control switches attachments; the original PDF and annotations are untouched. Reflow changes layout and page numbers, and annotations do not transfer. Markdown is exportable but is not added as a Zotero attachment. Saved source edits persist before translation confirmation; closing warns before discarding unsaved edits. Approved work and completed paragraphs remain local.
 
-Image previews support public HTTP/HTTPS URLs, arbitrary hosts and paths, signed parameters and up to five cross-origin redirects, so changing the parsing API does not require an OXR-specific URL layout or filename extension. Downloads omit cookies/authentication headers and do not persist redirect signatures. Each hop is checked, with DNS preflight before connecting; local/private destinations, file URLs, scripts and SVG are blocked. The whole chain shares a 15-second timeout, byte and image-size limits. HTTP is unencrypted; DNS preflight is not an absolute network sandbox. Failed images keep their Markdown and can be retried. This feature does not add remote-image downloads to PDF printing or Markdown export.
+Image previews support public HTTP/HTTPS URLs, arbitrary hosts and paths, signed parameters and up to five cross-origin redirects, so changing the parsing API does not require an OXR-specific URL layout or filename extension. Downloads omit cookies/authentication headers and do not persist redirect signatures. Each hop is checked, with DNS preflight before connecting; local/private destinations, file URLs, scripts and SVG are blocked. The whole chain shares a 15-second timeout, byte and image-size limits. Domain DNS results may use the proxy Fake-IP range `198.18.0.0/15`; requests retain the original hostname. Direct URLs to that range, internal names and other private DNS results remain blocked. This range alone does not prove a proxy is present: the exception trusts the current network's routing. HTTP is unencrypted; DNS preflight is not an absolute network sandbox. Failed images keep their Markdown and can be retried. This feature does not add remote-image downloads to PDF printing or Markdown export.
 
 Local PDF copies, OCR results, original backups, editable page documents, image caches, confirmed Markdown and checkpoints are stored under `smart-paper-translator/fulltext/` in Zotero's data directory, unencrypted and outside Zotero sync. The imported Chinese attachment follows Zotero's normal attachment/sync settings. OXR receives uploaded PDF content; image services referenced in the source and their redirect destinations receive image requests; the configured DeepSeek endpoint receives paragraph text, excluding protected image data and URLs. Review each service's retention policy before proceeding.
 
@@ -151,7 +151,7 @@ Read [AGENTS.md](AGENTS.md) before changing plugin code. Runtime files live in `
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.55.xpi
+unzip -t dist/smart-paper-translator-0.1.56.xpi
 ```
 
 Build output goes to `dist/`. Automated tests and static archive checks are the default delivery checks; native Zotero parsing and UI testing run only when separately requested. The [technical reference (Chinese)](docs/technical-reference.zh-CN.md) covers adapter behavior, storage, rendering limits, and historical validation results.
