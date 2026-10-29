@@ -26,6 +26,90 @@ test("Python collector bounds output and kills on cancellation", async () => {
   await assert.rejects(collectProcess(cancelled, { timeoutMS: 1000, registerCancel: cancel => { cancel(); return () => {}; } }), /暂停/u);
   assert.ok(cancelled.killed);
 });
+function pathFixture({ pythonPath = "", windows = false, exists = true, regular = true } = {}) {
+  const vm = require("node:vm"), fs = require("node:fs");
+  const ACP = require("../plugin/content/acp-client.js");
+  const calls = [];
+  const scope = { TextEncoder, TextDecoder, URL, setTimeout, clearTimeout,
+    SmartPaperTranslatorModules: {
+      ACP: { toNativeAbsolutePath: value => ACP.toNativeAbsolutePath(value, windows) },
+      Logic: { getProviderConfig: () => ({}) }, FulltextService: {}
+    },
+    Zotero: { DataDirectory: { dir: windows ? "C:\\data" : "/data" }, isWin: windows },
+    PathUtils: { join: (...parts) => parts.join(windows ? "\\" : "/") },
+    IOUtils: { exists: async path => { calls.push(["exists", path]); return exists; } },
+    Cc: { "@mozilla.org/file/local;1": { createInstance: () => ({
+      initWithPath(path) { calls.push(["file", path]); }, isFile: () => regular,
+      isSymlink() { throw new Error("Python symlinks must not be rejected"); }
+    }) } }, Ci: {},
+    ChromeUtils: { importESModule: () => ({ Subprocess: {
+      call: async options => { calls.push(["spawn", options]); return processMock(); }
+    } }) }
+  };
+  vm.runInNewContext(fs.readFileSync(require.resolve("../plugin/content/fulltext-runtime.js"), "utf8"), scope);
+  const runtime = new scope.SmartPaperTranslatorModules.FulltextRuntime.FulltextRuntime({
+    getPreference: key => key.endsWith("fulltextPythonPath") ? pythonPath : ""
+  });
+  runtime.helpers = async () => { calls.push(["helpers"]); return windows ? "C:\\data\\runtime" : "/data/runtime"; };
+  return { runtime, calls };
+}
+
+test("missing Python names the setting before any file access or process launch", async () => {
+  for (const pythonPath of ["", "   "]) {
+    const x = pathFixture({ pythonPath });
+    await assert.rejects(x.runtime.python("convert", {}), /尚未选择 Python.*设置.*论文全文翻译.*检测本地依赖/u);
+    assert.deepEqual(x.calls, []);
+  }
+  const x = pathFixture({ pythonPath: "/valid/python" });
+  await assert.rejects(x.runtime.inspect(""), /尚未选择 Python/u);
+  assert.deepEqual(x.calls, []);
+});
+
+test("invalid Python paths name Python and never fall back to another environment", async () => {
+  for (const [windows, paths] of [[false, ["python3", "~/env/bin/python", "C:\\env\\python.exe", "/bad\0path"]],
+    [true, ["python.exe", "C:python.exe", "/usr/bin/python3"]]]) {
+    for (const pythonPath of paths) {
+      const x = pathFixture({ windows, pythonPath });
+      await assert.rejects(x.runtime.python("convert", {}), /Python 路径无效.*本机绝对路径.*设置/u);
+      assert.deepEqual(x.calls, []);
+    }
+  }
+});
+
+test("missing Python executable and directory selection have distinct actionable errors", async () => {
+  for (const [options, message] of [[{ exists: false }, /Python 文件不存在.*设置/u],
+    [{ regular: false }, /Python 路径不是文件.*目录/u]]) {
+    const x = pathFixture({ pythonPath: "/env/bin/python", ...options });
+    await assert.rejects(x.runtime.python("convert", {}), message);
+    assert.ok(!x.calls.some(([kind]) => ["helpers", "spawn"].includes(kind)));
+  }
+});
+
+test("valid Python paths preserve isolated argv and accept virtualenv symlinks and Windows separators", async () => {
+  for (const [windows, pythonPath, expected] of [[false, "/env with spaces/bin/python", "/env with spaces/bin/python"],
+    [true, "C:/env with spaces/python.exe", "C:\\env with spaces\\python.exe"]]) {
+    const x = pathFixture({ windows, pythonPath });
+    await x.runtime.python("check", {});
+    const options = x.calls.find(([kind]) => kind === "spawn")[1];
+    assert.equal(options.command, expected);
+    assert.equal(options.arguments[0], "-I");
+    assert.equal(options.arguments[2], "check");
+    assert.equal(options.environment.PYTHONNOUSERSITE, "1");
+    assert.equal(x.runtime.processes.size, 0);
+  }
+});
+
+test("source PDF path errors identify the attachment rather than the Python environment", async () => {
+  for (const [sourcePath, exists, message] of [[false, true, /原 PDF 尚未下载到本机/u],
+    ["", true, /原 PDF 尚未下载到本机/u], ["relative.pdf", true, /原 PDF 路径无效/u],
+    ["/data/paper.pdf", false, /原 PDF 文件不存在/u]]) {
+    const x = pathFixture({ exists });
+    x.runtime.attachment = async () => ({ item: { key: "KEY", libraryID: 1, getFilePathAsync: async () => sourcePath }, parent: { id: 2 } });
+    await assert.rejects(x.runtime._create(1), message);
+    assert.ok(!x.calls.some(([kind]) => ["helpers", "spawn"].includes(kind)));
+  }
+});
+
 function printFixture({ failedImage = false, delayed = false } = {}) {
   const vm = require("node:vm"), fs = require("node:fs");
   const files = new Map([["/data/task/translated.pdf", new TextEncoder().encode("old PDF")]]);

@@ -5,6 +5,7 @@
   const HELPERS = ["worker.py", "pdf_to_markdown.py", "layout_pdf.py", "requirements.txt"];
   const MAX_FILE = 256 * 1024 * 1024;
   const MAX_TEXT = 128 * 1024 * 1024;
+  const PYTHON_SETUP = "请到“设置 → Smart Paper Translator → 论文全文翻译”选择已有的 Python 环境，并点击“检测本地依赖”。";
   function validateOXRURL(value) {
     let url;
     try { url = new URL(String(value)); } catch (_) { throw new Error("OXR API 地址无效。"); }
@@ -19,9 +20,16 @@
     hash.init(hash.SHA256); hash.update(bytes, bytes.length);
     return Array.from(hash.finish(false), c => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
   }
-  function native(path) {
+  function native(path, message = "全文任务文件路径无效：需要本机绝对路径。") {
     const result = modules.ACP.toNativeAbsolutePath(path);
-    if (!result) throw new Error("必须选择本机绝对文件路径。");
+    if (!result) throw new Error(message);
+    return result;
+  }
+  async function sourcePDFPath(item) {
+    const path = await item.getFilePathAsync();
+    if (!path) throw new Error("原 PDF 尚未下载到本机或文件已丢失，请先在 Zotero 中下载或重新定位附件。");
+    const result = native(path, "原 PDF 路径无效：需要本机绝对路径，请在 Zotero 中重新定位附件。");
+    if (!(await global.IOUtils.exists(result))) throw new Error("原 PDF 文件不存在，请先在 Zotero 中下载或重新定位附件。");
     return result;
   }
   function fileObject(path) {
@@ -135,9 +143,14 @@
     async python(operation, request, { pythonPath, registerCancel, isCurrent = () => true } = {}) {
       if (this.stopped) throw new Error("插件已退出。");
       if (this.processFailure) throw new Error("旧 Python 进程未确认回收，请重启 Zotero 后重试。");
-      const command = native(pythonPath || this.config().pythonPath);
+      const selected = pythonPath === undefined ? this.config().pythonPath : pythonPath;
+      if (selected == null || (typeof selected === "string" && !selected.trim())) {
+        throw new Error("尚未选择 Python 环境。" + PYTHON_SETUP);
+      }
+      const command = native(selected, "Python 路径无效：需要所选解释器的本机绝对路径。" + PYTHON_SETUP);
       // A venv's Python is normally a symlink. Only plugin-owned output paths prohibit symlinks.
-      if (!(await global.IOUtils.exists(command))) throw new Error("Python 路径不存在，请在设置中选择环境。");
+      if (!(await global.IOUtils.exists(command))) throw new Error("Python 文件不存在，所选环境可能已移动或删除。" + PYTHON_SETUP);
+      if (!fileObject(command).isFile()) throw new Error("Python 路径不是文件，请选择 Python 可执行文件，不要选择目录。" + PYTHON_SETUP);
       const root = await this.helpers();
       if (this.stopped || !isCurrent()) throw new Error("任务已暂停或插件已退出。");
       const { Subprocess } = global.ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
@@ -217,7 +230,7 @@
     async _create(id) {
       const { item, parent } = await this.attachment(id);
       const sourceKey = item.key, libraryID = item.libraryID, parentID = parent.id;
-      const sourcePath = native(await item.getFilePathAsync());
+      const sourcePath = await sourcePDFPath(item);
       const bytes = await boundedRead(sourcePath, MAX_FILE);
       if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") throw new Error("附件不是有效 PDF。");
       const digest = hashBytes(bytes);
@@ -227,7 +240,7 @@
       const verifySource = async () => {
         const current = await this.attachment(id);
         if (current.item.key !== sourceKey || current.item.libraryID !== libraryID || current.parent.id !== parentID ||
-          native(await current.item.getFilePathAsync()) !== sourcePath || hashBytes(await boundedRead(sourcePath, MAX_FILE)) !== digest) {
+          await sourcePDFPath(current.item) !== sourcePath || hashBytes(await boundedRead(sourcePath, MAX_FILE)) !== digest) {
           throw new Error("原 PDF 或论文身份已经改变，请关闭窗口并重新打开任务。");
         }
         const library = global.Zotero.Libraries.get(libraryID);
@@ -279,7 +292,7 @@
           picker.defaultString = "translated.md"; picker.appendFilter("Markdown", "*.md");
           const result = await picker.show();
           if (owner.closed || ![picker.returnOK, picker.returnReplace].includes(result)) return false;
-          const path = native(picker.file);
+          const path = native(picker.file, "Markdown 导出路径无效：请选择本机绝对文件路径。");
           if (path === sourcePath) throw new Error("不能覆盖原始 PDF。");
           checkPath(path, "regular", true); checkPath(path + ".spt-tmp", "regular", true);
           await global.IOUtils.writeUTF8(path, markdown, { tmpPath: path + ".spt-tmp" }); return true;

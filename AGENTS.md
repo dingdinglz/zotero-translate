@@ -125,7 +125,7 @@ zotero-translate/
 │       ├── service.js                # 翻译/摘要、智能标签生成/本地保存、缓存探测、术语删除及在途失效
 │       ├── fulltext-service.js       # 全文确认、串行翻译/校对、检查点、暂停与附件导入状态机
 │       ├── fulltext-markdown.js      # 无损分段、参考文献/格式保护、检查点校验与静态安全排版
-│       ├── fulltext-runtime.js       # Python桥、附件/文件身份、本机预览、Gecko PDF打印及导入/切换
+│       ├── fulltext-runtime.js       # Python桥及分对象路径诊断、附件/文件身份、本机预览、Gecko PDF打印及导入/切换
 │       ├── fulltext-ui.js            # 独立确认窗口、源码编辑、双重上传确认、校对修正与迟到隔离
 │       ├── fulltext.xhtml            # 固定本地chrome页面与无网络CSP
 │       ├── fulltext.css              # 左PDF逐页预览/右Markdown及状态/修正/输出操作区
@@ -196,7 +196,7 @@ zotero-translate/
 │   ├── service.test.js               # 摘要、手动标签/迟到生成、缓存探测、术语删除/在途失效、并发与取消
 │   ├── fulltext-service.test.js      # 上传/翻译确认、逐段校对、恢复/变更/取消与导入防重复
 │   ├── fulltext-markdown.test.js     # 无损结构、参考文献/占位符保护、资源上限与安全DOM
-│   ├── fulltext-runtime.test.js      # OXR地址、子进程边界、静态打印契约/图片解码/迟到取消
+│   ├── fulltext-runtime.test.js      # OXR地址、Python/PDF路径诊断、子进程边界、静态打印契约/图片解码/迟到取消
 │   ├── fulltext-ui.test.js           # 确认门控、编辑保护、窗口/预览迟到、共享任务去重与关闭暂停
 │   ├── fulltext_worker_test.py       # Python离线分块/恢复/版面/预览/路径和HTTP边界
 │   ├── item-tree-ui.test.js          # 标签编辑/聚合/分页/定位、手动优先、失败重试、异步隔离与清理
