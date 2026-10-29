@@ -4,7 +4,9 @@ const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
 const { FulltextService, parseAnswer, publicConfig } = require("../plugin/content/fulltext-service.js");
 const hash = value => createHash("sha256").update(value).digest("hex");
-const { validateSource, editableBlocks } = require("../plugin/content/fulltext-markdown.js");
+const Markdown = require("../plugin/content/fulltext-markdown.js");
+const { validateSource, editableBlocks } = Markdown;
+const { OpenAIChatClient } = require("../plugin/content/api.js");
 function setup(overrides = {}) {
   const files = new Map(); const calls = []; let imports = 0;
   const config = { provider: "deepseek", endpoint: "https://api.deepseek.com/chat/completions", model: "test", oxrBaseURL: "https://example.test/api/v1" };
@@ -46,6 +48,80 @@ function withPageMap(x, pages = ["# Page one", "Second $x$"]) {
   };
   return x;
 }
+
+test("large segments traverse real protection, both model passes and checkpoint reload", async () => {
+  const requests = [], source = "原".repeat(128000), translation = "译".repeat(256000);
+  const client = new OpenAIChatClient({ request: async (_method, _url, options) => {
+    requests.push(options);
+    return { response: { choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ translation }) } }] } };
+  } });
+  const x = setup({ markdown: Markdown, complete: options => client.complete({ ...options, apiKey: "sk-test" }) });
+  await x.service.parse({ consent: true }); await x.service.confirm(source);
+  await x.service.translate({ consent: true });
+  assert.equal(x.service.translated, translation);
+  assert.equal(x.files.get("translated.md"), translation);
+  assert.equal(requests.length, 2);
+  for (const options of requests) {
+    assert.equal(options.timeout, 900000);
+    const payload = JSON.parse(options.body);
+    assert.equal(payload.max_tokens, 131072);
+    assert.deepEqual(payload.thinking, { type: "disabled" });
+    assert.equal(JSON.parse(payload.messages[1].content).source, source);
+  }
+  assert.equal(JSON.parse(JSON.parse(requests[1].body).messages[1].content).draft, translation);
+  const loaded = new FulltextService(x.args); await loaded.load();
+  assert.equal(loaded.translated, translation);
+  await loaded.translate({ consent: true }); assert.equal(requests.length, 2);
+});
+
+test("JSON response permits full escaped translations but independently rejects oversized envelope or text", () => {
+  const limit = Markdown.MAX_TRANSLATION_LENGTH;
+  const escaped = '{"translation":"' + "\\u4e2d".repeat(limit) + '"}';
+  assert.ok(escaped.length > 96000);
+  assert.equal(parseAnswer(escaped), "中".repeat(limit));
+  assert.equal(parseAnswer(JSON.stringify({ translation: "中".repeat(limit) })), "中".repeat(limit));
+  assert.throws(() => parseAnswer(JSON.stringify({ translation: "中".repeat(limit + 1) })), /输出上限/u);
+  assert.throws(() => parseAnswer('{"translation":"a"}' + " ".repeat(6 * limit + 64)), /上限/u);
+});
+
+test("server truncation pauses either model pass without accepting a checkpoint or automatic retries", async () => {
+  for (const truncatedPass of [1, 2]) {
+    let requests = 0;
+    const client = new OpenAIChatClient({ request: async (_method, _url, options) => {
+      requests++;
+      const source = JSON.parse(JSON.parse(options.body).messages[1].content).source;
+      return { response: { choices: [{ finish_reason: requests === truncatedPass ? "length" : "stop",
+        message: { content: JSON.stringify({ translation: source }) } }] } };
+    } });
+    const x = setup({ markdown: Markdown, complete: options => client.complete({ ...options, apiKey: "sk-test" }) });
+    await x.service.parse({ consent: true }); await x.service.confirm("a".repeat(20000));
+    await assert.rejects(x.service.translate({ consent: true }), /截断/u);
+    assert.equal(requests, truncatedPass);
+    assert.equal(x.service.snapshot().stage, "paused");
+    assert.deepEqual(x.service.state.translations, {});
+    assert.equal(x.files.has("translated.md"), false);
+  }
+});
+
+test("long-timeout fulltext requests remain immediately cancellable and ignore late success", async () => {
+  let entered, release, cancelled = 0, requests = 0;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const client = new OpenAIChatClient({ request: async (_method, _url, options) => {
+    requests++; assert.equal(options.timeout, 900000);
+    options.cancellerReceiver(() => { cancelled++; release(); });
+    await new Promise(resolve => { release = resolve; entered(); });
+    return { response: { choices: [{ finish_reason: "stop", message: { content: '{"translation":"late"}' } }] } };
+  } });
+  const x = setup({ markdown: Markdown, complete: options => client.complete({ ...options, apiKey: "sk-test" }) });
+  await x.service.parse({ consent: true }); await x.service.confirm("a".repeat(20000));
+  const translation = x.service.translate({ consent: true });
+  const rejection = assert.rejects(translation, /暂停/u);
+  await waiting; await x.service.pause(); await rejection;
+  assert.equal(cancelled, 1); assert.equal(requests, 1);
+  assert.equal(x.service.cancellers.size, 0);
+  assert.deepEqual(x.service.state.translations, {});
+  assert.equal(x.files.has("translated.md"), false);
+});
 
 test("new parses unify complete OCR pages without overwriting raw source or its backup", async () => {
   const x = withPageMap(setup()); await x.service.parse({ consent: true });

@@ -94,6 +94,44 @@ test("API response and status failures become safe actionable errors", () => {
   assert.equal(mapAPIError({ xmlhttp: { status: 503 } }).code, "API_SERVER");
 });
 
+test("per-request fulltext limits preserve default timeout and cancellation cleanup", async () => {
+  const requests = []; let cancels = 0, unregisters = 0;
+  const client = new OpenAIChatClient({ request: async (_method, _url, options) => {
+    requests.push(options);
+    options.cancellerReceiver(() => { cancels++; });
+    return { response: { choices: [{ finish_reason: "stop", message: { content: "译文" } }] } };
+  } });
+  const base = { config: config(), apiKey: "sk-test", prompt: "paper" };
+  await client.complete({ ...base, maxTokens: 131072, timeoutMS: 900000, rejectTruncated: true,
+    registerCancel: cancel => { cancel(); return () => { unregisters++; }; } });
+  assert.equal(requests[0].timeout, 900000);
+  assert.equal(JSON.parse(requests[0].body).max_tokens, 131072);
+  assert.equal(cancels, 1); assert.equal(unregisters, 1);
+  for (const timeoutMS of [undefined, 0, -1, NaN, Infinity, "900000", 0.5]) {
+    await client.complete({ ...base, timeoutMS });
+    assert.equal(requests.at(-1).timeout, 60000);
+  }
+  assert.equal(client.timeoutMS, 60000);
+});
+
+test("fulltext opt-in rejects even well-formed truncated JSON and cleans cancellation on errors", async () => {
+  let unregisters = 0;
+  const xhr = { response: { choices: [{ finish_reason: "length", message: { content: '{"translation":"不完整"}' } }] } };
+  assert.equal(extractTranslation(xhr), '{"translation":"不完整"}'); // Unrelated callers keep their existing behavior.
+  assert.throws(() => extractTranslation(xhr, { rejectTruncated: true }), { code: "API_RESPONSE_TRUNCATED" });
+  for (const error of [null, { name: "TimeoutException" }, { name: "CancelledException" }]) {
+    const client = new OpenAIChatClient({ request: async (_method, _url, options) => {
+      options.cancellerReceiver(() => {});
+      if (error) throw error;
+      return xhr;
+    } });
+    await assert.rejects(client.complete({ config: config(), apiKey: "sk-test", prompt: "private", timeoutMS: 900000,
+      rejectTruncated: true, registerCancel: () => () => { unregisters++; } }),
+    { code: !error ? "API_RESPONSE_TRUNCATED" : error.name === "TimeoutException" ? "API_TIMEOUT" : "API_CANCELLED" });
+  }
+  assert.equal(unregisters, 3);
+});
+
 test("DeepSeek requires a key before any request is made", async () => {
   let calls = 0;
   const client = new OpenAIChatClient({ request: async () => { calls++; } });

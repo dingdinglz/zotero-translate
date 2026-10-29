@@ -180,6 +180,59 @@ test("model input cap counts masked text, not raw resources; Unicode UTF-8 cap i
   assert.throws(() => M.createPlan("bad\u0000text"), /控制字符/u);
 });
 
+test("128000-unit input boundary counts UTF-16 and protected markers without truncation", () => {
+  assert.equal(M.MAX_SEGMENT_LENGTH, 128000);
+  for (const source of ["a".repeat(128000), "汉".repeat(128000), "𠮷".repeat(64000)]) {
+    const plan = M.createPlan(source);
+    assert.equal(plan.segments.length, 1);
+    const prepared = M.prepareSegment(plan.segments[0]);
+    assert.equal(prepared.text.length, 128000);
+    assert.equal(M.restoreTranslation(prepared, prepared.text), source);
+    assert.throws(() => M.createPlan(source + "a"), /插件单块输入上限 128000.*未截断/u);
+  }
+  const source = "a".repeat(127999) + " ";
+  assert.equal(source.length, 128000);
+  assert.throws(() => M.createPlan(source), /输入上限/u); // The protected space expands to a marker.
+});
+
+test("linear URL search preserves embedded scheme and special-prefix protection", () => {
+  for (const [body, url] of [
+    ["before custom+v1.2://host/path", "custom+v1.2://host/path"],
+    ["前文HTTPS://host/path", "HTTPS://host/path"],
+    ["123abc://host/path", "abc://host/path"],
+    ["before prefixdata:image/png;base64,AAAA", "data:image/png;base64,AAAA"],
+    ["before prefixmailto:user@example.test", "mailto:user@example.test"],
+    ["before prefixfile:local", "file:local"],
+    ["before prefixwww.example.test", "www.example.test"],
+    ["before www.example://host", "www.example://host"],
+    ["before a://host/path www.example.test", "a://host/path"]
+  ]) {
+    const source = `Prose ${body}`, prepared = M.prepareSegment(segment(source));
+    assert.equal(prepared.tokens.find(token => token.kind === "url").value, url);
+    assert.equal(M.restoreTranslation(prepared, prepared.text), source);
+  }
+});
+
+test("large HTML tables keep their full skeleton and stable segment identities", () => {
+  const source = `<table>${"<tr><td>Long cell content [1] $x$</td><td>Value</td></tr>".repeat(120)}</table>`;
+  const plan = M.createPlan(source), s = plan.segments[0], prepared = M.prepareSegment(s);
+  assert.ok(prepared.text.length > 16000 && prepared.text.length < 128000);
+  assert.equal(plan.segments.length, 1);
+  assert.equal(s.id, "s000001");
+  const translated = prepared.text.replaceAll("Long cell content", "长单元格正文");
+  assert.equal(M.restoreTranslation(prepared, translated), source.replaceAll("Long cell content", "长单元格正文"));
+  assert.throws(() => M.restoreTranslation(prepared, translated.replace(prepared.tokens[0].marker, "")), /占位符/u);
+});
+
+test("expanded translations have an independent 256000-unit bound including on checkpoint reload", () => {
+  assert.equal(M.MAX_TRANSLATION_LENGTH, 256000);
+  const s = segment("a".repeat(128000)), prepared = M.prepareSegment(s), translation = "译".repeat(256000);
+  assert.equal(M.restoreTranslation(prepared, translation), translation);
+  assert.equal(M.validateRestored(s, translation), translation);
+  assert.throws(() => M.restoreTranslation(prepared, translation + "文"), /输出上限/u);
+  assert.throws(() => M.validateRestored(s, translation + "文"), /输出上限/u);
+});
+
 test("uncertain or unclosed structure fails explicitly and never truncates", () => {
   for (const source of ["```js\ntext", "~~~\ntext", "$$x\n\ny", "\\[x", "Text $x", "<table><tr><td>Cell</td></tr>", "[link](https://x", "Text `code", "<!-- missing"]) {
     assert.throws(() => M.createPlan(source), /未闭合/u, source);
@@ -218,7 +271,7 @@ test("restoration rejects explanation, code wrappers, active HTML, extra resourc
     p.text.replace("A paragraph", "https://unexpected.invalid"),
     p.text.replace("A paragraph", "")
   ]) assert.throws(() => M.restoreTranslation(p, response));
-  assert.throws(() => M.restoreTranslation(p, "x".repeat(M.MAX_SEGMENT_LENGTH + 1)), /上限/u);
+  assert.throws(() => M.restoreTranslation(p, "x".repeat(M.MAX_TRANSLATION_LENGTH + 1)), /上限/u);
 });
 
 test("checkpoint validation rechecks protected content and exact table/list/heading skeleton", () => {

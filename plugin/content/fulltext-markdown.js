@@ -268,6 +268,16 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
     }
     fail("公式定界符未闭合（货币美元符请写为 \\$）");
   }
+  function urlStart(source) {
+    const special = source.search(/(?:data:|mailto:|file:|www\.)/iu);
+    const schemes = /[a-z][a-z\d+.-]*/giu;
+    let match;
+    while ((match = schemes.exec(source))) {
+      if (special >= 0 && match.index >= special) break;
+      if (source.startsWith("://", schemes.lastIndex)) return match.index;
+    }
+    return special;
+  }
   function lex(source, depth = 0) {
     if (depth > 64) fail("链接嵌套超过上限");
     const parts = [];
@@ -352,7 +362,7 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
       const text = rest.match(/^[^\r\n\\`$<\[!*_~|#\]()>&⟦]+/u)?.[0];
       if (text) {
         // Stop before URLs even when they occur in the middle of a prose run.
-        const urlIndex = text.search(/(?:[a-z][a-z\d+.-]*:\/\/|data:|mailto:|file:|www\.)/iu);
+        const urlIndex = urlStart(text);
         const value = urlIndex > 0 ? text.slice(0, urlIndex) : text;
         add("text", value); i += value.length;
       }

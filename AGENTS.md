@@ -135,7 +135,7 @@ zotero-translate/
 │       ├── api.js                    # OpenAI Chat Completions 客户端、逐请求超时与可选截断拒绝、安全错误映射
 │       ├── service.js                # 翻译/摘要、智能标签生成/本地保存、缓存探测、术语删除及在途失效
 │       ├── fulltext-service.js       # 统一逐页稿/单块编辑/迁移、确认检查点、全文专用模型预算/响应上限、进度/暂停/导入
-│       ├── fulltext-markdown.js      # 无损分段/精确块偏移、独立输入/译文上限、格式保护、数学/安全DOM与本地图片
+│       ├── fulltext-markdown.js      # 无损分段/精确块偏移、独立输入/译文上限、线性URL查找、格式保护、数学/安全DOM与图片
 │       ├── fulltext-images.js        # 公网图片/逐跳策略、签名与MIME/缓存校验、取消与任务限额
 │       ├── fulltext-image-network.js # Gecko匿名有界流、DNS/域名Fake-IP准入、重定向截停、取消及无认证交互
 │       ├── fulltext-runtime.js       # Python进度/附件身份、图片模块组装与串行文件适配、本机预览/打印/导入
@@ -192,7 +192,7 @@ zotero-translate/
 │   ├── cache.test.js                 # 缓存/手动标签优先级/冲突、术语删除、论文隔离、原子写入和损坏恢复
 │   ├── chat-cache.test.js            # 旧 Codex 兼容与三 Agent 镜像/配置/媒体目录隔离、损坏备份、并发和归档清理
 │   ├── pdf-screenshot.test.js         # 原页截图坐标/渲染、跨页/域、9/10 精确版本与 Reading Mode 失败关闭
-│   ├── api.test.js                   # 请求结构、隐私和错误映射
+│   ├── api.test.js                   # 请求结构、隐私、逐请求超时/截断拒绝/取消与错误映射
 │   ├── pi-acp-compat.test.js          # max/能力/确认失败/哈希拒绝；可选现成适配器无提示词验证
 │   ├── opencode-acp.test.js         # 原生参数/认证、OSC/长消息、模型收集握手/取消回收、能力与临时数据清理
 │   ├── acp-client.test.js            # Windows/Unix 原生路径/PATH/NVM/软链接、JSONL、npm/原生准备与清理
@@ -207,8 +207,8 @@ zotero-translate/
 │   ├── main.test.js                  # ACP 设置/只读发现/FilePicker、分支 chrome 注册和窗口关闭顺序
 │   ├── preferences.test.js           # 路径下拉/编辑/刷新/空路径发现/迟到结果、Tab/表单保留与检测锁
 │   ├── service.test.js               # 摘要、手动标签/迟到生成、缓存探测、术语删除/在途失效、并发与取消
-│   ├── fulltext-service.test.js      # 统一稿绑定/迁移/精确编辑/重开/取消、确认检查点/进度及导入防重复
-│   ├── fulltext-markdown.test.js     # 块偏移/异步图片、引用/占位符、算法公式/真实代码边界与安全DOM
+│   ├── fulltext-service.test.js      # 大段落/JSON/模型预算与取消、统一稿编辑/迁移、检查点/进度/导入防重复
+│   ├── fulltext-markdown.test.js     # 输入/译文容量与长词URL扫描、块偏移/图片/保护、算法公式与安全DOM
 │   ├── fulltext-images.test.js       # 通用URL/签名query/有界跳转、MIME嗅探、超时/取消及缓存限额
 │   ├── fulltext-image-network.test.js # 公网IP/DNS与代理Fake-IP、图片缓存链、Gecko通道/重定向/匿名/流限额及迟到
 │   ├── fulltext-runtime.test.js      # JSONL/路径、图片通道组装/存储/重开限额/回收、打印解码及取消
