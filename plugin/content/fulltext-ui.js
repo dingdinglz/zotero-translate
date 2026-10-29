@@ -7,6 +7,14 @@
   const configKey = config => JSON.stringify(CONFIG_KEYS.map(key => config[key]));
   let serial = 0;
   const stages = { new: "尚未上传", parsing: "正在解析 PDF", review: "请核对识别结果", ready: "等待翻译", translating: "逐段翻译与校对", paused: "已暂停", translated: "翻译完成，尚未保存 PDF", exporting: "正在生成并保存 PDF", complete: "中文 PDF 已保存" };
+  const parsePhases = { preparing: "正在准备 PDF", planning: "正在划分 PDF", parsing: "正在解析 PDF",
+    assembling: "正在整理解析结果", complete: "解析完成", paused: "解析已暂停", failed: "解析失败" };
+  const chunkStates = { pending: "待上传", uploading: "上传中", submitted: "已提交，等待状态", queuing: "排队中",
+    processing: "解析中", complete: "解析完成", paused: "已暂停", failed: "失败" };
+  function duration(ms) {
+    const seconds = Math.floor(Math.max(0, ms || 0) / 1000);
+    return `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`;
+  }
   function listen(target, name, fn, cleanups) {
     target.addEventListener(name, fn);
     cleanups.push(() => target.removeEventListener(name, fn));
@@ -169,7 +177,16 @@
       header.append(node("h1", "title", "论文全文翻译"), node("p", "status", "正在加载本地任务…"));
       e.status.setAttribute("role", "status");
       const upload = node("section", "upload-panel");
-      upload.append(node("p", "destination"), button("parse", "上传 PDF 并解析", () => this._parse(r)));
+      const uploadbar = node("div", "uploadbar");
+      uploadbar.append(node("p", "destination"), button("parse", "上传 PDF 并解析", () => this._parse(r)));
+      const progress = node("details", "parse-progress"), summary = node("summary", "parse-summary");
+      progress.open = true; progress.hidden = true;
+      summary.append(node("span", "parse-heading", "PDF 解析进度"), node("span", "parse-toggle", "收起"));
+      progress.append(summary, node("p", "parse-note"), node("ol", "parse-list"));
+      listen(progress, "toggle", () => { if (this._current(r)) e["parse-toggle"].textContent = progress.open ? "收起" : "展开"; }, r.cleanups);
+      r.progressRows = [];
+      r.cleanups.push(() => { global.clearTimeout(r.progressTimer); r.progressTimer = null; r.progressRows = []; });
+      upload.append(uploadbar, progress);
       const columns = node("main", "columns"), left = node("section", "pdf"), right = node("section", "markdown");
       const pdfbar = node("div", "pdfbar");
       e.original = node("input", "original"); e.original.type = "checkbox";
@@ -220,13 +237,84 @@
       if (!r.dirty && r.el.source.value !== (state.source || "")) r.el.source.value = state.source || "";
       if (!r.draftDirty && r.el.draft.value !== (state.draft || "")) r.el.draft.value = state.draft || "";
       r.el.current.textContent = state.currentSource || "";
-      r.el.status.textContent = `${stages[state.stage] || "本地任务"} · ${state.completed || 0} / ${state.total || 0} 段`;
+      r.progressReceivedAt = Date.now();
+      this._progress(r);
       if (!r.localError) r.el.error.textContent = safeError(state.error || "");
       r.pages = r.pages || state.pageCount || 0;
       this._controls(r);
       if (state.translated && state.translated !== r.renderedTranslation && !r.dirty && !state.busy) {
         this._render(r); r.renderedTranslation = state.translated;
       }
+    }
+    _progressStatus(r) {
+      const s = r.state, p = s.parseProgress;
+      const parsing = s.stage === "parsing" && s.busy && p && !["complete", "failed", "paused"].includes(p.phase);
+      const elapsed = p ? duration(p.elapsedMS + (parsing ? Math.max(0, Date.now() - r.progressReceivedAt) : 0)) : "";
+      const count = p?.chunks?.length || 0;
+      const completed = p?.chunks?.filter(c => c.status === "complete").length || 0;
+      const countText = count && p.phase !== "planning" ? `已完成 ${completed} / ${count} 块` : (parsePhases[p?.phase] || "正在准备 PDF");
+      if (s.stage === "parsing" || (p && s.stage === "paused" && !s.approvedHash)) {
+        r.el.status.textContent = `${parsePhases[p?.phase] || "正在准备 PDF"}${count && p.phase !== "planning" ? ` · ${countText}` : ""}${p ? ` · 已耗时 ${elapsed}` : ""}`;
+      } else {
+        r.el.status.textContent = `${stages[s.stage] || "本地任务"}${s.total > 0 ? ` · ${s.completed || 0} / ${s.total} 段` : ""}`;
+      }
+      if (p) r.el["parse-heading"].textContent = `PDF 解析进度 · ${countText}${p.pageCount ? ` · 共 ${p.pageCount} 页` : ""} · 已耗时 ${elapsed}`;
+      if (parsing && !r.progressTimer) {
+        r.progressTimer = global.setTimeout(() => {
+          r.progressTimer = null;
+          if (this._current(r)) this._progressStatus(r);
+        }, 1000);
+      } else if (!parsing && r.progressTimer) {
+        global.clearTimeout(r.progressTimer); r.progressTimer = null;
+      }
+    }
+    _progress(r) {
+      const p = r.state.parseProgress, e = r.el;
+      e["parse-progress"].hidden = !p;
+      this._progressStatus(r);
+      if (!p) { e["parse-list"].replaceChildren(); r.progressRows = []; return; }
+      const notes = {
+        preparing: "正在检查本地 PDF 并启动解析工具，尚未获得分块信息。",
+        planning: "正在按实际页数与文件体积规划上传块；未提交的块不会显示为远端排队。",
+        parsing: "按顺序上传和解析。正在等待解析服务返回结果；耗时不代表完成百分比。",
+        assembling: "所有分块已解析，正在本地整理 Markdown 与版面 PDF，请稍候。",
+        complete: "解析结果已就绪，请核对 Markdown。可随时展开或收起此列表。",
+        paused: "本地任务已暂停，已完成的解析缓存保留；远端已提交任务可能继续。",
+        failed: "任务未完成，请查看下方错误提示；已完成的解析缓存保留。"
+      };
+      e["parse-note"].textContent = notes[p.phase] || "";
+      const chunks = p.chunks || [];
+      if (r.progressRows.length > chunks.length || r.progressRows.some((row, i) => row.start !== chunks[i]?.start || row.end !== chunks[i]?.end)) {
+        e["parse-list"].replaceChildren(); r.progressRows = [];
+      }
+      const node = (tag, text, cls) => {
+        const n = r.document.createElementNS("http://www.w3.org/1999/xhtml", tag);
+        if (text) n.textContent = text;
+        if (cls) n.className = cls;
+        return n;
+      };
+      chunks.forEach((chunk, index) => {
+        let row = r.progressRows[index];
+        if (!row) {
+          const item = node("li", "", "spt-parse-row");
+          const range = node("span", `第 ${chunk.start}–${chunk.end} 页`, "spt-parse-range");
+          const timeline = node("span", "", "spt-parse-timeline");
+          timeline.setAttribute("aria-hidden", "true");
+          const steps = ["排队中", "解析中", "解析完成"].map(label => node("span", label, "spt-parse-step"));
+          timeline.append(...steps);
+          const status = node("span", "", "spt-parse-state");
+          item.append(range, timeline, status); e["parse-list"].append(item);
+          row = { start: chunk.start, end: chunk.end, item, status, steps }; r.progressRows.push(row);
+        }
+        if (row.value === chunk.status) return;
+        row.value = chunk.status;
+        row.status.textContent = chunkStates[chunk.status] || "等待状态";
+        row.item.setAttribute("data-state", chunk.status);
+        const current = ["queuing", "processing", "complete"].indexOf(chunk.status);
+        row.steps.forEach((step, i) => {
+          step.setAttribute("data-stage", current > i || current === 2 ? "done" : current === i ? "active" : "waiting");
+        });
+      });
     }
     _controls(r) {
       if (!r.el || !this._current(r)) return;

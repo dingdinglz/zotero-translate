@@ -128,9 +128,9 @@ zotero-translate/
 │       ├── fulltext-service.js       # 全文确认、分块进度快照/迟到隔离、串行翻译/校对、检查点、暂停与导入
 │       ├── fulltext-markdown.js      # 无损分段、参考文献/格式保护、检查点校验与静态安全排版
 │       ├── fulltext-runtime.js       # Python有界JSONL进度桥/路径诊断、附件身份、本机预览、PDF打印及导入/切换
-│       ├── fulltext-ui.js            # 独立确认窗口、源码编辑、双重上传确认、校对修正与迟到隔离
+│       ├── fulltext-ui.js            # 确认窗口、可展开/收起分块时间轴及耗时、源码编辑、校对修正与迟到隔离
 │       ├── fulltext.xhtml            # 固定本地chrome页面与无网络CSP
-│       ├── fulltext.css              # 左PDF逐页预览/右Markdown及状态/修正/输出操作区
+│       ├── fulltext.css              # 左PDF/右Markdown、可滚动分块时间轴及状态/修正/输出操作区
 │       ├── fulltext-python/          # 随XPI打包的固定脚本，不打包Python解释器或第三方库
 │       │   ├── worker.py             # 隔离入口，check/convert/preview有界JSON协议
 │       │   ├── pdf_to_markdown.py    # 有界分块规划/进度JSONL、OXR任务恢复、资源/路径/HTTP限制和逐页预览
@@ -199,7 +199,7 @@ zotero-translate/
 │   ├── fulltext-service.test.js      # 上传/翻译确认、逐段校对、恢复/变更/取消与导入防重复
 │   ├── fulltext-markdown.test.js     # 无损结构、参考文献/占位符保护、资源上限与安全DOM
 │   ├── fulltext-runtime.test.js      # OXR地址、Python/PDF路径诊断、子进程边界、静态打印契约/图片解码/迟到取消
-│   ├── fulltext-ui.test.js           # 确认门控、编辑保护、窗口/预览迟到、共享任务去重与关闭暂停
+│   ├── fulltext-ui.test.js           # 确认门控、分块时间轴/折叠/耗时清理、编辑保护、窗口迟到与关闭暂停
 │   ├── fulltext_worker_test.py       # Python离线分块/恢复/版面/预览/路径/HTTP及无第三方依赖进度协议测试
 │   ├── item-tree-ui.test.js          # 标签编辑/聚合/分页/定位、手动优先、失败重试、异步隔离与清理
 │   └── reader-ui.test.js             # 选区/截图 Agents 入口、划线翻译/禁用、术语删除/重试、Tabs、拖拽缩放和陈旧 UI 防护
