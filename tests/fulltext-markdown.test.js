@@ -241,7 +241,9 @@ test("real code and ambiguous blocks remain literal even below algorithm heading
   for (const source of ["```python\nx = '$x$'\n```", "```\n$x$\n```", "    $x$\n",
     "### Algorithm 1\n\n```python\nRequire: $x$\nfor each $y$ do\nend for\n```",
     "### Algorithm 1\n\nExplanation first.\n\n```\nRequire: $x$\nfor each $y$ do\nend for\n```",
-    "### Algorithm 1\n\n```\nx = '$x$'\n```", "<pre>$x$</pre>"]) {
+    "### Algorithm 1\n\n```\nx = '$x$'\n```", "<pre>$x$</pre>",
+    '### Algorithm 1\n\n```\nInput: str = "$x$"\ndef solve(values):\n    for value in values:\n        if value:\n            return "$y$"\n```',
+    '### Algorithm 1\n\n```\ntext = """\nRequire: $x$\nfor each $y$ do\nend for\n"""\n```']) {
     const { root, nodes } = render(source);
     assert.equal(nodes.filter(node => node.localName === "math").length, 0, source);
     assert.ok(root.textContent.includes("$x$"));

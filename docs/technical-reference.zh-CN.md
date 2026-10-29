@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.52 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.53 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -177,10 +177,24 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.52.xpi
+unzip -t dist/smart-paper-translator-0.1.53.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.53：逐页识别预览与算法公式
+
+全文确认窗口默认展示当前 PDF 页对应的识别内容，翻页及原始/版面切换清除旧内容，并拒绝错页与迟到结果。根据用户选择，继续按最多 20 页/9.5 MB 批量上传，不新增逐页请求；右栏由 OXR JSON 的实际页码与块内容重建，不是完整 Markdown 的精确切片，也不是中文译文。全文编辑与翻译仍使用原始 Markdown；界面说明编辑不会回写逐页识别预览。旧结果缺少逐页信息时只提示，不回退全文。
+
+按[官方 OXR 响应协议](https://docs.somark.ai/en/api-reference/endpoint/sync.md)及 [OXR 固定版本块模型](https://github.com/SoMarkAI/OXR/blob/8532b8cb3e2a833aa05d681de62a277bfc50ff79/oxr/pipeline/models.py)、[序列化](https://github.com/SoMarkAI/OXR/blob/8532b8cb3e2a833aa05d681de62a277bfc50ff79/oxr/pipeline/postprocess/json_postprocess.py)、[Markdown 拼装](https://github.com/SoMarkAI/OXR/blob/8532b8cb3e2a833aa05d681de62a277bfc50ff79/oxr/pipeline/postprocess/assembly_postprocess.py)，只保留 `idx/type/content/format` 与版面坐标。独立 `pages-<SHA-256>.json` 校验原 PDF/解析原稿哈希、页数、类型与文件内容哈希；缺字段整页不可用。旧缓存保留但修订升为 2，不冒充新页数据。已有确认稿重新解析需另外确认，先归档 `history-<SHA-256>.json`，仅新结果通过并保存后切换；失败保留旧稿和译文，已导入附件不删，导入结果不确定时禁止重建。归档供恢复依据使用，目前没有界面化归档恢复入口。
+
+算法伪代码中的数学片段使用现有本地 KaTeX MathML，保留换行和缩进。仅识别明确伪代码围栏，或紧邻编号算法标题且具备输入/输出、do/then 控制流与 end for/while/if 结束行、无引号字符串或明确程序声明的预格式块；真实程序语言代码、其他代码和行内代码仍按原样显示。HTML、图片及链接不在算法中执行，无法解析的公式保留源码。独立复核另补充并修复最终状态写入期间取消、无语言真实代码误判和四空格/Tab/前置空行围栏处理的回归。截图中的 PKG 公式按转录样例通过本地 KaTeX 编译；未取得原始识别 Markdown，不能证明所有真实 OXR 输出形状均已覆盖。
+
+验证：`npm run check` 通过 **492 项 JavaScript 测试**及 JS/静态/XHTML/Python 3.9 语法检查。Python 3.14.3 完整离线测试因缺少 PyMuPDF 未能运行；未安装依赖。显式 `SPT_TEST_FULLTEXT_PROGRESS_ONLY=1` 模式通过 **29 项**进度/逐页重建/缓存/哈希/路径测试，跳过 **38 项** PDF/依赖测试，不等同于完整 Python/PDF 验证。两次构建逐字节一致，`unzip -t` 和 SHA-256 检查通过；归档 **58 个运行时文件**逐字节匹配 `plugin/`，排除已有 `.DS_Store`，不含测试、文档或 mockup。
+
+最终文件：`dist/smart-paper-translator-0.1.53.xpi`，**1,407,327 字节**；SHA-256：`92b3361279ad3be6a03a7e3823cbab4763086476798b1c77d49cdc055150a996`。
+
+只读本机元数据为 Zotero 10.0.6；清单仍是 9.0–10.0.*，私有截图桥白名单不变。未操作真机、安装、上传论文、调用真实 OXR/DeepSeek、验证 PDF 导出或导入附件。已有打印/导入原生验证缺口不变。
 
 ## 0.1.52：可折叠的全文解析进度
 

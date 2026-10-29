@@ -16,13 +16,14 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.52`
+- 当前版本：`0.1.53`
 - 目标平台：macOS Zotero 10.0.4；保留 Zotero 9.0.6 既有支持
 - 0.1.48 另在本机 Zotero 10.0.6 / Gecko 140.17.0 完成非安装式 XPI 解析和模拟后端的独立分支窗口验证；不代表完整插件/真实 Agent 验证，截图精确版本白名单不变。
 - 0.1.49 历史验证为 392 项自动测试及可复现 XPI；当轮因 AX 权限未完成原生解析/UI 验证。
 - 0.1.50 为全文翻译测试包：通过 461 项 JavaScript 测试与 37 项 Python 离线测试。早期候选包在 Zotero 10.0.6 / Gecko 140.17.0 通过非安装式解析、本地 Python 检测、合成 PDF 预览和 MathML 显示，但 PDF 打印出现 iframe 加载超时；修正内容域 load 事件监听后，原生复测因模态窗口阻塞并按用户要求停止。最终包未完成原生复测，不得宣称中文 PDF 导出、真实附件导入、真实 OXR/DeepSeek 或完整安装流程已验证。候选/最终哈希见技术参考。
 - 0.1.51 修复全文翻译工具栏对齐及 Python/PDF 路径诊断，通过 467 项 JavaScript 测试、静态检查与可复现 XPI 检查。本轮 Python 离线测试因现成环境版本/依赖不符未能运行，未修改 Python 脚本；未执行真机、上传、模型或导入验证。
 - 0.1.52 增加全文解析的可折叠页码分块时间轴与耗时，仅点亮实际观察状态，通过 479 项 JavaScript 测试、17 项无第三方依赖 Python 进度测试及可复现 XPI 检查。Python 完整 PDF 套件因缺少 PyMuPDF 未能运行（进度专用模式跳过 38 项）；未执行真机、真实 OXR/DeepSeek、PDF 导出或附件导入验证。
+- 0.1.53 增加按 OXR 逐页识别块重建的当前页预览、旧任务重解析归档和算法伪代码数学渲染。通过 492 项 JavaScript 测试、29 项无第三方依赖 Python 进度/逐页记录测试及可复现 XPI 检查；完整 Python PDF 套件缺少 PyMuPDF（跳过 38 项）。未执行真机、真实 OXR/DeepSeek、PDF 导出或导入验证，未取得截图对应原始 Markdown；公式回归基于转录样例。
 - 清单兼容范围：Zotero `9.0`–`10.0.*`；私有 PDF.js 截图桥仅开放 `9.0.6` / `10.0.4`
 - 插件源码根目录：`plugin/`
 - 最终 XPI 中只能包含 `plugin/` 下的运行时文件，不得包含 `.agents/`、测试、文档或构建工具。
@@ -211,7 +212,8 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.52.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.53.xpi         # 当前版本交付物
+    ├── smart-paper-translator-0.1.52.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.51.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.50.xpi         # 上一版本归档
     ├── smart-paper-translator-0.1.49.xpi         # 上一版本归档

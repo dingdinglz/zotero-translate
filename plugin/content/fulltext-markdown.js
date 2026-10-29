@@ -726,10 +726,11 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
     const algorithm = (parent, value, language, afterHeading) => {
       const explicit = /^(?:algorithm|pseudocode)$/iu.test(language);
       const inferred = !language || /^(?:text|plaintext)$/iu.test(language);
-      if (!explicit && !(inferred && afterHeading &&
+      if (!explicit && !(inferred && afterHeading && !/["'`]/u.test(value) &&
+          !/(?:^|\n)[ \t]*(?:def|class|function|import|from|const|let|var)\b/u.test(value) &&
           /(?:^|\n)[ \t]*(?:Require|Ensure|Input|Output|输入|输出)\s*[:：]/iu.test(value) &&
-          /(?:^|\n)[ \t]*(?:for|while|if)\b/iu.test(value) &&
-          /(?:^|\n)[ \t]*(?:end\s+(?:for|while|if)\b|return\b)/iu.test(value))) return false;
+          /(?:^|\n)[ \t]*(?:(?:for|while)\b[^\r\n]*\bdo|if\b[^\r\n]*\bthen)[ \t]*(?:\r?\n|$)/iu.test(value) &&
+          /(?:^|\n)[ \t]*end\s+(?:for|while|if)[ \t]*(?:\r?\n|$)/iu.test(value))) return false;
       const pre = element("pre"); pre.setAttribute("class", "spt-fulltext-algorithm");
       const pattern = /\$|\\(?:\[|\(|begin\{)/gu;
       let cursor = 0, match;

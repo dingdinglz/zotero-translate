@@ -138,6 +138,27 @@ test("cancelled page-map reads cannot switch an approved task or expose late pag
   await assert.rejects(x.service.readPageMap("../secret.json", 2, hash(before)), /逐页/u);
 });
 
+test("pause during final reparse commit restores old state on disk without publishing new review", async () => {
+  const x = withPageMap(setup()); await prepared(x); await x.service.translate({ consent: true });
+  const approvedHash = x.service.state.approvedHash, translated = x.service.translated;
+  let release, entered;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const write = x.service.storage.writeJSON;
+  x.service.storage.writeJSON = async (name, value) => {
+    if (name === "state.json" && value.stage === "review") { entered(); await new Promise(resolve => { release = resolve; }); }
+    return write(name, value);
+  };
+  const snapshots = [], unsubscribe = x.service.subscribe(value => snapshots.push(value));
+  const parsing = x.service.parse({ consent: true, replaceApproved: true }); await waiting;
+  assert.equal(x.service.state.approvedHash, approvedHash);
+  const rejected = assert.rejects(parsing, /暂停/u), pausing = x.service.pause(); release();
+  await pausing; await rejected;
+  assert.equal(x.service.state.approvedHash, approvedHash); assert.equal(x.service.translated, translated);
+  assert.equal(JSON.parse(x.files.get("state.json")).approvedHash, approvedHash);
+  assert.ok(snapshots.every(value => value.approvedHash === approvedHash));
+  assert.equal(x.service.snapshot().parseProgress.phase, "paused"); unsubscribe();
+});
+
 test("parse progress tracks real ranges, isolates snapshots and is not persisted as live remote state", async () => {
   const x = setup(); const convert = x.service.convert; let late;
   x.service.convert = async options => {

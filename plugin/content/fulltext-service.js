@@ -188,12 +188,12 @@
           if (typeof source !== "string") throw new Error("转换未生成完整 Markdown。");
           const parsedMarkdownHash = await this.hash(source); this.check(serial);
           const pageMap = await this.readPageMap(result.pageMapFile, result.pageCount, parsedMarkdownHash); this.check(serial);
-          this.source = source; this.plan = null; this.translated = ""; this.pageMap = pageMap; this.pagePreviewError = "";
-          this.state = { schema: 1, identity: this.identity, translations: {}, currentID: "", draft: "", error: "", stage: "review",
+          const nextState = { schema: 1, identity: this.identity, translations: {}, currentID: "", draft: "", error: "", stage: "review",
             pageCount: result.pageCount, oxrBaseURL: config.oxrBaseURL, parsedMarkdownHash, pageMapFile: result.pageMapFile };
-          try { await this.save(); }
+          try { await this.storage.writeJSON("state.json", copy(nextState)); this.check(serial); }
           catch (error) { Object.assign(this, previous); throw error; }
-          this.parseProgress.phase = "complete";
+          this.source = source; this.plan = null; this.translated = ""; this.pageMap = pageMap; this.pagePreviewError = "";
+          this.state = nextState; this.parseProgress.phase = "complete";
         });
       } catch (error) {
         this.parseProgress.phase = this.cancelled ? "paused" : "failed";

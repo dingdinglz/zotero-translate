@@ -495,7 +495,7 @@ def page_markdown(page):
 
 
 def fenced_code(content):
-    lines = content.strip().splitlines()
+    lines = content.splitlines()
     if len(lines) < 2:
         return False
     opening = re.fullmatch(r" {0,3}(`{3,}|~{3,})([^\r\n]*)", lines[0])

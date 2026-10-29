@@ -636,6 +636,16 @@ class ProgressTest(unittest.TestCase):
                 self.assertNotIn(fence, content)
                 self.assertEqual(rest, content + "\n" + fence)
 
+    def test_code_fence_detection_preserves_original_indentation(self):
+        for content in ("    ```python\nprint(1)\n```", "\t```python\nprint(1)\n```",
+                        "\n    ```python\nprint(1)\n```", "\n```python\nprint(1)\n```"):
+            with self.subTest(content=content):
+                self.assertFalse(worker.fenced_code(content))
+                result = worker.page_markdown(layout_page(0, [recognition_block(0, content, "Code Block")]))
+                fence = result.split("\n", 1)[0]
+                self.assertEqual(result, fence + "\n" + content + "\n" + fence)
+                self.assertNotIn(fence, content)
+
     def test_page_map_convert_exact_unicode_hashes_order_and_cache_rebuild(self):
         self.fake_pdf(21)
         first_pages = [layout_page(i, [recognition_block(8, "尾 " + str(i)),
