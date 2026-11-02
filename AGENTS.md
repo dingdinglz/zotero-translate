@@ -37,6 +37,7 @@
 - 0.1.64 接入短生命周期打印宿主，精确来源/仅OPEN_PRINT_BROWSER/单克隆，拒绝导航/window.print/旧回调，不覆盖已有宿主，XPConnect读回身份匹配后才清理，失败仍回收其他资源。用户手动合成A/B在Zotero10.0.6/Gecko140.17.0/插件0.1.63下无桥接复现0x8053000b，有桥接生成9017字节PDF签名文件并清理；不是最终XPI、真实论文/字体公式/Python解析/附件导入验证。通过821项JavaScript测试（运行时117项，运行时/服务/UI235项）、29项Python进度测试（跳过38项）及可复现60文件XPI检查；未自动操控Zotero、上传PDF或调用模型，完整Python PDF套件未重跑。协议2和译文进度不变。
 - 0.1.65 修复打印未接图片缓存导致图片标记被输出为文字；按用户授权生成前自动补图，验证后嵌入惰性DOM，坏图/缺图/取消停止输出，保持数据图片CSP及原下载限制。完成任务可确认后用现有译文重新生成新附件，不重译、不删除旧附件；导入意图先清旧ID，未调用导入时失败恢复，结果不确定仍阻止重复。通过871项JavaScript测试（运行时155、运行时/服务/UI285）、29项Python进度测试（跳过38）及可复现60文件XPI检查。用户回报0.1.64成品在Zotero打开但缺图；未读取真实成品、运行0.1.65真机验证、请求真实图片/模型、上传PDF或重跑完整Python PDF套件。
 - 清单兼容范围：Zotero `9.0`–`10.0.*`；私有 PDF.js 截图桥仅开放 `9.0.6` / `10.0.4`
+- 0.1.65 本地修复包（上游 Pre-0.1.65 保持不变）修复 Windows 预览/版面 PDF 以只读描述符 fsync 导致的 worker_failed，以及 DirEntry.stat 的硬链接数为 0 导致普通缓存误报 invalid_cache；保持原子输出及链接拒绝规则。Windows Python 3.13.9 / PyMuPDF 1.28.2 / requests 2.32.5 通过 70 项完整离线 Python 测试，无跳过；未操控 Zotero、上传论文或调用真实 OXR/模型，未验证原生中文 PDF/附件导入。通过 870 项 JavaScript 测试，另 1 项 POSIX 原生 shell 测试在 Windows 明确跳过；JS 语法、静态与可复现 60 文件 XPI 检查通过。
 - 插件源码根目录：`plugin/`
 - 最终 XPI 中只能包含 `plugin/` 下的运行时文件，不得包含 `.agents/`、测试、文档或构建工具。
 - 未经用户明确授权，不得安装插件、修改 Zotero profile、运行真实 npx 下载，或使用真实 API Key/Codex 发起模型请求。
@@ -157,8 +158,8 @@ zotero-translate/
 │       ├── fulltext.css              # 左PDF/右Markdown、进度/并发、重译/JSON修正、图片/时间轴及独立导出结果
 │       ├── fulltext-python/          # 随XPI打包的固定脚本，不打包Python解释器或第三方库
 │       │   ├── worker.py             # 隔离入口，check/convert/preview有界JSON协议
-│       │   ├── pdf_to_markdown.py    # 分块/进度JSONL、OXR缓存、逐页识别块重建/哈希记录、安全HTTP与逐页图片
-│       │   ├── layout_pdf.py         # 原PDF的无损版面分析叠加副本
+│       │   ├── pdf_to_markdown.py    # 分块/进度JSONL、跨平台原子输出/缓存元数据、逐页识别块/哈希、安全HTTP与逐页图片
+│       │   ├── layout_pdf.py         # 原PDF的无损版面分析叠加副本、可写描述符同步/原子保存
 │       │   └── requirements.txt      # 手动准备PyMuPDF/requests的版本范围
 │       ├── pi-acp-compat.js          # 固定 Pi 适配器哈希校验、Node 内存补丁、按模型读取档位与确认 max
 │       ├── opencode-acp.js          # 原生启动、OSC/模型收集、检测与分支临时数据库/能力解析
@@ -226,7 +227,7 @@ zotero-translate/
 │   ├── fulltext-image-network.test.js # 公网IP/DNS与代理Fake-IP、图片缓存链、Gecko通道/重定向/匿名/流限额及迟到
 │   ├── fulltext-runtime.test.js      # JSONL/真实渲染图片/缓存补齐/取消、内容/CSP/宿主/身份/清理及导出
 │   ├── fulltext-ui.test.js           # 进度/并发/重译/JSON、编辑/图片/关闭、重新生成确认/陈旧拒绝及导出反馈
-│   ├── fulltext_worker_test.py       # Python离线PDF/HTTP及无第三方依赖的进度/逐页重建/缓存/哈希/路径测试
+│   ├── fulltext_worker_test.py       # Python离线PDF/HTTP、Windows保存/缓存回归、跨平台进度管道/信号及逐页/哈希/路径测试
 │   ├── item-tree-ui.test.js          # 标签编辑/聚合/分页/定位、手动优先、失败重试、异步隔离与清理
 │   └── reader-ui.test.js             # 选区/截图 Agents 入口、划线翻译/禁用、术语删除/重试、Tabs、拖拽缩放和陈旧 UI 防护
 ├── scripts/
@@ -234,73 +235,7 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物，不是运行时源码
-    ├── smart-paper-translator-0.1.65.xpi         # 当前版本交付物
-    ├── smart-paper-translator-0.1.64.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.63.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.62.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.61.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.60.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.59.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.58.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.57.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.56.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.55.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.54.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.53.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.52.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.51.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.50.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.49.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.48.xpi         # 上一版本归档
-    ├── smart-paper-translator-0.1.47.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.46.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.45.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.44.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.43.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.42.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.41.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.40.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.39.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.38.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.37.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.36.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.35.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.34.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.33.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.32.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.31.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.30.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.29.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.28.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.27.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.26.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.25.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.24.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.23.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.22.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.21.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.20.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.19.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.18.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.17.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.16.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.15.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.14.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.13.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.12.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.11.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.10.xpi         # 历史版本归档
-    ├── smart-paper-translator-0.1.9.xpi          # 历史版本归档
-    ├── smart-paper-translator-0.1.8.xpi          # 历史版本归档
-    ├── smart-paper-translator-0.1.7.xpi          # 历史版本归档
-    ├── smart-paper-translator-0.1.6.xpi          # 历史版本归档
-    ├── smart-paper-translator-0.1.5.xpi          # 历史版本归档
-    ├── smart-paper-translator-0.1.4.xpi          # 历史版本归档
-    ├── smart-paper-translator-0.1.3.xpi          # 历史版本归档
-    ├── smart-paper-translator-0.1.2.xpi          # 历史版本归档
-    ├── smart-paper-translator-0.1.1.xpi          # 历史版本归档
-    ├── smart-paper-translator-0.1.0.xpi          # 历史版本归档
-    ├── smart-paper-translator-0.1.0-source.zip   # 历史版本源码归档
+    ├── smart-paper-translator-0.1.65.xpi         # 当前本地修复包，上游 release 不变
     └── SHA256SUMS
 ```
 
@@ -327,6 +262,8 @@ shasum -a 256 -c dist/SHA256SUMS
 ```
 
 全文 Python 离线测试使用已准备的环境：`PYTHONDONTWRITEBYTECODE=1 /absolute/path/to/python -m unittest discover -s tests -p fulltext_worker_test.py -q`。该命令需要 `plugin/content/fulltext-python/requirements.txt` 中的现成依赖，不安装依赖、不调用真实 OXR。`npm run check` 包含全文 JavaScript 测试，但不替代 Python 测试。仅验证不依赖第三方库的进度协议和逐页识别记录时，显式使用 `SPT_TEST_FULLTEXT_PROGRESS_ONLY=1 PYTHONDONTWRITEBYTECODE=1 /absolute/path/to/python -m unittest discover -s tests -p fulltext_worker_test.py -q`；该模式跳过 PDF/依赖测试，不能报告为完整 Python 测试通过。默认命令仍要求现成依赖，缺失时失败，不静默跳过。
+
+Windows PowerShell 可等价执行 JS 语法、测试与静态检查：`Get-ChildItem -Path plugin,tests -Recurse -Filter *.js -File | ForEach-Object { node --check $_.FullName; if ($LASTEXITCODE -ne 0) { throw $_.FullName } }`、`npm.cmd test`、`python -B scripts/validate_static.py`。Python 测试使用已选解释器 `-B -m unittest discover -s tests -p fulltext_worker_test.py -q`；沙箱临时目录不可用时，将当前进程 `TEMP`/`TMP` 指向允许写入的临时目录。链接测试需要运行环境允许在测试临时目录创建 symlink/hardlink。没有 POSIX 构建工具时用 `python -B scripts/build_xpi.py plugin --output dist --slug smart-paper-translator` 打包，使用 Python zipfile 验证条目/CRC、两次构建哈希与 `dist/SHA256SUMS`；如已有 unzip，仍运行 `unzip -t`。
 
 可选的已准备 Pi 适配器验证：设置 `SPT_TEST_PI_ACP_ENTRY=/absolute/path/to/pi-acp/dist/index.js`，执行 `node --test tests/pi-acp-compat.test.js`。只对现成模块做初始化握手和使用假 Pi RPC 的配置方法验证，不下载、不创建真实 Pi 会话、不调用模型。
 

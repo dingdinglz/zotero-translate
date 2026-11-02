@@ -40,6 +40,14 @@ Reader 入口从 tabID 精确复核附件，仅支持主窗口 PDF 标签页。�
 
 固定 Python 的 convert 使用逐行、立即 flush 的 JSON 进度帧加一个最终结果；check/preview 仍只有最终 JSON。专用协议描述符绕过第三方库输出抑制，库的原生 stdout/stderr 仍被丢弃。进度仅包含白名单阶段、页数、页码和状态，不带正文、路径、任务 ID 或密钥；桥接拒绝额外键、越界/乱序范围、最终结果后的输出，按 UTF-8 限制单行 64 KiB、convert 总输出 16 MiB，stderr 仍限 64 KiB。任务层复核覆盖范围、顺序与结果页数，暂停或换任务后丢弃迟到事件。
 
+本地原子输出在替换最终目标前同步实际临时文件；渲染器可能关闭并替换初始临时文件，因此仍需重新打开最终临时文件。统一使用不截断的 `r+b`，兼容 Windows `os.fsync()` / `_commit` 对可写描述符的要求；预览 PNG、Markdown/缓存/逐页记录与版面 PDF 均适用。失败仍保留已有目标并清理自有临时文件，不跳过同步。缓存扫描使用 `os.stat(entry.path, follow_symlinks=False)` 获取完整硬链接数，避免 Windows `DirEntry.stat()` 的 `st_nlink=0` 误报；常规文件、硬链接数等于 1、大小及命名限制继续执行，临时文件清理使用相同规则。
+
+0.1.65 本地修复包在 Windows / Python 3.13.9 / PyMuPDF 1.28.2 / requests 2.32.5 运行 70 项离线测试，无跳过；用合成 PDF 复现旧版预览 `worker_failed` / `Bad file descriptor`，修正后预览与模拟 OXR 的版面生成通过。进度 flush 测试改用有界线程读管道，避免 Windows select 仅支持 socket；Windows 信号处理测试以 `signal.raise_signal()` 检查 Python 处理器，不宣称验证外部强制结束的处理器执行。没有操控 Zotero、请求真实 OXR/模型、上传论文或验证原生中文 PDF/附件导入。
+
+Windows JavaScript 验证对 Fluent 消息的 LF/CRLF 换行等价处理；仅原生 `/bin/sh` + `/bin/sleep` OpenCode 进程探针在 Windows 显式跳过，其他模型收集/取消模拟测试继续执行。0.1.65 本地修复包为 870 项通过、1 项跳过；JS 语法、静态检查与可复现 XPI 归档检查通过。
+
+Python 文件同步依据见 [os.fsync](https://docs.python.org/3/library/os.html#os.fsync)，Windows 目录条目元数据限制见 [os.DirEntry.stat](https://docs.python.org/3/library/os.html#os.DirEntry.stat)。
+
 ## Markdown contract
 
 所有分段拼接必须逐字还原输入，不能简单以空行拆断代码、公式或 HTML 表格。References / Bibliography / 参考文献标题下的条目整体保持原文；用户在确认前检查识别数量，缺少可识别标题时先修正。正文及引用块可以翻译，文内 `[1]` 等标记不变。

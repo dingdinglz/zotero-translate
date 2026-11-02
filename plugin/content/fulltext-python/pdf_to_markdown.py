@@ -179,7 +179,9 @@ class Output:
                 if index >= MAX_PAGES * 2:
                     fail("cache_limit")
                 if re.fullmatch(r"\.spt-[a-z0-9_]{8}", entry.name):
-                    info = entry.stat(follow_symlinks=False)
+                    # DirEntry.stat has st_nlink=0 on Windows; use full metadata
+                    # without following links before deleting our temporary.
+                    info = os.stat(entry.path, follow_symlinks=False)
                     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                         fail("invalid_cache")
                     os.unlink(entry.path)
@@ -193,7 +195,7 @@ class Output:
                 count += 1
                 if count > MAX_PAGES or not re.fullmatch(r"[a-f0-9]{64}\.json", entry.name):
                     fail("invalid_cache")
-                info = entry.stat(follow_symlinks=False)
+                info = os.stat(entry.path, follow_symlinks=False)
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     fail("invalid_cache")
                 if info.st_size > MAX_RESPONSE:
@@ -215,7 +217,9 @@ class Output:
                     os.fsync(handle.fileno())
             # A PDF renderer may atomically replace the staging path itself.
             # Sync that final inode, not only the initial mkstemp descriptor.
-            with open(temporary, "rb") as final:
+            # Windows os.fsync uses _commit and needs a writable descriptor.
+            # Update mode preserves bytes even when the renderer replaced it.
+            with open(temporary, "r+b") as final:
                 os.fsync(final.fileno())
             self.path(name)
             os.replace(temporary, destination)

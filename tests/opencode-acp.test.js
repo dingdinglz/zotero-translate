@@ -75,7 +75,9 @@ test("model command keeps user paths in argv and releases its pipe only after co
   await assert.rejects(Native.collect(process, 100, global, "private-marker"), { code: "OPENCODE_OUTPUT_INCOMPLETE" });
 });
 
-test("native model collector preserves exit status and reaps its child on cancellation", { timeout: 5000 }, async () => {
+test("native model collector preserves exit status and reaps its child on cancellation", {
+  timeout: 5000, skip: process.platform === "win32" ? "Requires native POSIX /bin/sh and /bin/sleep" : false
+}, async () => {
   const fs = require("node:fs/promises"), path = require("node:path"), os = require("node:os");
   const { spawn } = require("node:child_process");
   const { once } = require("node:events");
