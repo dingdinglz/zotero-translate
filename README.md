@@ -59,7 +59,7 @@ An interactive chart from the conversation, shown beside the passage it explains
 
 ## Get started
 
-The current version is **0.1.65 (test build)**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
+The current version is **0.1.67 (test build)**, targeting **macOS with Zotero 10.0.4** and retaining Zotero 9 support. The plugin declares compatibility with Zotero 9.0–10.0.x. The Agents sidebar works in PDF tabs in Zotero's main window; standalone reader windows are not supported.
 
 PDF screenshots are enabled on the individually verified **9.0.6 and 10.0.4** versions. Use the original PDF view for screenshots; Zotero 10's reflowed Reading Mode is not supported for capture. Other patch versions keep screenshots disabled until their private PDF.js bridge has been checked.
 
@@ -71,7 +71,9 @@ Version 0.1.40 adds Windows drive/UNC path handling for shared runtime discovery
 2. Open Zotero's plugin manager, choose the option to install from a file, and select the downloaded XPI.
 3. Open a PDF in the main Zotero window. Find **Agents** in the right sidebar.
 
-Updates are installed manually from a newer XPI. The local 0.1.65 build is `dist/smart-paper-translator-0.1.65.xpi`. It connects PDF rendering to the task's image cache, safely downloads missing images before printing, and refuses incomplete output when image preparation fails. Existing Chinese attachments can be regenerated after confirmation, without translating again or deleting old attachments. The isolated print host, CSP and sandbox remain unchanged. **0.1.60–0.1.64 progress and completed translations remain usable**: if translation is complete, retry **生成并保存中文 PDF** or export Markdown without translating again. The 0.1.61 fix for punctuation-only parts and natural Chinese word order remains. The earlier breaking change still applies to the marker protocol in 0.1.59 and older: those translations/drafts require fresh confirmation and translation, but not PDF reupload/reparse. Existing attachments are not deleted. Concurrency (default 5, range 1–8), saved-paragraph progress and the 128,000-unit prose input limit remain. The user reported that a 0.1.64 Chinese PDF opened in Zotero but lacked images. This build's image fix has not been verified with a real paper in Zotero.
+Updates are installed manually from a newer XPI. The local 0.1.67 build is `dist/smart-paper-translator-0.1.67.xpi`. Side-by-side native radio controls replace the PDF-mode dropdown to avoid the reported overlapping options. Switching preserves the current page; refusing to discard unsaved edits restores the previous choice. The full-paper window now has stage-specific primary actions, adjustable columns, a single-pane layout for narrow windows, direct page navigation and a separate recovery view. Original text remains readable during model translation; preview image downloads wait, while editing and configuration stay locked. Failed passages have short source excerpts and original-page navigation only when the unified document provides an exact mapping. The right pane always shows recognized source text, not the Chinese translation.
+
+**0.1.60–0.1.65 progress and completed translations remain usable.** After PDF failure, choose **重试生成中文 PDF** or export Markdown without translating again. Completed tasks offer confirmed regeneration under **更多操作**, adding a new attachment without deleting the old one. The 0.1.65 image-cache/download safeguards and Windows local-save fixes remain, as do the print host, CSP and sandbox. Protocols from 0.1.59 and earlier still require fresh source confirmation and translation, but no PDF reupload/reparse. Concurrency (default 5, range 1–8), saved-paragraph progress and prose limits are unchanged. This build is checked with automated tests, synthetic browser layout checks and static XPI validation, not live Zotero or real-paper PDF export/attachment import.
 
 ### Connect an agent
 
@@ -153,7 +155,7 @@ Read [AGENTS.md](AGENTS.md) before changing plugin code. Runtime files live in `
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.65.xpi
+unzip -t dist/smart-paper-translator-0.1.67.xpi
 ```
 
 Build output goes to `dist/`. Automated tests and static archive checks are the default delivery checks; native Zotero parsing and UI testing run only when separately requested. The [technical reference (Chinese)](docs/technical-reference.zh-CN.md) covers adapter behavior, storage, rendering limits, and historical validation results.

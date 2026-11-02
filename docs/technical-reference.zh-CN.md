@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.65 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.67 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -178,10 +178,32 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.65.xpi
+unzip -t dist/smart-paper-translator-0.1.67.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.67：预览模式切换重叠修复
+
+用户截图显示“版面分析 / 原始 PDF”的下拉选项与当前值重叠。本次移除该二选一下拉框，改为同组原生radio加可点击标签的内联切换，不涉及并发数或失败段落等其他select。保留原生键盘方向键、明确选中样式、当前页码、未保存原文确认和忙碌锁定；拒绝切换同步恢复两项checked，重复选择不额外启动预览，迟到的另一模式图片不覆盖当前模式。
+
+只读核对本机Zotero10.0.7/Gecko140.17.0外层omni.ja的`chrome/toolkit/res/forms.css`：原生select有独立内部显示与下拉结构；这不是截图根因的原生复现，不据此声称某条样式或所有select均有故障。[Zotero10开发文档](https://www.zotero.org/support/dev/zotero_10_for_developers)说明其与Zotero9使用相同Firefox140 ESR平台，兼容范围与私有截图白名单未改变。
+
+通过898项JavaScript测试（全文UI71项）、JS语法和静态检查。合成浏览器1100×800浅色及620×760深色检查无模式文字重叠，完整标签点击和原生ArrowLeft切换正确；这是Chromium示意检查，不是Zotero真机验证。未操控Zotero、安装插件、上传PDF、请求真实图片/模型或验证原生导出；Python未修改且本轮未重跑。
+
+两次构建字节一致，60文件XPI根目录/CRC/源码字节及SHA256SUMS检查通过。交付：`dist/smart-paper-translator-0.1.67.xpi`，1,439,341字节；SHA-256：`c321144a0f1a91f9a0f98a0098dd9ef99fcb9dc9fc973b2662fb59f9ffba3cfb`。译文协议与检查点不变，无需重新解析或翻译。
+
+## 0.1.66：全文工作区与只读核稿
+
+- 保留系统字体与蓝色操作强调，统一明暗主题、阅读层级、控件尺寸和状态色。顶部阶段导航只反映实际任务状态；当前阶段一个主操作，完成后打开中文附件，重生成移入更多操作，上传/模型费用与输出确认不削弱。
+- 宽窗支持35%–65%原生滑块调整PDF列；820px以下切换PDF/识别原文单面板。支持整数页码直接跳转、原始PDF/版面分析原生选择，保持原始页码，不新增译文对照或跨语言页码映射。
+- 待处理段落使用独立恢复视图，默认显示短原文摘要、简化错误和重译/原文页定位；原文与JSON详情保留可折叠，切换视图不清除未保存修正。页定位只接受已确认哈希绑定的统一原稿精确偏移；修改后、旧任务或损坏时明确无可靠映射。
+- 仅模型翻译阶段允许只读原文浏览，本地写入、解析、打印和停止仍锁定。预览独立取消，不取消模型；运行中不发起原文图片下载，暂停或完成后可显式补图。服务、原稿版本、页码与请求序号复核拒绝迟到结果。
+- 内容块不再伪装为按钮，保留原生标题/阅读语义与文本选择；一个Tab停靠点、方向键选块、保存/取消后恢复焦点。可见计时正常更新，读屏仅播报阶段变化。
+
+验证：`PATH=/opt/homebrew/bin:$PATH npm run check` 通过897项JavaScript测试（全文UI70、服务86），JS语法与静态检查通过。Python3.13完整离线套件因缺少PyMuPDF无法加载，未安装依赖；显式进度专用模式通过31项、跳过39项，不能替代完整PDF测试。实际运行时UI/CSS在本地Chromium中以合成状态检查1100×800、620×760、390×720的布局、恢复视图与明暗配色（暗色通过color-scheme指定）；只读翻页、原生控件、保存后的焦点返回通过合成交互检查，无横向溢出。该检查不是Gecko/Zotero真机验证。机械检测器返回0条，但动态JS界面覆盖有限。
+
+两次构建字节一致，60文件XPI根目录/CRC和SHA256SUMS检查通过。交付：`dist/smart-paper-translator-0.1.66.xpi`，1,439,109字节；SHA-256：`da2e88f3db663c895757fb6a5762d3c25786e67fec764c06796d90d4d8b648f9`。未操控Zotero、上传PDF、请求真实图片/模型、安装插件或验证原生PDF导出/附件导入。协议2与配置修订不变，0.1.60–0.1.65检查点和完成译文继续复核使用。
 
 ## 0.1.65：图片实际嵌入与现有译文重新生成
 

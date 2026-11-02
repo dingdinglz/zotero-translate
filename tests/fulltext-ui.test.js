@@ -23,24 +23,42 @@ class Events {
   get listenerCount() { return [...this.listeners.values()].reduce((n, set) => n + set.size, 0); }
 }
 class Node extends Events {
-  constructor(tag) { super(); this.tag = tag; this.children = []; this.attributes = {}; this.value = ""; this.hidden = false; this.disabled = false; this._text = ""; }
-  append(...nodes) { for (const n of nodes) { this.children.push(n); n.parentNode = this; } }
-  replaceChildren(...nodes) { this._text = ""; this.children = []; this.append(...nodes); }
-  set textContent(value) { this._text = value; this.children = []; }
+  constructor(tag, ownerDocument = null) {
+    super(); this.tag = tag; this.ownerDocument = ownerDocument; this.children = []; this.attributes = {};
+    this.value = ""; this.hidden = false; this.disabled = false; this._text = ""; this.textWrites = 0;
+    const properties = new Map();
+    this.style = { setProperty: (key, value) => properties.set(key, String(value)), getPropertyValue: key => properties.get(key) || "" };
+  }
+  _adopt(doc) { this.ownerDocument = doc; for (const child of this.children) child._adopt(doc); }
+  append(...nodes) { for (const n of nodes) { this.children.push(n); n.parentNode = this; n._adopt(this.ownerDocument); } }
+  replaceChildren(...nodes) { for (const child of this.children) child.parentNode = null; this._text = ""; this.children = []; this.append(...nodes); }
+  contains(node) { return node === this || this.children.some(child => child.contains(node)); }
+  focus() { if (!this.disabled && this.ownerDocument) this.ownerDocument.activeElement = this; }
+  set textContent(value) { this.replaceChildren(); this._text = String(value); this.textWrites++; }
   get textContent() { return this._text + this.children.map(node => node.textContent).join(""); }
   get childNodes() { return this.children; }
   set innerHTML(_) { throw new Error("Unsafe HTML"); }
-  setAttribute(key, value) { this.attributes[key] = value; }
+  setAttribute(key, value) { this.attributes[key] = String(value); }
   getAttribute(key) { return this.attributes[key] ?? null; }
   removeAttribute(key) { delete this.attributes[key]; }
 }
 class Win extends Events {
   constructor(uri = URI) {
     super(); this.closed = false; this.confirmResult = true; this.confirmations = []; this.alerts = []; this.focusCount = 0;
-    this.document = { documentURI: uri, readyState: "complete", body: new Node("body"), createElementNS: (_, tag) => new Node(tag),
-      createTextNode(value) { const node = new Node("#text"); node.textContent = value; return node; } };
+    this.document = { documentURI: uri, readyState: "complete", activeElement: null,
+      createElementNS: (_, tag) => new Node(tag, this.document),
+      createTextNode: value => { const node = new Node("#text", this.document); node.textContent = value; return node; } };
+    this.document.body = new Node("body", this.document); this.document.activeElement = this.document.body;
+    this.media = new Events(); this.media.matches = false;
+    this.selection = { isCollapsed: true };
   }
-  focus() { this.focusCount++; }
+  matchMedia(query) { assert.equal(query, "(max-width: 820px)"); return this.media; }
+  resize(width) {
+    const matches = width <= 820;
+    if (matches !== this.media.matches) { this.media.matches = matches; this.media.dispatchEvent({ type: "change", matches }); }
+  }
+  getSelection() { return this.selection; }
+  focus() { this.focusCount++; this.dispatchEvent({ type: "focus" }); }
   confirm(text) { this.confirmations.push(text); return this.confirmResult; }
   alert(text) { this.alerts.push(text); }
   close() {
@@ -84,6 +102,8 @@ class Service {
   }
   async translate(options) { assert.equal(options.consent, true); this.calls.push("translate"); }
   async pause() { this.calls.push(`pause:${this.attachmentID}`); }
+  cancelPreview() { this.previewCancellations = (this.previewCancellations || 0) + 1; }
+  getRepairSummaries() { return this.repairSummaries || []; }
   getPageMarkdown(page) { return this.pages?.[page - 1] ?? (page <= this.state.pageCount ? `# OCR page ${page}` : null); }
   async preview(page, original) { this.calls.push(`preview:${page}:${original}`); return { dataURI: "data:image/png;base64,YQ==", page, pageCount: this.state.pageCount || 2 }; }
   getRepairContext(id) { this.calls.push(`context:${id}`); return { id, source: '{"translations":[{"id":"t0","text":"Source"}]}' }; }
@@ -524,9 +544,12 @@ test("manual first output and regeneration require image consent and never retra
     const h = setup(), r = await review(h), s = h.services.get(1); let output;
     s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", chineseAttachmentID: oldID, stage: "complete" });
     s.finish = async (owner, options) => { output = options; assert.equal(owner, r.window); h.calls.push("finish"); };
-    assert.equal(r.el.finish.textContent, oldID ? "重新生成中文 PDF" : "生成并保存中文 PDF");
-    assert.equal(r.el.finish.disabled, false);
-    r.window.confirmResult = false; click(r, "finish"); await tick();
+    const action = oldID ? "regenerate" : "finish";
+    assert.equal(r.el.finish.textContent, "生成并保存中文 PDF");
+    assert.equal(r.el.finish.hidden, Boolean(oldID));
+    assert.equal(r.el[action].disabled, false);
+    if (oldID) assert.equal(r.el.regenerate.parentNode, r.el["output-more"]);
+    r.window.confirmResult = false; click(r, action); await tick();
     assert.equal(output, undefined); assert.ok(!h.calls.includes("finish"));
     assert.match(r.window.confirmations.at(-1), /自动下载.*缺失.*图片/u);
     assert.match(r.window.confirmations.at(-1), /受控.*缓存/u);
@@ -535,7 +558,7 @@ test("manual first output and regeneration require image consent and never retra
       assert.match(r.window.confirmations.at(-1), /不.*重新翻译/u);
       assert.match(r.window.confirmations.at(-1), /不.*删除.*已有/u);
     }
-    r.window.confirmResult = true; click(r, "finish"); await tick();
+    r.window.confirmResult = true; click(r, action); await tick();
     assert.deepEqual(output, { regenerate: Boolean(oldID) });
     assert.ok(!h.calls.includes("translate")); assert.ok(!h.calls.includes("confirm"));
     await h.ui.shutdown();
@@ -561,7 +584,7 @@ test("regeneration rejects task, source, approval, configuration and ID changes 
     const h = setup(), r = await review(h), s = h.services.get(1);
     s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", chineseAttachmentID: 42, stage: "complete" });
     r.window.confirm = () => { change(h, r, s); return true; };
-    click(r, "finish"); await tick();
+    click(r, "regenerate"); await tick();
     assert.ok(!h.calls.includes("finish")); assert.match(r.el.error.textContent, /确认期间.*改变/u);
     await h.ui.shutdown();
   }
@@ -573,17 +596,17 @@ test("regeneration controls retain dirty, busy, source, protocol and configurati
     busy: false, importIntent: false, documentError: "", sourceChanged: false, protocolChanged: false };
   for (const patch of [{ busy: true }, { importIntent: true }, { sourceChanged: true }, { protocolChanged: true },
     { documentError: "invalid" }, { translated: "" }, { config: { ...config, model: "other" } }]) {
-    s.emit({ ...completed, ...patch }); assert.equal(r.el.finish.disabled, true);
-    click(r, "finish"); await tick(); assert.ok(!h.calls.includes("finish"));
+    s.emit({ ...completed, ...patch }); assert.equal(r.el.regenerate.disabled, true);
+    click(r, "regenerate"); await tick(); assert.ok(!h.calls.includes("finish"));
   }
   s.emit(completed);
   for (const patch of [{ dirty: true }, { draftDirty: true }, { mode: "edit" }, { stopping: true }]) {
     Object.assign(r, { dirty: false, draftDirty: false, mode: "page", stopping: false }, patch);
-    h.ui._controls(r); assert.equal(r.el.finish.disabled, true);
-    click(r, "finish"); await tick(); assert.ok(!h.calls.includes("finish"));
+    h.ui._controls(r); assert.equal(r.el.regenerate.disabled, true);
+    click(r, "regenerate"); await tick(); assert.ok(!h.calls.includes("finish"));
   }
   Object.assign(r, { dirty: false, draftDirty: false, mode: "page", stopping: false });
-  h.ui._controls(r); assert.equal(r.el.finish.disabled, false);
+  h.ui._controls(r); assert.equal(r.el.regenerate.disabled, false);
   await h.ui.shutdown();
 });
 
@@ -591,7 +614,7 @@ test("closing during regeneration confirmation cannot start output", async () =>
   const h = setup(), r = await review(h), s = h.services.get(1);
   s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", chineseAttachmentID: 42 });
   r.window.confirm = () => { r.window.closed = true; return true; };
-  click(r, "finish"); await tick(); assert.ok(!h.calls.includes("finish"));
+  click(r, "regenerate"); await tick(); assert.ok(!h.calls.includes("finish"));
   await h.ui.shutdown();
 });
 
@@ -769,11 +792,14 @@ test("block selection is exact, accessible and does not rebuild the page; save u
   s.pages = ["First paragraph\n\n$$x=1$$\n\n|A|B|\n|-|-|\n|1|2|\n\n![figure](https://example.invalid/a.png)\n", "Second page"];
   s.emit({ source: s.pages.join("\n\n"), approvedHash: "old", translated: "中文旧译稿", config: { ...config } });
   const nodes = r.blockNodes.slice(), blocks = s.getPageBlocks(1), renders = h.renders();
-  assert.equal(nodes.length, blocks.length); assert.equal(nodes[0].node.getAttribute("aria-pressed"), "true");
+  assert.equal(nodes.length, blocks.length); assert.equal(nodes[0].node.getAttribute("data-selected"), "true");
   for (const entry of nodes) {
-    assert.equal(entry.node.getAttribute("role"), "button"); assert.equal(entry.node.getAttribute("tabindex"), "0");
+    assert.equal(entry.node.getAttribute("role"), null); assert.equal(entry.node.getAttribute("aria-label"), null);
     entry.node.dispatchEvent({ type: "keydown", key: "Enter" });
-    assert.equal(r.selected, entry); assert.equal(entry.node.getAttribute("aria-pressed"), "true");
+    assert.equal(r.selected, entry); assert.equal(entry.node.getAttribute("data-selected"), "true");
+    assert.equal(entry.node.getAttribute("aria-current"), "true");
+    assert.equal(nodes.filter(item => item.node.getAttribute("tabindex") === "0").length, 1);
+    assert.ok(nodes.filter(item => item !== entry).every(item => item.node.getAttribute("tabindex") === "-1" && item.node.getAttribute("aria-current") === null));
   }
   nodes[1].node.dispatchEvent({ type: "click" }); assert.equal(h.renders(), renders);
   click(r, "edit"); assert.equal(r.el.source.value, blocks[1].source); assert.equal(r.mode, "edit");
@@ -876,7 +902,7 @@ test("unsaved edits guard page/mode/reload/original/close and controls stay disa
   const h = setup(), r = await review(h), s = r.service;
   click(r, "edit"); edit(r, "source", "Unsaved"); r.window.confirmResult = false;
   for (const id of ["next", "full", "preview", "reload", "cancel"]) { click(r, id); assert.equal(r.mode, "edit"); assert.equal(r.dirty, true); }
-  r.el.original.checked = true; r.el.original.dispatchEvent({ type: "change" }); assert.equal(r.el.original.checked, false);
+  r.el.original.checked = true; r.el.original.dispatchEvent({ type: "change" }); assert.equal(r.el.original.checked, false); assert.equal(r.el.layout.checked, true);
   r.window.close(); await tick(); assert.equal(r.closed, false); assert.equal(r.page, 1);
   assert.equal(r.el.source.value, "Unsaved");
   const gate = deferred(); s.editBlock = () => gate.promise;
@@ -996,6 +1022,333 @@ test("page images require matching PDF results, but full-source preview is indep
   click(r, "full"); await tick(); assert.equal(images.requests.length, 2);
   images.requests[1].gate.resolve(localImage); await tick(); assert.equal(images.commits.length, 2);
   await h.ui.shutdown();
+});
+
+function visible(node) {
+  for (let current = node; current; current = current.parentNode) if (current.hidden) return false;
+  return true;
+}
+function primaryIDs(r) {
+  return Object.entries(r.el).filter(([, node]) => node.getAttribute("class") === "spt-primary" && visible(node)).map(([id]) => id);
+}
+function key(node, value, modifiers = {}) {
+  const event = { type: "keydown", key: value, ...modifiers }; node.dispatchEvent(event); return event;
+}
+function assertNoModelRequests(calls) {
+  assert.ok(!calls.some(call => /^(confirm|translate|retry:|finish|parse)/u.test(call)), calls.join(", "));
+}
+
+test("one primary action and stage-specific guidance cover the lifecycle without resetting saved work", async t => {
+  const h = setup(); t.after(() => h.ui.shutdown()); await h.ui.open(h.owner, 1);
+  const r = h.record(), s = r.service, initial = s.snapshot();
+  const approved = { source: "# Source", pageCount: 2, approvedHash: "saved", config: { ...config }, completed: 3, total: 8 };
+  const cases = [
+    ["new", {}, "parse", /先上传.*尚未调用/u],
+    ["parsing", { stage: "parsing", busy: true }, "pause", /远端解析任务可能继续/u],
+    ["review", { source: "# Source", pageCount: 2, stage: "review" }, "confirm", /核对.*模型费用/u],
+    ["ready", { ...approved, stage: "ready" }, "continue-pending", /仅处理未完成/u],
+    ["translating", { ...approved, stage: "translating", busy: true }, "pause", /只读浏览.*自动生成/u],
+    ["resume", { ...approved, stage: "paused" }, "continue-pending", /进度会保留/u],
+    ["repair", { ...approved, stage: "paused", currentID: "s1", error: "failed" }, "continue-pending", /已完成译文保留.*重译选中段/u],
+    ["translated", { ...approved, stage: "translated", translated: "中文" }, "finish", /PDF 尚未保存.*Markdown/u],
+    ["PDF failure", { ...approved, stage: "paused", translated: "中文", error: "PDF failed" }, "finish", /译文已保存/u],
+    ["exporting", { ...approved, stage: "exporting", translated: "中文", busy: true }, "pause", /准备图片.*译文会保留/u],
+    ["complete", { ...approved, stage: "complete", translated: "中文", chineseAttachmentID: 42 }, "zh", /不会重译.*不会删除/u],
+    ["source changed", { ...approved, stage: "complete", translated: "中文", chineseAttachmentID: 42, sourceChanged: true }, "confirm", /重新确认.*已有附件保留/u],
+    ["config changed", { ...approved, config: { ...config, model: "old" }, stage: "paused" }, "confirm", /配置已改变/u],
+    ["protocol changed", { ...approved, stage: "review", protocolChanged: true }, "confirm", /重新确认/u]
+  ];
+  const calls = h.calls.slice();
+  for (const [label, patch, action, hint] of cases) {
+    s.state = { ...initial }; s.emit(patch);
+    assert.deepEqual(primaryIDs(r), [action], label);
+    assert.match(r.el["action-hint"].textContent, hint, label);
+    assert.equal(r.el[action].getAttribute("aria-describedby"), "spt-fulltext-action-hint");
+    assert.equal(r.el.steps.children.filter(node => node.getAttribute("aria-current") === "step").length, 1);
+    if (patch.approvedHash) { assert.equal(s.state.approvedHash, "saved"); assert.equal(s.state.completed, 3); }
+  }
+  assert.deepEqual(h.calls, calls); assert.equal(r.window.confirmations.length, 0);
+});
+
+test("completed primary opens the existing PDF; only the explicit more action requests regeneration consent", async t => {
+  const h = setup(), r = await review(h), s = r.service; t.after(() => h.ui.shutdown());
+  s.emit({ approvedHash: "saved", config: { ...config }, stage: "complete", translated: "中文", chineseAttachmentID: 42 });
+  assert.deepEqual(primaryIDs(r), ["zh"]);
+  click(r, "zh"); await tick();
+  assert.ok(h.calls.includes("version:1:zh")); assert.ok(!h.calls.includes("finish")); assert.equal(r.window.confirmations.length, 0);
+  assert.equal(r.el.regenerate.parentNode, r.el["output-more"]);
+  r.el["output-more"].open = true; r.window.confirmResult = false;
+  click(r, "regenerate"); await tick();
+  assert.match(r.window.confirmations.at(-1), /重新生成.*不重新翻译/u);
+  assert.ok(!h.calls.includes("finish"));
+  let options; s.finish = async (_win, value) => { options = value; };
+  r.window.confirmResult = true; click(r, "regenerate"); await tick();
+  assert.deepEqual(options, { regenerate: true }); assertNoModelRequests(h.calls);
+});
+
+test("page jump rejects empty, NaN, fractional and out-of-range input and Enter accepts exact pages", async t => {
+  const h = setup(), r = await review(h); t.after(() => h.ui.shutdown());
+  const calls = h.calls.slice(); r.el.jump.focus();
+  for (const value of ["", "NaN", "1.5", "0", "-1", "3", "Infinity", "9007199254740992"]) {
+    r.el.jump.value = value; click(r, "go"); await tick();
+    assert.equal(r.page, 1, value); assert.equal(r.el.jump.getAttribute("aria-invalid"), "true", value);
+    assert.match(r.el["jump-error"].textContent, /1–2.*整数/u); assert.deepEqual(h.calls, calls);
+  }
+  r.el.jump.value = "2"; r.service.emit({ completed: 1 });
+  assert.equal(r.el.jump.value, "2", "snapshot updates must not erase a focused input");
+  assert.equal(key(r.el.jump, "Enter").defaultPrevented, true); await tick();
+  assert.equal(r.page, 2); assert.equal(r.el.jump.getAttribute("aria-invalid"), null);
+  assert.equal(r.el["jump-error"].textContent, ""); assert.equal(r.el.rendered.textContent, "# OCR page 2");
+  assertNoModelRequests(h.calls);
+});
+
+test("page jump respects dirty-editor refusal and ignores events from a closed view", async t => {
+  const h = setup(), r = await review(h); t.after(() => h.ui.shutdown());
+  click(r, "edit"); edit(r, "source", "Keep this edit"); r.window.confirmResult = false;
+  r.el.jump.value = "2"; key(r.el.jump, "Enter"); await tick();
+  assert.equal(r.page, 1); assert.equal(r.mode, "edit"); assert.equal(r.el.source.value, "Keep this edit");
+  assert.equal(r.dirty, true); assert.ok(!h.calls.some(call => call.startsWith("preview:")));
+  r.window.confirmResult = true; r.window.close(); await tick();
+  const calls = h.calls.slice(); r.el.jump.value = "2"; key(r.el.jump, "Enter"); click(r, "go"); await tick();
+  assert.deepEqual(h.calls, calls); assert.equal(r.page, 1); assertNoModelRequests(h.calls);
+});
+
+test("narrow panes preserve focused content on resize, switch explicitly and keep a bounded local split", async t => {
+  const h = setup(), r = await review(h); t.after(() => h.ui.shutdown());
+  const calls = h.calls.slice(), media = r.window.media;
+  assert.equal(r.el.pdf.hidden, false); assert.equal(r.el.markdown.hidden, false);
+  r.el.jump.focus(); r.window.resize(700);
+  assert.equal(r.el.pdf.hidden, false); assert.equal(r.el.markdown.hidden, true);
+  assert.equal(r.document.activeElement, r.el.jump); assert.equal(r.el["pane-pdf"].getAttribute("aria-pressed"), "true");
+  r.el["pane-markdown"].focus(); click(r, "pane-markdown");
+  assert.equal(r.el.pdf.hidden, true); assert.equal(r.el.markdown.hidden, false);
+  assert.equal(r.document.activeElement, r.el["pane-markdown"]);
+  assert.equal(r.el["pane-markdown"].getAttribute("aria-controls"), r.el.markdown.id);
+  r.window.resize(1200); assert.equal(r.el.pdf.hidden, false); assert.equal(r.el.markdown.hidden, false);
+  r.selected.node.focus(); r.window.resize(600);
+  assert.equal(r.el.markdown.hidden, false); assert.equal(r.document.activeElement, r.selected.node);
+  for (const [input, expected] of [["35", "35%"], ["65", "65%"], ["10", "35%"], ["100", "65%"], ["NaN", "50%"]]) {
+    edit(r, "split", input); assert.equal(r.el.columns.style.getPropertyValue("--pdf-share"), expected);
+    assert.equal(r.el["split-value"].textContent, expected);
+  }
+  assert.deepEqual(h.calls, calls);
+  await h.ui.shutdown(); assert.equal(media.listenerCount, 0);
+});
+
+test("failure options use exact service excerpts and page ranges without exposing technical messages as labels", async t => {
+  const h = setup(), r = await review(h), s = r.service; t.after(() => h.ui.shutdown());
+  s.pages = ["First", "Second"];
+  s.repairSummaries = [{ id: "s000435", excerpt: "Actual recognized paragraph", page: 2, endPage: 2 },
+    { id: "s000436", excerpt: "Across pages", page: 1, endPage: 2 }];
+  s.emit({ stage: "paused", approvedHash: "saved", currentID: "s000435", currentSource: "Do not guess from this text",
+    repairSegments: [{ id: "s000435", error: "translations invalid sk-secret" }, { id: "s000436", error: "" }] });
+  assert.deepEqual(r.el["repair-select"].children.map(node => node.textContent), ["Actual recognized paragraph · 失败", "Across pages · 未完成草稿"]);
+  assert.equal(r.el["repair-location"].textContent, "s000435 · 原文第 2 页");
+  assert.equal(r.el["locate-segment"].hidden, false);
+  click(r, "locate-segment"); await tick(); assert.equal(r.page, 2); assert.equal(r.el.rendered.textContent, "Second");
+  s.emit({ currentID: "s000436" }); assert.equal(r.el["repair-location"].textContent, "s000436 · 原文第 1–2 页");
+  assertNoModelRequests(h.calls);
+});
+
+test("locating a failure revalidates current summaries and never guesses an unavailable page", async t => {
+  const h = setup(), r = await review(h), s = r.service; t.after(() => h.ui.shutdown());
+  let reads = 0, summaries = [{ id: "s99", excerpt: "Exact paragraph", page: 2, endPage: 2 }];
+  s.getRepairSummaries = () => { reads++; return summaries; };
+  s.emit({ stage: "paused", approvedHash: "saved", currentID: "s99", repairSegments: [{ id: "s99", error: "failed" }] });
+  const before = reads; summaries = [{ id: "s99", excerpt: "Exact paragraph", page: 1, endPage: 1 }];
+  click(r, "locate-segment"); await tick(); assert.ok(reads > before); assert.equal(r.page, 1);
+  summaries = []; const previews = h.calls.filter(call => call.startsWith("preview:")).length;
+  click(r, "locate-segment"); await tick();
+  assert.equal(h.calls.filter(call => call.startsWith("preview:")).length, previews);
+  s.emit({ documentRevision: "rev2" });
+  assert.equal(r.el["locate-segment"].hidden, true); assert.match(r.el["repair-location"].textContent, /没有可靠页码映射/u);
+  assert.doesNotMatch(r.el["repair-location"].textContent, /第 \d+ 页/u); assertNoModelRequests(h.calls);
+});
+
+test("native heading semantics and one block tab stop survive arrows while text-selection shortcuts remain native", async t => {
+  const h = setup(), r = await review(h), s = r.service; t.after(() => h.ui.shutdown());
+  global.SmartPaperTranslatorModules.FulltextMarkdown = Markdown;
+  s.pages = ["# Native heading\n\nFirst paragraph\n\nSecond paragraph", "Other page"];
+  s.emit({ source: s.pages.join("\n\n") });
+  const nodes = r.blockNodes, heading = nodes[0].node.children[0];
+  assert.equal(heading.tag, "h1"); assert.equal(heading.getAttribute("role"), null);
+  assert.equal(heading.textContent, "Native heading");
+  for (const entry of nodes) { assert.equal(entry.node.getAttribute("role"), null); assert.equal(entry.node.getAttribute("aria-label"), null); }
+  nodes[0].node.focus();
+  for (const [value, index] of [["ArrowDown", 1], ["End", 2], ["ArrowUp", 1], ["Home", 0]]) {
+    assert.equal(key(r.selected.node, value).defaultPrevented, true);
+    assert.equal(r.selected, nodes[index]); assert.equal(r.document.activeElement, nodes[index].node);
+    assert.equal(nodes.filter(entry => entry.node.getAttribute("tabindex") === "0").length, 1);
+  }
+  for (const modifier of ["shiftKey", "altKey", "ctrlKey", "metaKey"]) {
+    assert.notEqual(key(nodes[0].node, "ArrowDown", { [modifier]: true }).defaultPrevented, true); assert.equal(r.selected, nodes[0]);
+  }
+  r.window.selection.isCollapsed = false;
+  for (const value of ["ArrowDown", "Home", "End", "Enter", " "]) {
+    assert.notEqual(key(nodes[1].node, value).defaultPrevented, true); assert.equal(r.selected, nodes[0]);
+  }
+  assertNoModelRequests(h.calls);
+});
+
+test("saving and cancelling a block restore focus to its new native node without sending model requests", async t => {
+  const h = setup(), r = await review(h), s = r.service; t.after(() => h.ui.shutdown());
+  s.pages = ["First\n\nSecond", "Other"]; s.emit({ source: s.pages.join("\n\n") });
+  r.blockNodes[1].node.dispatchEvent({ type: "click" }); click(r, "edit");
+  assert.equal(r.document.activeElement, r.el.source);
+  edit(r, "source", "Second corrected"); click(r, "save"); await tick();
+  assert.equal(r.selected.index, 1); assert.equal(r.document.activeElement, r.selected.node);
+  assert.match(r.el["output-status"].textContent, /原文已保存.*重新确认/u);
+  click(r, "edit"); edit(r, "source", "Discard me"); r.window.confirmResult = false;
+  click(r, "cancel"); assert.equal(r.document.activeElement, r.el.source);
+  r.window.confirmResult = true; click(r, "cancel");
+  assert.equal(r.selected.index, 1); assert.equal(r.document.activeElement, r.selected.node);
+  assert.ok(!s.state.source.includes("Discard me")); assertNoModelRequests(h.calls);
+});
+
+test("elapsed seconds and counts remain visible but only stage changes write the live announcement", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 100000 });
+  const h = setup(); t.after(() => h.ui.shutdown()); await h.ui.open(h.owner, 1);
+  const r = h.record(), s = r.service;
+  s.emit(parsing([{ start: 1, end: 20, status: "queuing" }], "parsing", 5000));
+  const writes = r.el.announcement.textWrites;
+  assert.equal(r.el.announcement.getAttribute("role"), "status"); assert.equal(r.el.status.getAttribute("role"), null);
+  t.mock.timers.tick(1000); assert.match(r.el.status.textContent, /00:06/u);
+  s.emit(parsing([{ start: 1, end: 20, status: "processing" }], "parsing", 6000));
+  assert.equal(r.el.announcement.textWrites, writes);
+  s.emit({ stage: "review", busy: false, pageCount: 2, source: "Source" });
+  assert.equal(r.el.announcement.textWrites, writes + 1); assert.equal(r.el.announcement.textContent, "请核对识别结果");
+  s.emit({ completed: 1, total: 8 }); assert.equal(r.el.announcement.textWrites, writes + 1);
+  assert.match(r.el.status.textContent, /1 \/ 8/u);
+});
+
+test("translation allows read-only page and full-source navigation while retaining all write and model locks", async t => {
+  const h = setup(), r = await review(h), s = r.service; t.after(() => h.ui.shutdown());
+  s.emit({ stage: "translating", busy: true, approvedHash: "saved", currentID: "s1", draft: "Saved draft" });
+  for (const id of ["edit", "save", "confirm", "continue-pending", "retry-segment", "save-draft", "concurrency", "source", "draft"]) assert.equal(r.el[id].disabled, true, id);
+  for (const id of ["next", "reload", "full", "jump", "go", "original"]) assert.equal(r.el[id].disabled, false, id);
+  click(r, "next"); await tick(); assert.equal(r.page, 2); assert.equal(r.el.rendered.textContent, "# OCR page 2");
+  click(r, "full"); assert.equal(r.mode, "full"); assert.equal(r.el.rendered.textContent, s.state.source);
+  click(r, "preview"); assert.equal(r.mode, "page");
+  r.el.jump.value = "1"; key(r.el.jump, "Enter"); await tick(); assert.equal(r.page, 1);
+  r.el.original.checked = true; r.el.original.dispatchEvent({ type: "change" }); await tick();
+  assert.ok(h.calls.includes("preview:1:true"));
+  for (const id of ["edit", "confirm", "retry-segment", "save-draft"]) click(r, id);
+  await tick(); assert.equal(r.mode, "page"); assert.equal(s.state.draft, "Saved draft"); assertNoModelRequests(h.calls);
+  assert.ok(!h.calls.includes("pause:1")); assert.equal(s.state.busy, true);
+});
+
+test("busy reading defers preview-image networking and rejects pre-translation image completions", async t => {
+  const h = setup(), r = await review(h), images = imageHarness(h, [remoteImage]); t.after(() => h.ui.shutdown());
+  click(r, "preview"); await tick(); const old = images.requests[0];
+  r.service.emit({ stage: "translating", busy: true, approvedHash: "saved" });
+  assert.equal(old.options.isCurrent(), false); old.gate.resolve(localImage); await tick();
+  assert.equal(images.commits.length, 0);
+  click(r, "full"); assert.equal(r.mode, "full"); await tick();
+  assert.equal(images.requests.length, 1); assert.match(r.el["image-status"].textContent, /翻译期间暂不下载/u);
+  assert.equal(r.el["retry-images"].disabled, true); click(r, "retry-images"); await tick(); assert.equal(images.requests.length, 1);
+  assertNoModelRequests(h.calls); assert.ok(!h.calls.includes("pause:1"));
+});
+
+test("late PDF previews are rejected on pause, close, source revision and exporting-stage transitions", async t => {
+  for (const change of ["pause", "close", "source", "export"]) {
+    const h = setup(), r = await review(h), gate = deferred(); t.after(() => h.ui.shutdown());
+    r.service.preview = () => gate.promise; click(r, "reload");
+    assert.equal(r.previewPending, true);
+    if (change === "pause") await h.ui._pause(r);
+    if (change === "close") { r.window.close(); await tick(); }
+    if (change === "source") r.service.emit({ source: "Changed source", documentRevision: "new-revision" });
+    if (change === "export") r.service.emit({ stage: "exporting", busy: true });
+    const current = r.el.rendered.textContent;
+    gate.resolve({ dataURI: localImage, page: 1, pageCount: 2 }); await tick();
+    assert.equal(r.el.image.getAttribute("src"), null, change);
+    if (change !== "close") assert.equal(r.previewPending, false, change);
+    else assert.equal(r.closed, true);
+    assert.equal(r.el.rendered.textContent, current, change);
+    assertNoModelRequests(h.calls);
+  }
+});
+
+test("superseding a busy local preview cancels only preview work, not translation, and ignores the old result", async t => {
+  const h = setup(), r = await review(h), s = r.service; t.after(() => h.ui.shutdown());
+  s.emit({ stage: "translating", busy: true, approvedHash: "saved" });
+  const first = deferred(), second = deferred(); let requests = 0;
+  // The real service supersedes its own preview worker, independently of translate().
+  s.preview = () => { s.cancelPreview(); return ++requests === 1 ? first.promise : second.promise; };
+  const cancellations = s.previewCancellations || 0;
+  click(r, "reload"); click(r, "reload");
+  assert.equal(requests, 2); assert.ok(s.previewCancellations > cancellations);
+  assert.ok(!h.calls.includes("pause:1")); assert.equal(s.state.busy, true);
+  second.resolve({ dataURI: "data:image/png;base64,Yg==", page: 1, pageCount: 2 }); await tick();
+  first.resolve({ dataURI: localImage, page: 1, pageCount: 2 }); await tick();
+  assert.equal(r.el.image.getAttribute("src"), "data:image/png;base64,Yg==");
+  assertNoModelRequests(h.calls);
+});
+
+test("native PDF mode radios restore both checked states on dirty or busy refusal and ignore closed views", async t => {
+  const h = setup(), r = await review(h), s = r.service; t.after(() => h.ui.shutdown());
+  for (const value of ["layout", "original"]) {
+    assert.equal(r.el[value].tag, "input"); assert.equal(r.el[value].type, "radio");
+    assert.equal(r.el[value].name, "spt-fulltext-pdf-mode"); assert.equal(r.el[value].value, value);
+    assert.equal(r.el[`${value}-label`].getAttribute("for"), r.el[value].id);
+  }
+  assert.equal(r.el["pdf-modes"].getAttribute("aria-labelledby"), "spt-fulltext-pdf-mode-label");
+  const selected = value => { assert.equal(r.pdfMode, value); assert.equal(r.el.layout.checked, value === "layout"); assert.equal(r.el.original.checked, value === "original"); };
+  const select = value => { r.el[value].checked = true; r.el[value].dispatchEvent({ type: "change" }); };
+  selected("layout"); select("original"); await tick();
+  selected("original"); assert.ok(h.calls.includes("preview:1:true"));
+  click(r, "edit"); edit(r, "source", "Unsaved source"); r.window.confirmResult = false;
+  const before = h.calls.slice(); select("layout"); await tick();
+  selected("original"); assert.equal(r.mode, "edit");
+  assert.equal(r.el.source.value, "Unsaved source"); assert.equal(r.dirty, true); assert.deepEqual(h.calls, before);
+  r.window.confirmResult = true; select("layout"); await tick();
+  selected("layout"); assert.equal(r.mode, "page"); assert.equal(r.dirty, false);
+  assert.ok(h.calls.includes("preview:1:false"));
+  s.emit({ stage: "exporting", busy: true }); assert.equal(r.el.original.disabled, true); assert.equal(r.el.layout.disabled, true);
+  const blocked = h.calls.slice(); select("original"); await tick();
+  selected("layout"); assert.deepEqual(h.calls, blocked);
+  await h.ui.closeForWindow(h.owner);
+  const closed = h.calls.slice(); select("original"); await tick(); assert.deepEqual(h.calls, closed);
+  assert.equal(r.el.layout.listenerCount, 0); assert.equal(r.el.original.listenerCount, 0);
+  assertNoModelRequests(h.calls);
+});
+
+test("PDF mode radios preserve page, suppress redundant changes and reject superseded preview images", async t => {
+  const h = setup(), r = await review(h), s = r.service; t.after(() => h.ui.shutdown());
+  click(r, "next"); await tick(); assert.equal(r.page, 2);
+  const first = deferred(), second = deferred();
+  s.preview = (page, original) => { assert.equal(page, 2); return original ? first.promise : second.promise; };
+  r.el.original.checked = true; r.el.original.dispatchEvent({ type: "change" });
+  r.el.layout.checked = true; r.el.layout.dispatchEvent({ type: "change" });
+  second.resolve({ dataURI: "data:image/png;base64,Yg==", page: 2, pageCount: 2 }); await tick();
+  first.resolve({ dataURI: "data:image/png;base64,YQ==", page: 2, pageCount: 2 }); await tick();
+  assert.equal(r.pdfMode, "layout"); assert.equal(r.page, 2); assert.equal(r.el.image.getAttribute("src"), "data:image/png;base64,Yg==");
+  let requests = 0; s.preview = async () => { requests++; throw new Error("unexpected preview"); };
+  r.el.layout.dispatchEvent({ type: "change" }); r.el.original.dispatchEvent({ type: "change" }); await tick();
+  assert.equal(requests, 0); assert.equal(r.el.layout.checked, true); assert.equal(r.el.original.checked, false);
+  assertNoModelRequests(h.calls);
+});
+
+test("repair and source views are exclusive; locating exact source and switching back retain unsaved repair text", async t => {
+  const h = setup(), r = await review(h), s = r.service; t.after(() => h.ui.shutdown());
+  s.repairSummaries = [{ id: "s1", excerpt: "Second page paragraph", page: 2, endPage: 2 }];
+  s.emit({ stage: "paused", approvedHash: "saved", currentID: "s1", draft: "Saved repair", currentSource: "Second page paragraph",
+    repairSegments: [{ id: "s1", error: "failed" }] });
+  assert.equal(visible(r.el.repair), true); assert.equal(visible(r.el.rendered), false);
+  assert.equal(r.showRepair, true); assert.equal(visible(r.el["repair-toggle"]), true);
+  r.el["repair-advanced"].open = true; edit(r, "draft", "Unsaved repair");
+  click(r, "repair-toggle");
+  assert.equal(visible(r.el.repair), false); assert.equal(visible(r.el.rendered), true);
+  assert.equal(r.draftDirty, true); assert.equal(r.el.draft.value, "Unsaved repair");
+  s.emit({ completed: 1 }); assert.equal(visible(r.el.repair), false, "progress does not reopen recovery");
+  click(r, "repair-toggle"); assert.equal(visible(r.el.repair), true); assert.equal(visible(r.el.rendered), false);
+  click(r, "locate-segment"); await tick();
+  assert.equal(r.page, 2); assert.equal(r.el.rendered.textContent, "# OCR page 2");
+  assert.equal(visible(r.el.repair), false); assert.equal(visible(r.el.rendered), true);
+  click(r, "repair-toggle");
+  assert.equal(visible(r.el.repair), true); assert.equal(visible(r.el.rendered), false);
+  assert.equal(r.el.draft.value, "Unsaved repair"); assert.equal(r.draftDirty, true);
+  assert.equal(r.window.confirmations.length, 0); assertNoModelRequests(h.calls);
+  assert.ok(!h.calls.some(call => call.startsWith("draft:")));
 });
 
 test("fixed XHTML has no scripts or remote resources; implementation never injects HTML", () => {

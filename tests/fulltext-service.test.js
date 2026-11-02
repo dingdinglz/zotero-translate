@@ -86,6 +86,196 @@ function withPageMap(x, pages = ["# Page one", "Second $x$"]) {
   return x;
 }
 
+async function repairPages(pages) {
+  const x = setup({ markdown: Markdown });
+  x.service.convert = async () => { x.files.set("source.md", "Independent OCR source."); return { pageCount: pages.length }; };
+  withPageMap(x, pages); await prepared(x);
+  const segments = x.service.plan.segments.filter(segment => segment.translatable);
+  // Persist in reverse order to ensure callers receive plan order, not dictionary order.
+  for (const segment of segments.slice().reverse()) {
+    x.service.state.pendingSegments[segment.id] = { draft: "PRIVATE DRAFT", error: "PRIVATE ERROR" };
+  }
+  await x.service.save();
+  return { ...x, segments };
+}
+
+test("repair summaries locate duplicate paragraphs in exact plan order across protected and blank blocks", async () => {
+  const x = await repairPages(["Same paragraph.\n\n```text\nProtected\n```", "Same paragraph."]);
+  const expected = x.segments.map((segment, index) => ({ id: segment.id, excerpt: "Same paragraph.", page: index + 1, endPage: index + 1 }));
+  assert.deepEqual(x.service.getRepairSummaries(), expected);
+  const loaded = new FulltextService({ ...x.args, sourceHash: x.service.sourceHash }); await loaded.load();
+  assert.deepEqual(loaded.getRepairSummaries(), expected);
+  assert.deepEqual(loaded.snapshot().repairSegments, x.segments.map(segment => ({ id: segment.id, error: "PRIVATE ERROR" })));
+});
+
+test("repair summary ranges include true cross-page blocks and exclude trailing separators", async () => {
+  const x = await repairPages(["<table><tr><td>Across", "pages</td></tr></table>\n\nLast paragraph.", "Next page."]);
+  assert.deepEqual(x.service.getRepairSummaries().map(({ page, endPage }) => [page, endPage]), [[1, 2], [2, 2], [3, 3]]);
+  assert.equal(x.service.getRepairSummaries()[0].excerpt, "<table><tr><td>Across pages</td></tr></table>");
+});
+
+test("repair locations account for exact two-LF separators, empty pages and page-owned trailing whitespace", async () => {
+  const x = await repairPages(["", "One.\n", "", "Two.\n\n", ""]);
+  assert.deepEqual(x.service.getRepairSummaries().map(({ excerpt, page, endPage }) => ({ excerpt, page, endPage })), [
+    { excerpt: "One.", page: 2, endPage: 2 }, { excerpt: "Two.", page: 4, endPage: 4 }
+  ]);
+  const cross = await repairPages(["<table><tr><td>Before", "", "After</td></tr></table>"]);
+  assert.deepEqual(cross.service.getRepairSummaries().map(({ page, endPage }) => [page, endPage]), [[1, 3]]);
+});
+
+test("repair summaries only expose current pending translatable unfinished segments as isolated read-only objects", async () => {
+  const x = await repairPages(["First.\n\nSecond.\n\n```text\nCode\n```", "Third."]);
+  const [first, second, third] = x.segments;
+  x.service.state.translations[first.id] = "Completed.";
+  delete x.service.state.pendingSegments[second.id];
+  x.service.state.pendingSegments.orphan = { draft: "ORPHAN DRAFT", error: "orphan" };
+  const protectedSegment = x.service.plan.segments.find(segment => !segment.translatable);
+  x.service.state.pendingSegments[protectedSegment.id] = { draft: "PROTECTED DRAFT", error: "protected" };
+  const before = JSON.stringify({ state: x.service.state, plan: x.service.plan, source: x.service.source, pages: x.service.documentPages });
+  const files = [...x.files], calls = x.calls.slice();
+  const forbidden = () => assert.fail("summary lookup must not read/write storage, hash, verify, emit, or request anything");
+  for (const name of ["readJSON", "writeJSON", "readText", "writeText"]) x.service.storage[name] = forbidden;
+  for (const name of ["hash", "verifySource", "getConfig", "convert", "complete", "createPDF", "importPDF", "exportMarkdown", "emit"]) x.service[name] = forbidden;
+  const firstRead = x.service.getRepairSummaries();
+  assert.deepEqual(firstRead, [{ id: third.id, excerpt: "Third.", page: 2, endPage: 2 }]);
+  firstRead[0].excerpt = "changed"; firstRead[0].page = 99; firstRead.push({ id: "extra" });
+  const secondRead = x.service.getRepairSummaries();
+  assert.deepEqual(secondRead, [{ id: third.id, excerpt: "Third.", page: 2, endPage: 2 }]);
+  assert.notEqual(firstRead[0], secondRead[0]);
+  assert.doesNotMatch(JSON.stringify(secondRead), /DRAFT|ERROR|draft|error/u);
+  assert.equal(JSON.stringify({ state: x.service.state, plan: x.service.plan, source: x.service.source, pages: x.service.documentPages }), before);
+  assert.deepEqual([...x.files], files); assert.deepEqual(x.calls, calls); assert.equal(x.imports(), 0);
+});
+
+test("repair excerpts normalize a bounded Unicode prefix and never exceed 80 code points or split surrogates", () => {
+  for (const [source, expected] of [
+    ["  Alpha\t\u3000Beta\n Gamma  ", "Alpha Beta Gamma"],
+    ["😀".repeat(80), "😀".repeat(80)],
+    ["😀".repeat(81), "😀".repeat(79) + "…"],
+    ["中".repeat(100000), "中".repeat(79) + "…"],
+    [" ".repeat(100000) + "Hidden tail", "…"],
+    ["e\u0301".repeat(41), ("e\u0301".repeat(40)).slice(0, 79) + "…"]
+  ]) {
+    const x = setup();
+    x.service.plan = { segments: [{ id: "one", source, translatable: true }] };
+    x.service.state.pendingSegments.one = { draft: "not source", error: "" };
+    const original = String.prototype.codePointAt; let scanned = 0, summaries;
+    try {
+      String.prototype.codePointAt = function (...args) { scanned++; return original.apply(this, args); };
+      summaries = x.service.getRepairSummaries();
+    } finally { String.prototype.codePointAt = original; }
+    assert.ok(scanned <= 160, `scanned ${scanned} code points`);
+    assert.equal(summaries[0].excerpt, expected);
+    assert.ok(Array.from(summaries[0].excerpt).length <= 80);
+    assert.doesNotMatch(summaries[0].excerpt, /[\uD800-\uDFFF]/u);
+    assert.equal(summaries[0].page, null); assert.equal(summaries[0].endPage, null);
+  }
+});
+
+test("repair locations fail closed for changed, invalid or unverified bindings while excerpts remain available", async () => {
+  for (const mutate of [
+    service => { service.documentError = "corrupt"; },
+    service => { service.state.documentSourceHash = "b".repeat(64); },
+    service => { service.state.translationProtocol = 1; },
+    service => { service.state.approvedHash = "invalid"; service.state.documentSourceHash = "invalid"; },
+    service => { service.state.approvedHash = "b".repeat(64); service.state.documentSourceHash = "b".repeat(64); },
+    service => { service.approvedSourceBinding = null; },
+    service => { service.source += "changed"; },
+    service => { service.documentPages = ["First.", "Incorrect."]; },
+    service => { service.documentPages = ["First.", null]; },
+    service => { service.state.pageCount = 3; },
+    service => { service.plan.segments.at(-1).source += "changed"; },
+    service => { service.plan.segments.push({ id: "bad", source: null }); },
+    service => { service.plan.segments.pop(); },
+    service => { service.documentPages = null; } // The valid independent pageMap is never used.
+  ]) {
+    const x = await repairPages(["First.", "Second."]); mutate(x.service);
+    const summaries = x.service.getRepairSummaries();
+    assert.ok(summaries.length > 0);
+    assert.ok(summaries.every(summary => summary.excerpt && summary.page === null && summary.endPage === null));
+  }
+});
+
+test("reloaded changed, legacy and corrupt unified documents preserve excerpts without invented page locations", async () => {
+  for (const kind of ["changed", "legacy", "corrupt"]) {
+    const x = await repairPages(["First.", "Second."]);
+    if (kind === "changed") await x.service.editBlock({ page: 1, index: 0, revision: x.service.state.documentFile, text: "Edited source." });
+    else if (kind === "legacy") {
+      delete x.service.state.documentFile; delete x.service.state.documentSourceHash; await x.service.save();
+    } else x.files.set(x.service.state.documentFile, "{}");
+    const files = [...x.files];
+    const loaded = new FulltextService({ ...x.args, sourceHash: x.service.sourceHash }); await loaded.load();
+    assert.deepEqual(loaded.getRepairSummaries(), x.segments.map(segment => ({ id: segment.id, excerpt: segment.source.trim(), page: null, endPage: null })), kind);
+    assert.deepEqual([...x.files], files);
+  }
+});
+
+test("no-plan, legacy protocol and corrupt approved records do not expose stale draft summaries", async () => {
+  const fresh = setup(); fresh.service.state.pendingSegments.orphan = { draft: "stale", error: "failure" };
+  assert.deepEqual(fresh.service.getRepairSummaries(), []);
+  for (const kind of ["protocol", "approved"]) {
+    const x = await repairPages(["First.", "Second."]);
+    if (kind === "protocol") { x.service.state.translationProtocol = 1; await x.service.save(); }
+    else x.files.set(`approved-${x.service.state.approvedHash}.md`, "corrupt");
+    const loaded = new FulltextService({ ...x.args, sourceHash: x.service.sourceHash });
+    if (kind === "approved") await assert.rejects(loaded.load(), /检查点/u);
+    else await loaded.load();
+    assert.deepEqual(loaded.getRepairSummaries(), []);
+  }
+});
+
+test("cancelPreview rejects a late preview without cancelling active model work or changing checkpoints", async () => {
+  const model = controlledCompletions(), image = deferred(); let cancelled = 0;
+  const x = setup({ complete: model.complete, preview: options => {
+    const unregister = options.registerCancel(() => { cancelled++; });
+    return image.promise.finally(unregister);
+  } });
+  await preparedParagraphs(x, 1);
+  const translation = x.service.translate({ consent: true });
+  await until(() => model.requests.length === 1, "active translation");
+  const preview = x.service.preview(1), rejected = assert.rejects(preview, /预览已取消/u);
+  const before = { state: JSON.stringify(x.service.state), files: [...x.files], serial: x.service.serial,
+    cancelled: x.service.cancelled, operation: x.service.operation, previewSerial: x.service.previewSerial };
+  assert.equal(x.service.cancelPreview(), undefined);
+  assert.equal(cancelled, 1); assert.equal(model.requests[0].cancelled, 0);
+  assert.equal(x.service.previewSerial, before.previewSerial + 1);
+  assert.equal(x.service.serial, before.serial); assert.equal(x.service.cancelled, before.cancelled);
+  assert.equal(x.service.operation, before.operation); assert.equal(JSON.stringify(x.service.state), before.state);
+  assert.deepEqual([...x.files], before.files);
+  image.resolve({ page: 1, image: "late" }); await rejected;
+  assert.equal(x.service.previews.size, 0); assert.equal(x.service.previewCancellers.size, 0);
+  model.requests[0].succeed(); await until(() => model.requests.length === 2, "review after preview cancellation");
+  model.requests[1].succeed(); await translation;
+  assert.equal(x.service.snapshot().completed, 1);
+  assert.ok(model.requests.every(request => request.cancelled === 0));
+});
+
+test("preview cancellation safely copies callbacks; replacing previews and pausing reuse it and pause awaits cleanup", async () => {
+  const x = setup(), called = [];
+  const second = () => called.push("second");
+  x.service.previewCancellers.add(() => { called.push("first"); x.service.previewCancellers.delete(second); throw new Error("cancel failed"); });
+  x.service.previewCancellers.add(second);
+  x.service.cancellers.add(() => assert.fail("preview cancellation must not cancel model work"));
+  x.service.cancelPreview(); assert.deepEqual(called, ["first", "second"]);
+  x.service.previewCancellers.clear(); x.service.cancellers.clear();
+  const images = [], cancelled = [];
+  x.service.previewPage = options => {
+    const image = deferred(), index = images.length; images.push(image);
+    const unregister = options.registerCancel(() => cancelled.push(index));
+    return image.promise.finally(unregister);
+  };
+  let invocations = 0; const cancelPreview = x.service.cancelPreview.bind(x.service);
+  x.service.cancelPreview = () => { invocations++; cancelPreview(); };
+  const first = x.service.preview(1), firstRejected = assert.rejects(first, /预览已取消/u);
+  const next = x.service.preview(2), nextRejected = assert.rejects(next, /预览已取消/u);
+  assert.deepEqual(cancelled, [0]);
+  let paused = false; const pausing = x.service.pause().then(() => { paused = true; });
+  assert.equal(invocations, 3); assert.deepEqual(cancelled, [0, 0, 1]);
+  images[0].resolve({ page: 1 }); await firstRejected; await flushJobs(); assert.equal(paused, false);
+  images[1].resolve({ page: 2 }); await nextRejected; await pausing;
+  assert.equal(paused, true); assert.equal(x.service.previews.size, 0);
+});
+
 test("both passes accept Chinese formula word order and prompts require whole-paragraph proofreading", async () => {
   const requests = [], response = [{ id: "t0", text: "。" }, { id: "t1", text: "的采样遵循多尺度分块协议。" }];
   const x = setup({ markdown: Markdown, complete: async options => { requests.push(options); return encode(response); } });

@@ -27,6 +27,13 @@
     'Example input: {"source":[{"id":"t0","text":"First finding."}],"context":[{"protected":"structure"},{"id":"t0"},{"protected":"newline"}]}. ' +
     'Example output: {"translations":[{"id":"t0","text":"第一项发现。"}]}';
   function copy(value) { return JSON.parse(JSON.stringify(value)); }
+  function repairExcerpt(source) {
+    // Never normalize or enumerate a whole paragraph just to show a short label.
+    let end = 0, scanned = 0;
+    while (end < source.length && scanned++ < 160) end += source.codePointAt(end) > 0xffff ? 2 : 1;
+    const points = Array.from(source.slice(0, end).replace(/\s+/gu, " ").trim());
+    return points.length > 80 || end < source.length ? points.slice(0, 79).join("").trimEnd() + "…" : points.join("");
+  }
   function publicConfig(config) {
     if (config.provider !== "deepseek") throw new Error("全文翻译需在翻译服务设置中选择 DeepSeek，未发送任何内容。");
     if (!config.endpoint || !config.model) throw new Error("请先配置 DeepSeek 地址和模型。");
@@ -60,7 +67,7 @@
       this.listeners = new Set(); this.cancellers = new Set(); this.serial = 0; this.operation = null;
       this.cancelled = false; this.previewSerial = 0; this.previewCancellers = new Set(); this.previews = new Set();
       this.source = ""; this.plan = null; this.translated = ""; this.pageMap = null; this.pagePreviewError = "";
-      this.documentPages = null; this.documentError = "";
+      this.documentPages = null; this.documentError = ""; this.approvedSourceBinding = null;
       this.parseProgress = null; this.parseStartedAt = null; this.parseNotifyTimer = null;
       this.translationJobs = new Map(); this.translationDraining = false; this.translationNotifyTimer = null;
       this.checkpointQueue = Promise.resolve();
@@ -156,11 +163,12 @@
         if (!saved.pendingSegments || typeof saved.pendingSegments !== "object" || Array.isArray(saved.pendingSegments)) {
           throw new Error("分段草稿记录无效，未覆盖已有数据。");
         }
-        this.state = saved; this.plan = null; this.translated = "";
+        this.state = saved; this.plan = null; this.translated = ""; this.approvedSourceBinding = null;
         this.documentPages = null; this.documentError = "";
         this.source = await this.storage.readText(saved.approvedHash ? `approved-${saved.approvedHash}.md` : "source.md") || "";
         if (saved.approvedHash) {
           if (await this.hash(this.source) !== saved.approvedHash) throw new Error("已确认 Markdown 与检查点不一致，请重新确认原文。");
+          this.approvedSourceBinding = { source: this.source, hash: saved.approvedHash };
           this.plan = this.markdown.createPlan(this.source);
           for (const key of Object.keys(saved.translations)) {
             const segment = this.plan.segments.find(s => s.id === key && s.translatable);
@@ -350,11 +358,11 @@
       this.operation = operation; this.emit(); return operation;
     }
     async pause() {
-      ++this.serial; ++this.previewSerial; this.cancelled = true;
+      ++this.serial; this.cancelled = true; this.cancelPreview();
       global.clearTimeout(this.parseNotifyTimer); this.parseNotifyTimer = null;
       global.clearTimeout(this.translationNotifyTimer); this.translationNotifyTimer = null;
       const operation = this.operation;
-      for (const cancel of [...this.cancellers, ...this.previewCancellers]) { try { cancel(); } catch (_) {} }
+      for (const cancel of [...this.cancellers]) { try { cancel(); } catch (_) {} }
       await Promise.allSettled([operation, ...this.previews]);
     }
     async shutdown() { await this.pause(); this.listeners.clear(); }
@@ -426,6 +434,7 @@
             this.check(serial);
             await this.storage.writeJSON("state.json", copy(nextState)); this.check(serial);
             this.source = document ? document.source : source; this.plan = null; this.translated = "";
+            this.approvedSourceBinding = null;
             this.pageMap = pageMap; this.pagePreviewError = ""; this.documentPages = document?.pages || null; this.documentError = "";
             this.state = nextState; this.parseProgress.phase = "complete";
           } catch (error) {
@@ -462,7 +471,7 @@
         const next = { ...this.state, translationProtocol: TRANSLATION_PROTOCOL, approvedHash, signature, config, stage: "ready", error: "" };
         if (!same) Object.assign(next, { translations: {}, pendingSegments: {}, currentID: "", draft: "", chineseAttachmentID: null, importIntent: false });
         await this.commitState(next, serial, () => {
-          this.source = source; this.plan = plan;
+          this.source = source; this.plan = plan; this.approvedSourceBinding = { source, hash: approvedHash };
           if (!same) this.translated = "";
         });
         return this.snapshot();
@@ -477,6 +486,63 @@
         next.pendingSegments[id] = { draft: text, error: next.pendingSegments[id]?.error || "" };
         this.repairSelection(next); await this.commitState(next, serial, () => {});
       });
+    }
+    getRepairSummaries() {
+      const segments = this.plan?.segments;
+      if (!Array.isArray(segments)) return [];
+      const pending = this.state.pendingSegments || {}, translations = this.state.translations || {};
+      const summaries = [];
+      let offset = 0;
+      let located = !this.documentError && !this.sourceChanged() && this.state.translationProtocol === TRANSLATION_PROTOCOL &&
+        /^[a-f0-9]{64}$/u.test(this.state.approvedHash || "") &&
+        this.approvedSourceBinding?.hash === this.state.approvedHash && this.approvedSourceBinding.source === this.source &&
+        this.state.documentSourceHash === this.state.approvedHash &&
+        this.completePages(this.documentPages, this.state.pageCount);
+      const spans = [];
+      if (located) {
+        for (const [index, page] of this.documentPages.entries()) {
+          if (!this.source.startsWith(page, offset)) located = false;
+          spans.push({ start: offset, end: offset + page.length });
+          offset += page.length;
+          if (index < this.documentPages.length - 1) {
+            if (this.source.slice(offset, offset + 2) !== "\n\n") located = false;
+            offset += 2;
+          }
+        }
+        if (offset !== this.source.length) located = false;
+      }
+      const pageAt = position => {
+        let low = 0, high = spans.length;
+        while (low < high) {
+          const middle = (low + high) >>> 1;
+          if (spans[middle].end <= position) low = middle + 1;
+          else high = middle;
+        }
+        return low < spans.length && spans[low].start <= position ? low + 1 : null;
+      };
+      offset = 0;
+      for (const segment of segments) {
+        if (!segment || typeof segment.source !== "string") { located = false; continue; }
+        if (located && !this.source.startsWith(segment.source, offset)) located = false;
+        if (segment.translatable && Object.hasOwn(pending, segment.id) && !Object.hasOwn(translations, segment.id)) {
+          const summary = { id: segment.id, excerpt: repairExcerpt(segment.source), page: null, endPage: null };
+          if (located) {
+            let start = 0, end = segment.source.length;
+            while (start < end && /\s/u.test(segment.source[start])) start++;
+            while (end > start && /\s/u.test(segment.source[end - 1])) end--;
+            if (end > start) {
+              summary.page = pageAt(offset + start); summary.endPage = pageAt(offset + end - 1);
+              if (summary.page === null || summary.endPage === null) summary.page = summary.endPage = null;
+            }
+          }
+          summaries.push(summary);
+        }
+        // Protected blocks and blanks count too; repeated paragraphs are never searched by text.
+        offset += segment.source.length;
+      }
+      // A mismatch anywhere invalidates every location, including already visited segments.
+      if (!located || offset !== this.source.length) for (const summary of summaries) summary.page = summary.endPage = null;
+      return summaries;
     }
     getRepairContext(id) {
       if (this.operation) throw new Error("请先暂停，再查看修正参照。");
@@ -632,9 +698,13 @@
         await this.save(); return id;
       });
     }
+    cancelPreview() {
+      ++this.previewSerial;
+      for (const cancel of [...this.previewCancellers]) { try { cancel(); } catch (_) {} }
+    }
     async preview(page, original = false) {
-      const serial = ++this.previewSerial;
-      for (const cancel of this.previewCancellers) { try { cancel(); } catch (_) {} }
+      this.cancelPreview();
+      const serial = this.previewSerial;
       const task = this.previewPage({ page, original, isCurrent: () => serial === this.previewSerial,
         registerCancel: cancel => {
           if (serial !== this.previewSerial) { cancel(); return () => {}; }

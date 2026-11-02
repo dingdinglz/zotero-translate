@@ -174,13 +174,20 @@
         const n = node("button", id, text); n.type = "button";
         listen(n, "click", () => { if (this._current(r) && !n.disabled) fn(); }, r.cleanups); return n;
       };
-      const header = node("header");
-      header.append(node("h1", "title", "论文全文翻译"), node("p", "status", "正在加载本地任务…"));
-      e.status.setAttribute("role", "status");
+      const header = node("header", "header");
+      const heading = node("div", "heading");
+      heading.append(node("h1", "title", "论文全文翻译"), node("p", "status", "正在加载本地任务…"));
+      const announcement = node("span", "announcement");
+      announcement.setAttribute("class", "spt-visually-hidden"); announcement.setAttribute("role", "status");
+      const steps = node("ol", "steps"); steps.setAttribute("aria-label", "全文翻译流程");
+      for (const [index, text] of ["解析 PDF", "核对原文", "翻译与校对", "中文附件"].entries()) {
+        steps.append(node("li", `step-${index}`, text));
+      }
+      header.append(heading, steps, announcement);
       const translation = node("div", "translation-panel"), translationHead = node("div", "translation-head");
       const translationTitle = node("div", "translation-title");
       translationTitle.append(node("strong", null, "翻译进度"), node("span", "translation-percent"), node("span", "translation-count"));
-      const concurrencyLabel = node("label", "concurrency-label", "并发数 ");
+      const concurrencyLabel = node("label", "concurrency-label", "并行段落 ");
       concurrencyLabel.setAttribute("for", "spt-fulltext-concurrency");
       const concurrency = node("select", "concurrency");
       for (let value = 1; value <= 8; value++) {
@@ -195,11 +202,27 @@
       translationHead.append(translationTitle, concurrencyLabel);
       const meter = node("progress", "translation-meter");
       meter.setAttribute("aria-label", "已通过校对、结构校验并保存的段落进度");
-      translation.append(translationHead, meter, node("p", "translation-detail"), node("p", "translation-note"));
+      const translationDetails = node("details", "translation-details");
+      translationDetails.append(node("summary", null, "查看翻译明细"), node("p", "translation-detail"), node("p", "translation-note"));
+      translation.append(translationHead, meter, translationDetails);
       header.append(translation);
       const upload = node("section", "upload-panel");
+      const taskDetails = node("details", "task-details");
+      taskDetails.append(node("summary", null, "任务详情与选项"));
       const uploadbar = node("div", "uploadbar");
-      uploadbar.append(node("p", "destination"), button("parse", "上传 PDF 并解析", () => this._parse(r)));
+      uploadbar.append(node("p", "destination"), button("reparse", "重新上传并解析…", () => this._parse(r)));
+      const notice = node("p", "notice", "打开不上传 PDF、不调用模型；原文预览及 PDF 生成会自动补齐并缓存远程图片（仅公网 HTTP/HTTPS）。翻译共用 DeepSeek 配置。中文 PDF 重新排版且批注独立，原 PDF 保留。关闭会暂停；已提交的远端解析可能继续。");
+      const splitLabel = node("label", "split-label", "双栏布局 · PDF 宽度 ");
+      splitLabel.setAttribute("for", "spt-fulltext-split");
+      const split = node("input", "split"); split.type = "range"; split.min = "35"; split.max = "65"; split.value = "50";
+      splitLabel.append(split, node("output", "split-value", "50%"));
+      listen(split, "input", () => {
+        if (!this._current(r)) return;
+        const value = Math.min(65, Math.max(35, Number(split.value) || 50));
+        e.columns.style?.setProperty("--pdf-share", `${value}%`);
+        e["split-value"].textContent = `${value}%`;
+      }, r.cleanups);
+      taskDetails.append(uploadbar, splitLabel, notice);
       const progress = node("details", "parse-progress"), summary = node("summary", "parse-summary");
       progress.open = true; progress.hidden = true;
       summary.append(node("span", "parse-heading", "PDF 解析进度"), node("span", "parse-toggle", "收起"));
@@ -211,28 +234,76 @@
       }, r.cleanups);
       r.progressRows = [];
       r.cleanups.push(() => { global.clearTimeout(r.progressTimer); r.progressTimer = null; r.progressRows = []; });
-      upload.append(uploadbar, progress);
+      upload.append(progress); header.append(taskDetails);
       const columns = node("main", "columns"), left = node("section", "pdf"), right = node("section", "markdown");
+      const paneSwitch = node("div", "pane-switch"); paneSwitch.setAttribute("role", "group"); paneSwitch.setAttribute("aria-label", "阅读面板");
+      paneSwitch.append(button("pane-pdf", "PDF 预览", () => this._pane(r, "pdf")),
+        button("pane-markdown", "识别原文", () => this._pane(r, "markdown")));
+      e["pane-pdf"].setAttribute("aria-controls", left.id); e["pane-markdown"].setAttribute("aria-controls", right.id);
+      r.pane = "markdown";
+      const narrow = r.window.matchMedia?.("(max-width: 820px)");
+      if (narrow) {
+        const resize = () => {
+          const active = doc.activeElement;
+          if (narrow.matches && left.contains(active)) r.pane = "pdf";
+          else if (narrow.matches && right.contains(active)) r.pane = "markdown";
+          r.narrow = narrow.matches; this._pane(r, r.pane);
+        };
+        listen(narrow, "change", resize, r.cleanups); r.narrow = narrow.matches;
+      }
       const pdfbar = node("div", "pdfbar");
-      e.original = node("input", "original"); e.original.type = "checkbox";
-      const label = node("label", null, "原始 PDF"); label.prepend?.(e.original);
-      if (!e.original.parentNode) label.append(e.original);
-      listen(e.original, "change", () => {
-        if (!this._current(r) || this._active(r) || !this._discard(r)) { e.original.checked = !e.original.checked; return; }
-        r.page = 1; r.mode = "page"; void this._preview(r);
-      }, r.cleanups);
-      pdfbar.append(label, button("previous", "上一页", () => this._navigate(r, r.page - 1)),
-        node("span", "page", "尚无预览"), button("next", "下一页", () => this._navigate(r, r.page + 1)),
-        button("reload", "加载预览", () => { if (this._discard(r)) { r.mode = "page"; void this._preview(r); } }));
+      const pdfModes = node("div", "pdf-modes");
+      pdfModes.setAttribute("role", "group"); pdfModes.setAttribute("aria-labelledby", "spt-fulltext-pdf-mode-label");
+      pdfModes.append(node("span", "pdf-mode-label", "预览"));
+      r.pdfMode = "layout";
+      const restoreMode = () => {
+        e.layout.checked = r.pdfMode === "layout"; e.original.checked = r.pdfMode === "original";
+      };
+      for (const [value, text] of [["layout", "版面分析"], ["original", "原始 PDF"]]) {
+        const input = node("input", value); input.type = "radio"; input.name = "spt-fulltext-pdf-mode"; input.value = value;
+        const label = node("label", `${value}-label`); label.setAttribute("for", input.id);
+        label.setAttribute("class", "spt-fulltext-pdf-mode-option"); label.append(input, node("span", null, text)); pdfModes.append(label);
+        listen(input, "change", () => {
+          if (!input.checked) return;
+          if (!this._current(r) || !this._canRead(r) || value === r.pdfMode || !this._discard(r)) { restoreMode(); return; }
+          r.pdfMode = value; restoreMode(); r.mode = "page"; void this._preview(r);
+        }, r.cleanups);
+      }
+      restoreMode();
+      const jumpLabel = node("label", "jump-label", "页码 "); jumpLabel.setAttribute("for", "spt-fulltext-jump");
+      const jump = node("input", "jump"); jump.type = "number"; jump.min = "1"; jump.step = "1"; jump.value = "1";
+      jump.setAttribute("aria-describedby", "spt-fulltext-page spt-fulltext-jump-error"); jumpLabel.append(jump);
+      const go = () => {
+        if (!this._current(r) || !this._canRead(r)) return;
+        const value = Number(jump.value);
+        if (!Number.isSafeInteger(value) || value < 1 || value > r.pages) {
+          e["jump-error"].textContent = `请输入 1–${r.pages || 1} 之间的整数页码。`; jump.setAttribute("aria-invalid", "true"); return;
+        }
+        e["jump-error"].textContent = ""; jump.removeAttribute("aria-invalid"); this._navigate(r, value);
+      };
+      listen(jump, "keydown", event => { if (event.key === "Enter") { event.preventDefault(); go(); } }, r.cleanups);
+      pdfbar.append(button("previous", "上一页", () => this._navigate(r, r.page - 1)), jumpLabel,
+        node("span", "page", "尚无预览"), button("next", "下一页", () => this._navigate(r, r.page + 1)), button("go", "跳转", go));
+      const pdfOptions = node("div", "pdf-options");
+      pdfOptions.append(pdfModes, button("reload", "加载预览", () => { if (this._discard(r)) { r.mode = "page"; void this._preview(r); } }));
       const imagebox = node("div", "imagebox");
       imagebox.append(node("img", "image")); e.image.alt = "当前 PDF 页的本地预览"; e.image.hidden = true;
-      left.append(pdfbar, node("p", "preview-error"), imagebox);
+      const jumpError = node("p", "jump-error"); jumpError.setAttribute("role", "status");
+      const empty = node("div", "empty-preview");
+      empty.append(node("h2", null, "先解析，再核对"), node("p", null, "解析 PDF 后，在这里逐页检查版面；右侧查看并修正识别原文。"),
+        node("p", null, "上传和模型翻译分别确认，原始 PDF 与批注保留。"));
+      imagebox.append(empty);
+      left.append(node("h2", null, "PDF 预览"), pdfbar, pdfOptions, jumpError, node("p", "preview-error"), imagebox);
       const mdbar = node("div", "mdbar");
-      mdbar.append(node("h2", "md-title", "Markdown"), button("edit", "编辑一段", () => this._edit(r)),
-        button("full", "预览全文", () => this._mode(r, "full")),
+      mdbar.append(node("h2", "md-title", "识别原文"), button("edit", "编辑选中块", () => this._edit(r)),
+        button("full", "查看全文原文", () => this._mode(r, "full")),
         button("preview", "返回当前页", () => this._mode(r, "page")),
         button("save", "保存编辑", () => this._save(r)),
-        button("cancel", "取消编辑", () => this._mode(r, "page")));
+        button("cancel", "取消编辑", () => this._mode(r, "page")),
+        button("repair-toggle", "处理待完成段落", () => {
+          if (!this._current(r) || this._active(r) || r.mode === "edit") return;
+          r.showRepair = !r.showRepair; this._controls(r);
+        }));
       e.source = node("textarea", "source"); e.source.setAttribute("aria-label", "选中块的 Markdown 源码"); e.source.spellcheck = false;
       listen(e.source, "input", () => {
         if (r.mode !== "edit" || this._active(r)) return;
@@ -244,7 +315,8 @@
       const images = node("div", "image-statusbar");
       images.append(node("span", "image-status"), button("retry-images", "重试图片", () => this._render(r)));
       e["image-status"].setAttribute("role", "status"); e["retry-images"].hidden = true;
-      right.append(mdbar, node("p", "md-note"), mdStatus, images, e.source, e.rendered);
+      const blockHelp = node("p", "block-help", "点击选择原文块；聚焦正文后用上下方向键切换，Enter 选择。可拖选复制文字。");
+      right.append(mdbar, node("p", "md-note"), mdStatus, images, e.source, e.rendered, blockHelp);
       columns.append(left, right);
       e.error = node("p", "error"); e.error.setAttribute("role", "alert");
       const repair = node("section", "repair");
@@ -260,7 +332,7 @@
       }, r.cleanups);
       const repairActions = node("div", "repair-actions");
       repairActions.append(button("retry-segment", "重新翻译此段", () => this._retrySegment(r)),
-        button("continue-pending", "继续未完成段落", () => this._translate(r)));
+        button("locate-segment", "定位原文页", () => this._locateRepair(r)));
       const advanced = node("details", "repair-advanced"); advanced.open = false;
       advanced.append(node("summary", null, "高级：手动修正草稿（可选）"),
         node("p", null, "编号、换行、公式、代码和链接由插件保留。仅修改 JSON 中的 text，保留所有片段 id 及顺序；无需复制格式标记。"),
@@ -273,33 +345,72 @@
         node("p", "repair-feedback"));
       e["repair-feedback"].setAttribute("role", "status");
       listen(advanced, "toggle", () => { if (this._current(r)) this._repairReference(r); }, r.cleanups);
-      repair.append(node("h2", null, "待处理段落"), repairLabel, node("p", "repair-error"), node("pre", "current"), repairActions,
-        node("p", null, "可直接从本段原文重新翻译，不需要先手动修正；已完成段落不会重译。"), advanced);
+      const currentDetails = node("details", "repair-source"); currentDetails.open = true;
+      currentDetails.append(node("summary", null, "此段原文"), node("pre", "current"));
+      const technical = node("details", "error-details"); technical.append(node("summary", null, "错误详情"), e.error);
+      repair.append(repairLabel, node("p", "repair-excerpt"), node("p", "repair-error"), node("p", "repair-location"), repairActions,
+        node("p", null, "已完成段落不会重译。可直接重译此段，或在底部继续全部未完成段落。"), currentDetails, advanced);
+      right.append(repair);
       e.draft.setAttribute("aria-label", "当前段高级修正 JSON 草稿，仅修改 text 并保留片段 id");
       listen(e.draft, "input", () => { r.draftDirty = true; e["repair-feedback"].textContent = ""; this._controls(r); }, r.cleanups);
-      const footer = node("footer");
-      footer.append(button("confirm", "确认并开始翻译 / 重试", () => this._translate(r)),
+      const footer = node("footer", "footer"), actions = node("div", "main-actions"), more = node("details", "output-more");
+      more.append(node("summary", null, "更多操作"),
+        button("en", "查看原始 PDF", () => this._action(r, () => this.runtime.openVersion(r.attachmentID, "en"))),
+        button("regenerate", "重新生成中文 PDF…", () => this._finish(r)));
+      actions.append(button("parse", "上传 PDF 并解析", () => this._parse(r)),
+        button("confirm", "确认并开始翻译", () => this._translate(r)),
+        button("continue-pending", "继续未完成段落", () => this._translate(r)),
         button("pause", "暂停并保存进度", () => this._pause(r)),
         button("finish", "生成并保存中文 PDF", () => this._finish(r)),
-        button("zh", "查看中文 PDF", () => this._action(r, () => this.runtime.openVersion(r.attachmentID, "zh"))),
-        button("en", "查看英文 PDF", () => this._action(r, () => this.runtime.openVersion(r.attachmentID, "en"))),
-        button("export", "导出中文 Markdown", () => this._export(r)));
+        button("zh", "打开中文 PDF", () => this._action(r, () => this.runtime.openVersion(r.attachmentID, "zh"))),
+        button("export", "导出中文 Markdown", () => this._export(r)), more);
       const outputStatus = node("p", "output-status"); outputStatus.setAttribute("role", "status");
-      doc.body.replaceChildren(header, upload, columns, e.error, repair, footer, outputStatus,
-        node("p", "notice", "打开不上传 PDF、不调用模型；原文预览及 PDF 生成会自动补齐并缓存远程图片（仅公网 HTTP/HTTPS）。翻译共用 DeepSeek 配置。中文 PDF 重新排版且批注独立，原 PDF 保留。关闭会暂停；已提交的远端解析可能继续。"));
+      const guidance = node("div", "guidance"); guidance.append(node("p", "action-hint"), outputStatus, technical);
+      footer.append(guidance, actions);
+      for (const id of ["parse", "confirm", "continue-pending", "pause", "finish", "zh"]) {
+        e[id].setAttribute("class", "spt-primary"); e[id].setAttribute("aria-describedby", "spt-fulltext-action-hint");
+      }
+      doc.body.replaceChildren(header, upload, paneSwitch, columns, footer);
       listen(r.window, "focus", () => this._controls(r), r.cleanups);
       this._controls(r);
     }
     _active(r) { return Boolean(r.pending || r.stopping || r.state.busy); }
+    _canRead(r) {
+      return !r.stopping && (!this._active(r) || (r.state.busy && r.state.stage === "translating" && r.mode !== "edit" && !r.dirty));
+    }
+    _pane(r, pane) {
+      if (!this._current(r) || !r.el) return;
+      r.pane = pane === "pdf" ? "pdf" : "markdown";
+      r.el.columns.setAttribute("data-pane", r.pane);
+      r.el.pdf.hidden = Boolean(r.narrow && r.pane !== "pdf");
+      r.el.markdown.hidden = Boolean(r.narrow && r.pane !== "markdown");
+      r.el["pane-switch"].hidden = !r.narrow;
+      for (const name of ["pdf", "markdown"]) r.el[`pane-${name}`].setAttribute("aria-pressed", String(r.pane === name));
+    }
+    _locateRepair(r) {
+      if (!this._current(r) || !this._canRead(r)) return;
+      const item = r.service.getRepairSummaries?.().find(item => item.id === r.state.currentID);
+      if (!item?.page) return;
+      r.showRepair = false; this._pane(r, "markdown"); this._navigate(r, item.page);
+    }
     _changed(r, config) {
       const old = r.state.config;
       return Boolean(r.state.protocolChanged || r.state.sourceChanged || (old && configKey(old) !== configKey(config)));
     }
     _state(r, state) {
       const sourceChanged = r.state.source !== state.source || r.state.documentRevision !== state.documentRevision;
+      const wasReadable = this._canRead(r);
       if (sourceChanged || (!r.state.busy && state.busy)) this._cancelImages(r);
       if (r.state.currentID !== state.currentID) r.el["repair-feedback"].textContent = "";
+      if (r.state.busy && !state.busy && state.currentID) r.restoreRepair = true;
       r.state = state;
+      if ((wasReadable && !this._canRead(r)) || (sourceChanged && r.previewPending)) {
+        ++r.previewSerial; r.service.cancelPreview?.();
+        if (r.previewPending) {
+          r.previewPending = false; r.previewInvalid = true;
+          r.el["preview-error"].textContent = "预览已暂停，任务结束或暂停后可重新加载。";
+        }
+      }
       if (r.mode === "edit" && r.editing?.revision !== state.documentRevision) {
         r.el["md-status"].textContent = "原文版本已改变，未保存草稿已保留；请复制需要的修改，取消后重新选择当前块。";
       }
@@ -310,7 +421,7 @@
       if (!r.localError) r.el.error.textContent = safeError(state.error || "");
       r.pages = r.pages || state.pageCount || 0;
       this._controls(r);
-      if (sourceChanged && r.mode !== "edit" && !this._active(r)) this._render(r);
+      if (sourceChanged && r.mode !== "edit" && this._canRead(r)) this._render(r);
     }
     _translationProgress(r) {
       const s = r.state, e = r.el, p = s.translationProgress || {};
@@ -333,18 +444,27 @@
         : completed === total ? "全部译文已通过并保存；PDF 生成和附件保存状态另行显示。"
         : "仅已通过并保存的段落计入进度；暂停后可调整并发数，重试不重复已完成段落。";
       const repairs = s.repairSegments || (s.currentID ? [{ id: s.currentID, error: s.error || "" }] : []);
-      const key = JSON.stringify(repairs.map(item => [item.id, Boolean(item.error)]));
+      const key = JSON.stringify([s.approvedHash, s.documentRevision, s.sourceChanged, s.protocolChanged, s.documentError,
+        repairs.map(item => [item.id, Boolean(item.error)])]);
       if (key !== r.repairOptionsKey) {
+        r.repairSummaries = new Map((r.service.getRepairSummaries?.() || []).map(item => [item.id, item]));
         e["repair-select"].replaceChildren();
         for (const item of repairs) {
+          const description = r.repairSummaries.get(item.id);
           const option = r.document.createElementNS("http://www.w3.org/1999/xhtml", "option");
-          option.value = item.id; option.textContent = `${item.id} · ${item.error ? "失败" : "未完成草稿"}`;
+          option.value = item.id; option.textContent = `${description?.excerpt || item.id} · ${item.error ? "失败" : "未完成草稿"}`;
           e["repair-select"].append(option);
         }
         r.repairOptionsKey = key;
       }
       e["repair-select"].value = s.currentID || "";
-      e["repair-label"].hidden = repairs.length < 2;
+      e["repair-label"].hidden = !repairs.length;
+      const location = r.repairSummaries?.get(s.currentID);
+      e["repair-excerpt"].textContent = location?.excerpt || "";
+      e["repair-location"].textContent = s.currentID ? `${s.currentID} · ${location?.page
+        ? `原文第 ${location.page}${location.endPage > location.page ? `–${location.endPage}` : ""} 页`
+        : "没有可靠页码映射，可展开查看此段原文"}` : "";
+      e["locate-segment"].hidden = !location?.page;
       const error = safeError(repairs.find(item => item.id === s.currentID)?.error || "");
       e["repair-technical-error"].textContent = error;
       e["repair-error"].textContent = /正文片段|正文单元|translations|格式骨架|保护内容/u.test(error)
@@ -382,6 +502,9 @@
       } else {
         r.el.status.textContent = `${stages[s.stage] || "本地任务"}${s.total > 0 ? ` · ${s.completed || 0} / ${s.total} 段` : ""}`;
       }
+      const announcement = (s.stage === "parsing" || (p && s.stage === "paused" && !s.approvedHash))
+        ? parsePhases[p?.phase] || "正在准备 PDF" : stages[s.stage] || "本地任务";
+      if (r.el.announcement.textContent !== announcement) r.el.announcement.textContent = announcement;
       if (p) r.el["parse-heading"].textContent = `PDF 解析进度 · ${countText}${p.pageCount ? ` · 共 ${p.pageCount} 页` : ""} · 已耗时 ${elapsed}`;
       if (parsing && !r.progressTimer) {
         r.progressTimer = global.setTimeout(() => {
@@ -447,7 +570,7 @@
     }
     _controls(r) {
       if (!r.el || !this._current(r)) return;
-      const e = r.el, s = r.state, busy = this._active(r), ready = Boolean(r.service);
+      const e = r.el, s = r.state, busy = this._active(r), ready = Boolean(r.service), readable = this._canRead(r);
       let config, changed = Boolean(s.sourceChanged);
       try { config = this.runtime.config(); changed = this._changed(r, config); e.destination.textContent = `解析会上传完整 PDF 至：${address(config.oxrBaseURL)}`; }
       catch (error) { changed = true; e.destination.textContent = safeError(error); }
@@ -456,11 +579,18 @@
       e.confirm.disabled = !ready || busy || !s.pageCount || !s.source?.trim() || r.dirty || r.mode === "edit" || Boolean(s.documentError) || (Boolean(s.translated) && !changed);
       e.source.readOnly = e.source.disabled = !ready || busy;
       e.pause.disabled = !ready || r.stopping || !busy;
-      e.finish.textContent = s.chineseAttachmentID ? "重新生成中文 PDF" : "生成并保存中文 PDF";
       e.finish.disabled = !ready || busy || !s.translated || Boolean(s.importIntent) || changed || r.dirty || r.draftDirty || r.mode === "edit" || Boolean(s.documentError);
       e.export.disabled = !ready || busy || !s.translated || changed || r.dirty || r.mode === "edit" || Boolean(s.documentError);
       e.zh.disabled = e.en.disabled = !ready || busy || !s.chineseAttachmentID;
-      e.repair.hidden = !s.currentID || busy;
+      if (s.currentID && !busy && (r.lastRepairID !== s.currentID || r.restoreRepair)) r.showRepair = true;
+      if (!s.currentID) r.showRepair = false;
+      if (!busy) { r.lastRepairID = s.currentID; r.restoreRepair = false; }
+      const repairing = Boolean(s.currentID && !busy && r.showRepair && r.mode !== "edit");
+      e.repair.hidden = !repairing;
+      e["repair-toggle"].hidden = !s.currentID || busy || r.mode === "edit";
+      e["repair-toggle"].textContent = repairing ? "返回识别原文" : "处理待完成段落";
+      e["repair-toggle"].setAttribute("aria-expanded", String(repairing));
+      e["repair-toggle"].setAttribute("aria-controls", e.repair.id);
       e.concurrency.disabled = !ready || busy;
       e.concurrency.value = String(s.concurrency || 5);
       e["repair-select"].disabled = busy || !ready;
@@ -469,37 +599,88 @@
       e["continue-pending"].disabled = e.confirm.disabled;
       e["discard-draft"].disabled = !ready || busy || !r.draftDirty;
       e.draft.readOnly = e.draft.disabled = busy; e["save-draft"].disabled = busy || !ready || !s.currentID || !r.draftDirty;
-      e.original.disabled = e.reload.disabled = !ready || busy;
-      e.previous.disabled = !ready || busy || r.page <= 1;
-      e.next.disabled = !ready || busy || r.page >= r.pages;
-      e.preview.disabled = e.full.disabled = !ready || busy || !s.pageCount;
+      e.layout.disabled = e.original.disabled = e.reload.disabled = !ready || !readable;
+      e.previous.disabled = !ready || !readable || r.page <= 1;
+      e.next.disabled = !ready || !readable || r.page >= r.pages;
+      e.jump.disabled = e.go.disabled = !ready || !readable || !r.pages;
+      e.jump.max = String(r.pages || 1);
+      if (r.document.activeElement !== e.jump) e.jump.value = String(r.page);
+      e.preview.disabled = e.full.disabled = !ready || !readable || !s.pageCount;
       const blocked = Boolean(s.documentError || (!s.editingReady && s.canEnableEditing === false) || (s.importIntent && !s.chineseAttachmentID));
       e.edit.disabled = !ready || busy || blocked || r.mode !== "page" || r.previewPending || r.previewInvalid || !r.selected ||
         r.selected.revision !== s.documentRevision;
       e.save.disabled = !ready || busy || blocked || r.mode !== "edit" || !r.dirty || r.editing?.revision !== s.documentRevision;
       e.cancel.disabled = !ready || busy;
       e.save.hidden = e.cancel.hidden = r.mode !== "edit";
-      e.edit.hidden = r.mode !== "page";
-      e.source.hidden = r.mode !== "edit"; e.rendered.hidden = r.mode === "edit";
+      e.edit.hidden = r.mode !== "page" || repairing;
+      e.source.hidden = r.mode !== "edit"; e.rendered.hidden = r.mode === "edit" || repairing;
+      for (const id of ["md-note", "md-status", "image-statusbar"]) e[id].hidden = repairing;
       e["retry-images"].disabled = !ready || busy || r.mode === "edit" || r.previewPending;
-      e["md-title"].textContent = r.mode === "full" ? "Markdown · 全文原文预览" :
-        r.mode === "edit" ? `Markdown · 第 ${r.page} 页单块编辑` : `Markdown · 第 ${r.page} 页`;
+      e["md-title"].textContent = repairing ? "待处理段落" : r.mode === "full" ? "识别原文 · 全文" :
+        r.mode === "edit" ? `编辑原文 · 第 ${r.page} 页` : `识别原文 · 第 ${r.page} 页`;
       e["md-note"].textContent = s.documentError ? safeError(s.documentError) : r.mode === "edit"
         ? "仅编辑选中块；保存进入待译稿，不会发送模型请求。修改后须重新确认翻译。"
-        : s.editingReady ? "统一逐页原文稿（含已保存编辑），排版可能与 OXR 全文不同。当前页可点击或用键盘选择一块，再点“编辑一段”；全文仅供预览。"
+        : s.editingReady ? (busy ? "翻译期间可只读浏览原文，编辑暂不可用；预览图片下载暂缓。" : "含已保存修改；这里是识别原文，不是中文译文。")
         : !s.pageCount ? "上传并解析后可核对原文、选择单块编辑或预览全文。"
         : s.canEnableEditing === false ? "逐页识别信息不完整，无法启用编辑；请明确确认后重新上传并解析。现有旧稿和译文仍保留。"
         : "旧任务：当前页是独立识别预览，全文显示旧原文稿。编辑前需确认迁移：替换旧手改稿、保留备份，并重新确认翻译。";
       e.page.textContent = r.pages ? `第 ${r.page} / ${r.pages} 页` : "尚无预览";
-      for (const entry of r.blockNodes) entry.node.setAttribute("aria-disabled", String(busy || blocked));
-      this._repairReference(r);
+      e["block-help"].hidden = repairing || r.mode !== "page" || !r.blockNodes.length;
+      e["empty-preview"].hidden = !e.image.hidden || r.previewPending;
+      e["empty-preview"].children[0].textContent = s.pageCount ? "逐页核对原文" : "先解析，再核对";
+      e["empty-preview"].children[1].textContent = s.pageCount ? "点击“加载预览”，查看当前页的 PDF 与识别原文。" : "解析 PDF 后，在这里逐页检查版面，并修正识别原文。";
+      e["error-details"].hidden = !e.error.textContent;
+      e["locate-segment"].disabled = !readable || !s.currentID;
+      e.reparse.disabled = e.parse.disabled; e.reparse.hidden = !s.pageCount;
+      e.regenerate.disabled = e.finish.disabled;
+      const output = Boolean(s.translated && !changed), resume = Boolean(s.approvedHash && !changed);
+      e.parse.hidden = Boolean(s.pageCount) || busy;
+      e.confirm.hidden = busy || !s.pageCount || output || resume;
+      e.confirm.textContent = changed ? "重新确认并翻译" : "确认并开始翻译";
+      e["continue-pending"].hidden = busy || !s.pageCount || output || !resume;
+      e.pause.hidden = !busy; e.pause.textContent = r.stopping ? "正在暂停并保存…" : "暂停并保存进度";
+      e.finish.hidden = busy || !output || Boolean(s.chineseAttachmentID);
+      e.finish.textContent = s.error ? "重试生成中文 PDF" : "生成并保存中文 PDF";
+      e.zh.hidden = busy || !s.chineseAttachmentID || !output;
+      e.export.hidden = busy || !output;
+      e["output-more"].hidden = busy || !s.chineseAttachmentID;
+      e.full.hidden = repairing || r.mode === "full" || r.mode === "edit";
+      e.preview.hidden = repairing || r.mode === "page";
+      if (r.selected && !r.previewPending && r.mode === "page" && !repairing && r.editing?.revision === undefined) {
+        const selectionText = `${r.renderWarning || ""}已选第 ${r.blockNodes.indexOf(r.selected) + 1} 块${busy ? " · 只读浏览" : "，可编辑选中块"}。`;
+        if (e["md-status"].textContent !== selectionText) e["md-status"].textContent = selectionText;
+      }
+      const hint = s.importIntent ? "附件导入结果尚未确认。请先检查文库，暂不重复导入或重置任务。"
+        : r.stopping ? "正在取消请求并保存已确认进度，请稍候。"
+        : r.mode === "edit" ? (r.dirty ? "原文尚未保存。请先保存或取消编辑，再继续翻译。" : "正在编辑原文。保存修改或取消编辑后，可继续翻译。")
+        : r.draftDirty ? "高级草稿修正尚未保存。可保存草稿；直接重译或继续会先确认是否丢弃修改。"
+        : s.documentError ? "原文记录不可用，请在识别原文区域查看原因；未发送新的翻译请求。"
+        : s.stage === "exporting" && busy ? "正在准备图片、生成 PDF 并保存附件；已完成的译文会保留。"
+        : busy ? (s.translationProgress?.draining ? "某段失败，已停止派发；正在收尾并保存已发出的段落。也可立即暂停。"
+          : s.stage === "translating" ? "翻译与校对进行中，可只读浏览原文。全部通过后自动生成中文附件。" : "任务进行中。可暂停；已提交的远端解析任务可能继续。")
+        : changed ? "原文或翻译配置已改变。重新确认会重置旧译文进度，已有附件保留。"
+        : output && s.chineseAttachmentID ? "中文附件已保存。可打开阅读；重新生成不会重译，也不会删除旧附件。"
+        : output ? "译文已保存；PDF 尚未保存。可生成 PDF，或先导出中文 Markdown。"
+        : s.currentID ? "部分段落尚未通过。已完成译文保留，可重译选中段或继续未完成段落。"
+        : resume ? "已保存的进度会保留；继续时仅处理未完成段落。"
+        : s.pageCount ? "核对识别原文后开始翻译。翻译与独立校对会产生模型费用。"
+        : "先上传 PDF 并解析；上传前会确认服务地址，尚未调用翻译模型。";
+      e["action-hint"].textContent = r.localError && e.error.textContent ? `本次操作未完成，请展开错误详情。${hint}` : hint;
+      e.edit.title = busy ? "运行时不可编辑原文" : !r.selected ? "先加载当前页并选择一个原文块" : "编辑选中块的 Markdown 源码";
+      const step = !s.pageCount || s.stage === "parsing" ? 0 : changed || !s.approvedHash ? 1 : output || s.stage === "exporting" ? 3 : 2;
+      for (let index = 0; index < 4; index++) {
+        const item = e[`step-${index}`];
+        item.setAttribute("data-state", index < step || (index === 3 && s.chineseAttachmentID && !changed) ? "done" : index === step ? "current" : "waiting");
+        if (index === step) item.setAttribute("aria-current", "step"); else item.removeAttribute("aria-current");
+      }
+      this._pane(r, r.pane); this._repairReference(r);
     }
-    _error(r, error) { if (this._current(r)) { r.localError = true; r.el.error.textContent = safeError(error); } }
+    _error(r, error) { if (this._current(r)) { r.localError = true; r.el.error.textContent = safeError(error); this._controls(r); } }
     _action(r, fn, after) {
       if (!this._current(r) || !r.service || this._active(r)) return Promise.resolve(false);
       const id = ++r.opSerial, doc = r.document;
       this._cancelImages(r);
-      ++r.previewSerial;
+      ++r.previewSerial; r.service.cancelPreview?.();
       if (r.previewPending) { r.previewPending = false; r.previewInvalid = true; }
       r.pending = true; r.localError = false; r.el.error.textContent = ""; r.el["output-status"].textContent = ""; this._controls(r);
       const valid = () => this._current(r) && r.document === doc && id === r.opSerial;
@@ -594,11 +775,11 @@
         if (config.provider !== "deepseek") throw new Error("请在现有翻译服务设置中选择 DeepSeek，未发送任何内容。");
         const changed = this._changed(r, config);
         const plan = modules.FulltextMarkdown.createPlan?.(source);
-        const references = plan ? `\n已识别并保留 ${plan.referenceCount} 条参考文献。若遗漏，请先将参考文献节标题改为 ## References 再确认。` : "";
+        const references = plan ? `\n\n原文检查：已识别并保留 ${plan.referenceCount} 条参考文献。若遗漏，请先将参考文献节标题改为 ## References 再确认。` : "";
         if (r.state.translated && !changed) return;
         const reset = r.state.protocolChanged ? "\n翻译协议已更新：旧译文和草稿不再续用，确认后会全部重新翻译；原 PDF、解析原稿和已有附件不删除。"
           : r.state.approvedHash && changed ? "\n原文或配置已改变，确认会重置旧检查点及译文。" : "\n未改变的原文与配置会保留已有检查点。";
-        if (!r.window.confirm(`确认 Markdown 并向 DeepSeek 发送正文？\n地址：${address(config.endpoint)}\n模型：${String(config.model || "未配置")}\n并发：${concurrency} 段；某段失败后停止派发，已发出的段落收尾保存后暂停。\n新翻译的段落会产生翻译和独立校对请求；格式失败可能重试并产生费用。有效已保存草稿继续校对，无效草稿会从原文重译。全部通过后自动生成并保存独立中文 PDF 附件；生成前通过受控图片后端和任务缓存自动下载原文中缺失的图片，失败则停止输出。${references}${reset}${discardDraft ? "\n当前未保存修正将丢弃；本次只使用有效的已保存草稿。" : ""}`)) return;
+        if (!r.window.confirm(`确认识别原文并向 DeepSeek 发送正文？\n\n地址：${address(config.endpoint)}\n模型：${String(config.model || "未配置")}\n并发：${concurrency} 段；某段失败后停止派发，已发出的段落收尾保存后暂停。\n\n费用：新翻译的段落会产生翻译和独立校对请求；格式失败可能重试并产生费用。\n恢复：有效已保存草稿继续校对，无效草稿会从原文重译。\n\n完成后：全部通过后自动生成并保存独立中文 PDF 附件；生成前通过受控图片后端和任务缓存自动下载原文中缺失的图片，失败则停止输出。${references}${reset}${discardDraft ? "\n当前未保存修正将丢弃；本次只使用有效的已保存草稿。" : ""}`)) return;
         if (!valid()) return;
         const unchanged = () => {
           if (configKey(this.runtime.config()) !== configKey(config) || r.state.source !== source || (r.state.concurrency || 5) !== concurrency) {
@@ -625,17 +806,20 @@
       finally { if (this._current(r)) { r.pending = false; r.stopping = false; this._state(r, r.service.snapshot()); } }
     }
     _discard(r) {
-      if (!this._current(r) || this._active(r)) return false;
+      if (!this._current(r) || !this._canRead(r)) return false;
       if (r.dirty && !r.window.confirm("丢弃尚未保存的单块编辑？已保存的原文稿不变。")) return false;
       r.dirty = false; r.editing = null; return true;
     }
     _navigate(r, page) {
-      if (!Number.isSafeInteger(page) || page < 1 || page > r.pages || !this._discard(r)) return;
+      if (!this._current(r) || !this._canRead(r) || !Number.isSafeInteger(page) || page < 1 || page > r.pages || !this._discard(r)) return;
+      r.el["jump-error"].textContent = ""; r.el.jump.removeAttribute("aria-invalid"); r.el.jump.value = String(page);
       r.page = page; r.mode = "page"; void this._preview(r);
     }
     _mode(r, mode) {
+      if (!this._current(r) || !this._canRead(r)) return;
+      const index = r.mode === "edit" ? r.editing?.index : null;
       if (!this._discard(r)) return;
-      r.mode = mode; this._render(r);
+      r.mode = mode; r.restoreBlockFocus = index; this._render(r);
     }
     _clearBlocks(r) {
       ++r.renderSerial;
@@ -643,21 +827,32 @@
       r.blockNodes = []; r.selected = null;
     }
     _select(r, entry) {
-      if (!this._current(r) || this._active(r) || r.mode !== "page" || r.previewPending || r.previewInvalid ||
+      if (!this._current(r) || !this._canRead(r) || r.mode !== "page" || r.previewPending || r.previewInvalid ||
           entry.serial !== r.renderSerial || entry.revision !== r.state.documentRevision) return;
       r.selected = entry;
-      for (const item of r.blockNodes) item.node.setAttribute("aria-pressed", String(item === entry));
-      r.el["md-status"].textContent = `${r.renderWarning || ""}已选第 ${r.blockNodes.indexOf(entry) + 1} 块（${entry.kind}），点击“编辑一段”修改。`;
+      for (const item of r.blockNodes) {
+        item.node.setAttribute("data-selected", String(item === entry));
+        item.node.setAttribute("tabindex", item === entry ? "0" : "-1");
+        if (item === entry) item.node.setAttribute("aria-current", "true"); else item.node.removeAttribute("aria-current");
+      }
+      r.el["md-status"].textContent = `${r.renderWarning || ""}已选第 ${r.blockNodes.indexOf(entry) + 1} 块${this._active(r) ? " · 只读浏览" : "，可编辑选中块"}。`;
       this._controls(r);
     }
     _block(r, node, block) {
       const exact = r.blocks[block.index];
       if (!exact || exact.index !== block.index || exact.start !== block.start || exact.end !== block.end || exact.source !== block.source) return; // Match exact metadata, never visual order or similar text.
       const entry = { ...exact, node, serial: r.renderSerial, revision: r.state.documentRevision, page: r.page };
-      node.setAttribute("class", "spt-fulltext-block"); node.setAttribute("role", "button"); node.setAttribute("tabindex", "0");
-      node.setAttribute("aria-label", `选择第 ${r.blockNodes.length + 1} 块（${block.kind}）`); node.setAttribute("aria-pressed", "false");
+      node.setAttribute("class", "spt-fulltext-block"); node.setAttribute("tabindex", "-1");
+      node.setAttribute("aria-describedby", "spt-fulltext-block-help"); node.setAttribute("data-selected", "false");
       listen(node, "click", () => this._select(r, entry), r.blockCleanups);
       listen(node, "keydown", event => {
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || r.window.getSelection?.()?.isCollapsed === false) return;
+        if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+          if (!this._current(r) || !this._canRead(r) || !r.blockNodes.includes(entry)) return;
+          const index = r.blockNodes.indexOf(entry), last = r.blockNodes.length - 1;
+          const next = event.key === "Home" ? 0 : event.key === "End" ? last : Math.max(0, Math.min(last, index + (event.key === "ArrowDown" ? 1 : -1)));
+          event.preventDefault(); this._select(r, r.blockNodes[next]); r.blockNodes[next].node.focus?.(); return;
+        }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault(); this._select(r, entry);
       }, r.blockCleanups);
@@ -687,7 +882,8 @@
           edit.revision !== r.state.documentRevision || r.state.documentError || (r.state.importIntent && !r.state.chineseAttachmentID)) return Promise.resolve(false);
       const text = r.el.source.value;
       return this._action(r, () => r.service.editBlock({ page: edit.page, index: edit.index, revision: edit.revision, text }), () => {
-        r.dirty = false; r.editing = null; r.mode = "page";
+        r.dirty = false; r.editing = null; r.mode = "page"; r.restoreBlockFocus = edit.index;
+        r.el["output-status"].textContent = "原文已保存，需重新确认翻译；已有附件保留。";
         r.renderedRevision = null; // Refresh even if an identical replacement kept the same revision.
       });
     }
@@ -715,6 +911,10 @@
         r.el["retry-images"].hidden = !failed && !limited;
       };
       return (uri, commit) => {
+        if (this._active(r) && this._canRead(r)) {
+          r.el["image-status"].textContent = "翻译期间暂不下载预览图片；暂停或完成后可点击加载。";
+          r.el["retry-images"].textContent = "加载预览图片"; r.el["retry-images"].hidden = false;
+        }
         if (!valid()) return;
         if (!jobs.has(uri) && jobs.size >= 128) { limited = true; status(); return; }
         r.imagesPending++;
@@ -734,17 +934,20 @@
       };
     }
     async _preview(r) {
-      if (!this._current(r) || !r.service || this._active(r)) return;
+      if (!this._current(r) || !r.service || !this._canRead(r)) return;
       this._cancelImages(r); this._clearBlocks(r);
-      const id = ++r.previewSerial, doc = r.document, requestedPage = r.page;
+      const id = ++r.previewSerial, doc = r.document, requestedPage = r.page,
+        source = r.state.source, revision = r.state.documentRevision;
+      const valid = () => this._current(r) && this._canRead(r) && r.document === doc && id === r.previewSerial &&
+        r.state.source === source && r.state.documentRevision === revision;
       r.previewPending = true; r.previewInvalid = true;
       r.el.image.removeAttribute("src"); r.el.image.hidden = true; r.el["preview-error"].textContent = "正在本地生成预览…";
       r.el.rendered.replaceChildren();
       if (r.el.source.hidden) r.el["md-status"].textContent = "正在加载对应页面…";
       this._controls(r);
       try {
-        const result = await r.service.preview(requestedPage, Boolean(r.el.original.checked));
-        if (!this._current(r) || r.document !== doc || id !== r.previewSerial) return;
+        const result = await r.service.preview(requestedPage, r.pdfMode === "original");
+        if (!valid()) return;
         if (result.page !== requestedPage || !Number.isSafeInteger(result.pageCount) || result.pageCount < requestedPage ||
             (r.state.pageCount && result.pageCount !== r.state.pageCount)) throw new Error("本地预览页码与任务不一致。");
         if (typeof result.dataURI !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/u.test(result.dataURI) || result.dataURI.length > 45 * 1024 * 1024) throw new Error("本地预览图片无效。");
@@ -753,8 +956,9 @@
         r.page = result.page; r.pages = result.pageCount; r.el["preview-error"].textContent = ""; this._controls(r);
         if (r.mode === "page") this._render(r);
       } catch (error) {
-        if (this._current(r) && r.document === doc && id === r.previewSerial) {
+        if (valid()) {
           r.previewPending = false; r.el["preview-error"].textContent = safeError(error);
+          this._controls(r);
           if (r.mode === "page") {
             r.el.rendered.replaceChildren(); r.el["md-status"].textContent = "左侧页面加载失败，未展示可能错位的内容。";
           }
@@ -762,10 +966,10 @@
       }
     }
     _render(r) {
-      if (!this._current(r) || this._active(r) || r.mode === "edit") return;
+      if (!this._current(r) || !this._canRead(r) || r.mode === "edit") return;
       this._cancelImages(r); this._clearBlocks(r);
       r.el.rendered.replaceChildren(); r.el.rendered.scrollTop = 0;
-      r.el["image-status"].textContent = ""; r.el["retry-images"].hidden = true;
+      r.el["image-status"].textContent = ""; r.el["retry-images"].hidden = true; r.el["retry-images"].textContent = "重试图片";
       r.renderedSource = r.state.source; r.renderedRevision = r.state.documentRevision;
       this._controls(r);
       if (!r.state.pageCount) { r.el["md-status"].textContent = "请先确认上传 PDF 并完成解析。"; return; }
@@ -802,7 +1006,12 @@
         r.renderWarning = "无法安全排版，已显示原文文字；可选择块修复。";
         r.el["md-status"].textContent = r.renderWarning; this._error(r, error);
       }
-      if (r.blockNodes.length) this._select(r, r.blockNodes[0]);
+      if (r.blockNodes.length) {
+        const entry = r.blockNodes.find(item => item.index === r.restoreBlockFocus) || r.blockNodes[0];
+        this._select(r, entry);
+        if (r.restoreBlockFocus != null) entry.node.focus?.();
+      }
+      r.restoreBlockFocus = null;
       this._controls(r);
     }
     _close(r) {
