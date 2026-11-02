@@ -8,10 +8,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import selectors
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -441,6 +442,35 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(target.read_text(), "old")
         self.assertFalse(any(p.name.startswith(".spt-") for p in self.output.iterdir()))
 
+    def test_staging_syncs_replaced_file_with_writable_descriptor(self):
+        # Windows _commit (os.fsync) rejects a read-only descriptor. Exercise
+        # the renderer path that closes and replaces the initial staging file;
+        # the final file still needs syncing without truncating its contents.
+        store = self.store()
+        original_open, original_sync = open, os.fsync
+        reopened = []
+
+        def tracked_open(*args, **kwargs):
+            handle = original_open(*args, **kwargs)
+            reopened.append(handle)
+            return handle
+
+        def writable_sync(fd):
+            handle = next((h for h in reopened if not h.closed and h.fileno() == fd), None)
+            self.assertIsNotNone(handle, "Sync must use the replaced staging file")
+            self.assertTrue(handle.writable(), "Windows cannot sync a read-only descriptor")
+            return original_sync(fd)
+
+        with mock.patch("builtins.open", side_effect=tracked_open), \
+                mock.patch.object(worker.os, "fsync", side_effect=writable_sync):
+            with store.staging("layout.pdf") as (handle, temporary):
+                handle.close()
+                replacement = self.root / "replacement.pdf"
+                replacement.write_bytes(b"replacement PDF contents")
+                os.replace(replacement, temporary)
+        self.assertEqual((self.output / "layout.pdf").read_bytes(), b"replacement PDF contents")
+        self.assertFalse(any(p.name.startswith(".spt-") for p in self.output.iterdir()))
+
     def test_source_change_prevents_final_outputs(self):
         with mock.patch.object(worker, "fingerprint", side_effect=["before", "after"]), self.assertRaisesRegex(worker.WorkerError, "source_changed"):
             self.convert_with([Response({"task_id": "one"}), Response(success())])
@@ -462,7 +492,8 @@ def dispatch(*args):
     os.write(1, b"NATIVE SECRET\\n")
     os.write(2, b"SECRET TASK KEY\\n")
     if sys.argv[2] == "signal":
-        os.kill(os.getpid(), signal.SIGTERM)
+        # Windows os.kill(SIGTERM) forcibly terminates without Python handlers.
+        signal.raise_signal(signal.SIGTERM) if os.name == "nt" else os.kill(os.getpid(), signal.SIGTERM)
     raise RuntimeError("SECRET RESPONSE")
 core.dispatch = dispatch
 sys.exit(core.main(["check", "{}"]))
@@ -557,6 +588,35 @@ class ProgressTest(unittest.TestCase):
         self.http.side_effect = responses
         return worker.parse_chunk(self.session, self.chunk, self.request["baseURL"],
                                   self.store, "source-hash", self.frames.append)
+
+    def test_cache_checks_use_full_link_metadata_on_windows(self):
+        # DirEntry.stat reports st_nlink=0 on Windows. Full os.stat must be
+        # used for both committed cache entries and abandoned temporaries.
+        for name in ("a" * 64 + ".json", ".spt-abc123_x"):
+            with self.subTest(name=name):
+                path = self.store.cache / name
+                path.write_bytes(b"{}")
+                entry = mock.Mock(name=name, path=str(path))
+                entry.name = name
+                entry.stat.return_value = mock.Mock(st_mode=path.stat().st_mode, st_nlink=0, st_size=2)
+                with mock.patch.object(worker.os, "scandir", side_effect=lambda _: contextlib.nullcontext(iter([entry]))):
+                    if name.endswith(".json"):
+                        self.assertEqual(self.store.cache_size(), 2)
+                    else:
+                        with mock.patch.object(self.store, "cache_size", return_value=0):
+                            self.store.prepare_cache()
+                        self.assertFalse(path.exists())
+                path.unlink(missing_ok=True)
+
+    def test_cache_full_metadata_still_rejects_hardlinks(self):
+        for name in ("a" * 64 + ".json", ".spt-abc123_x"):
+            with self.subTest(name=name):
+                path = self.store.cache / name
+                os.link(self.source, path)
+                with self.assertRaisesRegex(worker.WorkerError, "invalid_cache"):
+                    self.store.prepare_cache() if name.startswith(".spt-") else self.store.cache_size()
+                self.assertEqual(self.source.read_bytes(), b"%PDF-synthetic")
+                path.unlink()
 
     def fake_pdf(self, count, extract=None):
         self.enter_patch(mock.patch.object(worker, "open_pdf", side_effect=lambda _: contextlib.nullcontext(range(count))))
@@ -1006,10 +1066,13 @@ sys.exit(core.main(["convert", '{"sourcePath":"SECRET","outputDir":"SECRET","bas
                     str(WORKER.with_name("pdf_to_markdown.py")), mode], stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
                 try:
-                    with selectors.DefaultSelector() as selector:
-                        selector.register(process.stdout, selectors.EVENT_READ)
-                        self.assertTrue(selector.select(timeout=10), "Progress buffered until process exit")
-                    first = json.loads(process.stdout.readline())
+                    # Windows select() only supports sockets, not pipe handles.
+                    # A bounded reader also proves flushing on Windows.
+                    lines = queue.Queue()
+                    reader = threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True)
+                    reader.start()
+                    first = json.loads(lines.get(timeout=10))
+                    reader.join(timeout=1)
                     self.assertEqual(first, {"type": "progress", "phase": "planning", "pageCount": 1})
                     output, errors = process.communicate("continue\n", timeout=10)
                     frames = [json.loads(line) for line in output.splitlines()]

@@ -286,7 +286,8 @@ def write_layout_pdf(source_path, output_path, pages, password=None, arrows=True
             fd, temporary = tempfile.mkstemp(prefix=".oxr-layout-", suffix=".pdf", dir=output.parent)
             os.close(fd)
             doc.save(temporary, deflate=True, encryption=pymupdf.PDF_ENCRYPT_KEEP)
-            with open(temporary, "rb") as handle:
+            # Windows _commit requires a writable descriptor; preserve the PDF.
+            with open(temporary, "r+b") as handle:
                 os.fsync(handle.fileno())
             os.replace(temporary, output)
             temporary = None

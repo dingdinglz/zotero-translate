@@ -1502,11 +1502,11 @@ test("Item Pane Fluent messages localize attributes without replacing the sectio
     );
     assert.match(
       source,
-      /^smart-paper-translator-codex-chat-pane-header[ \t]*=[ \t]*$\n[ \t]+\.label[ \t]*=[ \t]*\S/mu
+      /^smart-paper-translator-codex-chat-pane-header[ \t]*=[ \t]*\r?\n[ \t]+\.label[ \t]*=[ \t]*\S/mu
     );
     assert.match(
       source,
-      /^smart-paper-translator-codex-chat-pane-sidenav[ \t]*=[ \t]*$\n[ \t]+\.tooltiptext[ \t]*=[ \t]*\S/mu
+      /^smart-paper-translator-codex-chat-pane-sidenav[ \t]*=[ \t]*\r?\n[ \t]+\.tooltiptext[ \t]*=[ \t]*\S/mu
     );
     assert.doesNotMatch(
       source,

@@ -117,6 +117,8 @@ You can use the Agents sidebar without configuring the translation API.
 
 ## Full-paper translation (test build)
 
+This local 0.1.65 build fixes Windows `worker_failed` after a successful dependency check: preview images and layout PDFs now use writable descriptors for atomic-file synchronization, and cache validation reads full file metadata instead of treating normal Windows cache files as invalid. Keep the existing Python environment and task progress; reopen the full-paper window after upgrading and click **加载预览**. All 70 offline Python tests passed on Windows with Python 3.13.9, PyMuPDF 1.28.2 and requests 2.32.5. Native Zotero and real OXR behavior were not tested.
+
 This adds a separate PDF → Markdown → Chinese PDF workflow, not an Agent chat. **This build's native image output has not been verified.** Prior user-run synthetic printing succeeded, but a generated 0.1.64 PDF was subsequently reported to lack images. Release-specific evidence and remaining native verification gaps are recorded in the technical reference.
 
 1. Select **DeepSeek** in the translation settings and configure its address, model and key. Full-paper translation shares these settings, but has separate translation/proofreading prompts and a fixed Simplified Chinese target.
