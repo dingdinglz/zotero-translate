@@ -6,7 +6,7 @@
   const CONFIG_KEYS = ["provider", "endpoint", "model", "translationPrompt", "reviewPrompt"];
   const configKey = config => JSON.stringify(CONFIG_KEYS.map(key => config[key]));
   let serial = 0;
-  const stages = { new: "尚未上传", parsing: "正在解析 PDF", review: "请核对识别结果", ready: "等待翻译", translating: "逐段翻译与校对", paused: "已暂停", translated: "翻译完成，尚未保存 PDF", exporting: "正在生成并保存 PDF", complete: "中文 PDF 已保存" };
+  const stages = { new: "尚未上传", parsing: "正在解析 PDF", review: "请核对识别结果", ready: "等待翻译", translating: "并发翻译与校对", paused: "已暂停", translated: "翻译完成，尚未保存 PDF", exporting: "正在生成并保存 PDF", complete: "中文 PDF 已保存" };
   const parsePhases = { preparing: "正在准备 PDF", planning: "正在划分 PDF", parsing: "正在解析 PDF",
     assembling: "正在整理解析结果", complete: "解析完成", paused: "解析已暂停", failed: "解析失败" };
   const chunkStates = { pending: "待上传", uploading: "上传中", submitted: "已提交，等待状态", queuing: "排队中",
@@ -177,6 +177,26 @@
       const header = node("header");
       header.append(node("h1", "title", "论文全文翻译"), node("p", "status", "正在加载本地任务…"));
       e.status.setAttribute("role", "status");
+      const translation = node("div", "translation-panel"), translationHead = node("div", "translation-head");
+      const translationTitle = node("div", "translation-title");
+      translationTitle.append(node("strong", null, "翻译进度"), node("span", "translation-percent"), node("span", "translation-count"));
+      const concurrencyLabel = node("label", "concurrency-label", "并发数 ");
+      concurrencyLabel.setAttribute("for", "spt-fulltext-concurrency");
+      const concurrency = node("select", "concurrency");
+      for (let value = 1; value <= 8; value++) {
+        const option = node("option", null, String(value)); option.value = String(value); concurrency.append(option);
+      }
+      concurrency.value = "5"; concurrencyLabel.append(concurrency);
+      listen(concurrency, "change", () => {
+        if (!this._current(r) || this._active(r)) { concurrency.value = String(r.state.concurrency || 5); return; }
+        const value = Number(concurrency.value);
+        void this._action(r, () => r.service.setConcurrency(value));
+      }, r.cleanups);
+      translationHead.append(translationTitle, concurrencyLabel);
+      const meter = node("progress", "translation-meter");
+      meter.setAttribute("aria-label", "已通过校对、结构校验并保存的段落进度");
+      translation.append(translationHead, meter, node("p", "translation-detail"), node("p", "translation-note"));
+      header.append(translation);
       const upload = node("section", "upload-panel");
       const uploadbar = node("div", "uploadbar");
       uploadbar.append(node("p", "destination"), button("parse", "上传 PDF 并解析", () => this._parse(r)));
@@ -228,31 +248,57 @@
       columns.append(left, right);
       e.error = node("p", "error"); e.error.setAttribute("role", "alert");
       const repair = node("section", "repair");
-      repair.append(node("h2", null, "当前段校对未通过"), node("pre", "current"),
-        node("p", null, "可修正下面的 masked draft；占位符的内容、数量与顺序不可改变。保存修正不会自动发送。"),
-        node("textarea", "draft"), button("save-draft", "保存修正", () => this._action(r, () => r.service.setDraft(e.draft.value), () => { r.draftDirty = false; })));
-      e.draft.setAttribute("aria-label", "当前段 masked draft");
-      listen(e.draft, "input", () => { r.draftDirty = true; this._controls(r); }, r.cleanups);
+      const repairLabel = node("label", "repair-label", "待处理段落 ");
+      repairLabel.setAttribute("for", "spt-fulltext-repair-select");
+      repairLabel.append(node("select", "repair-select"));
+      listen(e["repair-select"], "change", () => {
+        const id = e["repair-select"].value;
+        if (!this._current(r) || this._active(r) || (r.draftDirty && !r.window.confirm("切换待处理段落会丢弃当前未保存修正，是否继续？"))) {
+          e["repair-select"].value = r.state.currentID || ""; return;
+        }
+        void this._action(r, () => r.service.selectRepairSegment(id), () => { r.draftDirty = false; });
+      }, r.cleanups);
+      const repairActions = node("div", "repair-actions");
+      repairActions.append(button("retry-segment", "重新翻译此段", () => this._retrySegment(r)),
+        button("continue-pending", "继续未完成段落", () => this._translate(r)));
+      const advanced = node("details", "repair-advanced"); advanced.open = false;
+      advanced.append(node("summary", null, "高级：手动修正草稿（可选）"),
+        node("p", null, "编号、换行、公式、代码和链接由插件保留。仅修改 JSON 中的 text，保留所有片段 id 及顺序；无需复制格式标记。"),
+        node("p", null, "原文片段参照（只读，可复制 JSON 后修改 text）："), node("pre", "protected-source"),
+        node("p", "repair-technical-error"), node("textarea", "draft"),
+        button("save-draft", "保存草稿", () => this._action(r, () => r.service.setDraft(e.draft.value), () => {
+          r.draftDirty = false; e["repair-feedback"].textContent = "草稿已保存，尚未计入完成；点击继续未完成段落后仍需模型校对。";
+        })), button("discard-draft", "放弃未保存修改", () => this._discardDraft(r)),
+        node("p", null, "保存只写入本地，不会自动请求模型，也不代表该段已通过。保存失败也可放弃修改或直接重译。"),
+        node("p", "repair-feedback"));
+      e["repair-feedback"].setAttribute("role", "status");
+      listen(advanced, "toggle", () => { if (this._current(r)) this._repairReference(r); }, r.cleanups);
+      repair.append(node("h2", null, "待处理段落"), repairLabel, node("p", "repair-error"), node("pre", "current"), repairActions,
+        node("p", null, "可直接从本段原文重新翻译，不需要先手动修正；已完成段落不会重译。"), advanced);
+      e.draft.setAttribute("aria-label", "当前段高级修正 JSON 草稿，仅修改 text 并保留片段 id");
+      listen(e.draft, "input", () => { r.draftDirty = true; e["repair-feedback"].textContent = ""; this._controls(r); }, r.cleanups);
       const footer = node("footer");
       footer.append(button("confirm", "确认并开始翻译 / 重试", () => this._translate(r)),
         button("pause", "暂停并保存进度", () => this._pause(r)),
-        button("finish", "生成并保存中文 PDF", () => this._action(r, () => r.service.finish(r.window))),
+        button("finish", "生成并保存中文 PDF", () => this._finish(r)),
         button("zh", "查看中文 PDF", () => this._action(r, () => this.runtime.openVersion(r.attachmentID, "zh"))),
         button("en", "查看英文 PDF", () => this._action(r, () => this.runtime.openVersion(r.attachmentID, "en"))),
-        button("export", "导出中文 Markdown", () => this._action(r, () => r.service.export(r.window))));
-      doc.body.replaceChildren(header, upload, columns, e.error, repair, footer,
-        node("p", "notice", "打开不上传 PDF、不调用模型；原文预览会自动下载并缓存远程图片（仅公网 HTTP/HTTPS）。翻译共用 DeepSeek 配置。中文 PDF 重新排版且批注独立，原 PDF 保留。关闭会暂停；已提交的远端解析可能继续。"));
+        button("export", "导出中文 Markdown", () => this._export(r)));
+      const outputStatus = node("p", "output-status"); outputStatus.setAttribute("role", "status");
+      doc.body.replaceChildren(header, upload, columns, e.error, repair, footer, outputStatus,
+        node("p", "notice", "打开不上传 PDF、不调用模型；原文预览及 PDF 生成会自动补齐并缓存远程图片（仅公网 HTTP/HTTPS）。翻译共用 DeepSeek 配置。中文 PDF 重新排版且批注独立，原 PDF 保留。关闭会暂停；已提交的远端解析可能继续。"));
       listen(r.window, "focus", () => this._controls(r), r.cleanups);
       this._controls(r);
     }
     _active(r) { return Boolean(r.pending || r.stopping || r.state.busy); }
     _changed(r, config) {
       const old = r.state.config;
-      return Boolean(r.state.sourceChanged || (old && configKey(old) !== configKey(config)));
+      return Boolean(r.state.protocolChanged || r.state.sourceChanged || (old && configKey(old) !== configKey(config)));
     }
     _state(r, state) {
       const sourceChanged = r.state.source !== state.source || r.state.documentRevision !== state.documentRevision;
       if (sourceChanged || (!r.state.busy && state.busy)) this._cancelImages(r);
+      if (r.state.currentID !== state.currentID) r.el["repair-feedback"].textContent = "";
       r.state = state;
       if (r.mode === "edit" && r.editing?.revision !== state.documentRevision) {
         r.el["md-status"].textContent = "原文版本已改变，未保存草稿已保留；请复制需要的修改，取消后重新选择当前块。";
@@ -260,11 +306,69 @@
       if (!r.draftDirty && r.el.draft.value !== (state.draft || "")) r.el.draft.value = state.draft || "";
       r.el.current.textContent = state.currentSource || "";
       r.progressReceivedAt = Date.now();
-      this._progress(r);
+      this._progress(r); this._translationProgress(r);
       if (!r.localError) r.el.error.textContent = safeError(state.error || "");
       r.pages = r.pages || state.pageCount || 0;
       this._controls(r);
       if (sourceChanged && r.mode !== "edit" && !this._active(r)) this._render(r);
+    }
+    _translationProgress(r) {
+      const s = r.state, e = r.el, p = s.translationProgress || {};
+      const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+      const total = count(p.total ?? s.total), completed = Math.min(total, count(p.completed ?? s.completed));
+      const changed = Boolean(s.sourceChanged || s.protocolChanged), known = Boolean(s.approvedHash) && !changed;
+      e["translation-panel"].hidden = !s.pageCount;
+      e["translation-meter"].hidden = !known || !total;
+      e["translation-meter"].max = total || 1; e["translation-meter"].value = completed;
+      e["translation-meter"].setAttribute("aria-valuetext", `已通过并保存 ${completed} / ${total} 段`);
+      e["translation-percent"].textContent = !known ? "待确认" : !total ? "无需翻译" : `${Math.floor(completed * 100 / total)}%`;
+      e["translation-count"].textContent = known && total ? `已通过并保存 ${completed} / ${total} 段` : "";
+      e["translation-detail"].textContent = known && total
+        ? `翻译中 ${count(p.translating)} · 校对中 ${count(p.reviewing)} · 保存中 ${count(p.saving)} · 待处理 ${count(p.pending)} · 失败 ${count(p.failed)}` : "";
+      e["translation-note"].textContent = s.protocolChanged ? "翻译协议已更新，旧译文和草稿不再续用；重新确认后全部按新协议翻译，无需重新解析 PDF。"
+        : changed ? "原稿已变更，旧进度不适用于当前稿；重新确认后再翻译。"
+        : p.draining ? "某段失败，已停止派发；正在收尾并保存已发出的段落。可点暂停立即取消。"
+        : !known ? "确认原文后开始；并发数可选 1–8，运行时锁定。"
+        : !total ? "当前确认稿没有需要翻译的正文段落；受保护内容保留原文。"
+        : completed === total ? "全部译文已通过并保存；PDF 生成和附件保存状态另行显示。"
+        : "仅已通过并保存的段落计入进度；暂停后可调整并发数，重试不重复已完成段落。";
+      const repairs = s.repairSegments || (s.currentID ? [{ id: s.currentID, error: s.error || "" }] : []);
+      const key = JSON.stringify(repairs.map(item => [item.id, Boolean(item.error)]));
+      if (key !== r.repairOptionsKey) {
+        e["repair-select"].replaceChildren();
+        for (const item of repairs) {
+          const option = r.document.createElementNS("http://www.w3.org/1999/xhtml", "option");
+          option.value = item.id; option.textContent = `${item.id} · ${item.error ? "失败" : "未完成草稿"}`;
+          e["repair-select"].append(option);
+        }
+        r.repairOptionsKey = key;
+      }
+      e["repair-select"].value = s.currentID || "";
+      e["repair-label"].hidden = repairs.length < 2;
+      const error = safeError(repairs.find(item => item.id === s.currentID)?.error || "");
+      e["repair-technical-error"].textContent = error;
+      e["repair-error"].textContent = /正文片段|正文单元|translations|格式骨架|保护内容/u.test(error)
+        ? "模型返回的正文片段不完整或格式不符合要求，本次译文未采用。无需手动修好，可直接重译。"
+        : error || "该段尚未完成，可以继续校对或从原文重新翻译。";
+    }
+    _repairReference(r) {
+      const e = r.el, id = r.state.currentID;
+      if (!e["repair-advanced"].open || this._active(r) || !id) {
+        e["protected-source"].textContent = ""; r.repairReferenceKey = ""; return;
+      }
+      const key = JSON.stringify([r.state.approvedHash, id]);
+      if (r.repairReferenceKey === key) return;
+      try {
+        const context = r.service.getRepairContext(id);
+        if (context.id !== id || typeof context.source !== "string") throw new Error("当前段格式参照不可用。");
+        e["protected-source"].textContent = context.source; r.repairReferenceKey = key;
+      } catch (error) { e["protected-source"].textContent = safeError(error); }
+    }
+    _discardDraft(r) {
+      if (!this._current(r) || this._active(r)) return;
+      r.draftDirty = false; r.el.draft.value = r.state.draft || "";
+      r.el["repair-feedback"].textContent = "已放弃未保存修改，恢复本地已保存草稿。";
+      r.localError = false; r.el.error.textContent = safeError(r.state.error || ""); this._controls(r);
     }
     _progressStatus(r) {
       const s = r.state, p = s.parseProgress;
@@ -349,13 +453,21 @@
       catch (error) { changed = true; e.destination.textContent = safeError(error); }
       e.parse.disabled = !ready || busy || Boolean(s.importIntent && !s.chineseAttachmentID);
       e.parse.textContent = s.pageCount ? "重新上传并解析" : "上传 PDF 并解析";
-      e.confirm.disabled = !ready || busy || !s.pageCount || !s.source?.trim() || r.dirty || r.mode === "edit" || r.draftDirty || Boolean(s.documentError) || (Boolean(s.translated) && !changed);
+      e.confirm.disabled = !ready || busy || !s.pageCount || !s.source?.trim() || r.dirty || r.mode === "edit" || Boolean(s.documentError) || (Boolean(s.translated) && !changed);
       e.source.readOnly = e.source.disabled = !ready || busy;
       e.pause.disabled = !ready || r.stopping || !busy;
-      e.finish.disabled = !ready || busy || !s.translated || Boolean(s.chineseAttachmentID) || Boolean(s.importIntent) || changed || r.dirty || r.mode === "edit" || Boolean(s.documentError);
+      e.finish.textContent = s.chineseAttachmentID ? "重新生成中文 PDF" : "生成并保存中文 PDF";
+      e.finish.disabled = !ready || busy || !s.translated || Boolean(s.importIntent) || changed || r.dirty || r.draftDirty || r.mode === "edit" || Boolean(s.documentError);
       e.export.disabled = !ready || busy || !s.translated || changed || r.dirty || r.mode === "edit" || Boolean(s.documentError);
       e.zh.disabled = e.en.disabled = !ready || busy || !s.chineseAttachmentID;
-      e.repair.hidden = !s.currentID || busy || !s.error;
+      e.repair.hidden = !s.currentID || busy;
+      e.concurrency.disabled = !ready || busy;
+      e.concurrency.value = String(s.concurrency || 5);
+      e["repair-select"].disabled = busy || !ready;
+      e["repair-select"].value = s.currentID || "";
+      e["retry-segment"].disabled = !ready || busy || !s.currentID || changed || r.dirty || r.mode === "edit" || Boolean(s.documentError);
+      e["continue-pending"].disabled = e.confirm.disabled;
+      e["discard-draft"].disabled = !ready || busy || !r.draftDirty;
       e.draft.readOnly = e.draft.disabled = busy; e["save-draft"].disabled = busy || !ready || !s.currentID || !r.draftDirty;
       e.original.disabled = e.reload.disabled = !ready || busy;
       e.previous.disabled = !ready || busy || r.page <= 1;
@@ -380,6 +492,7 @@
         : "旧任务：当前页是独立识别预览，全文显示旧原文稿。编辑前需确认迁移：替换旧手改稿、保留备份，并重新确认翻译。";
       e.page.textContent = r.pages ? `第 ${r.page} / ${r.pages} 页` : "尚无预览";
       for (const entry of r.blockNodes) entry.node.setAttribute("aria-disabled", String(busy || blocked));
+      this._repairReference(r);
     }
     _error(r, error) { if (this._current(r)) { r.localError = true; r.el.error.textContent = safeError(error); } }
     _action(r, fn, after) {
@@ -388,7 +501,7 @@
       this._cancelImages(r);
       ++r.previewSerial;
       if (r.previewPending) { r.previewPending = false; r.previewInvalid = true; }
-      r.pending = true; r.localError = false; r.el.error.textContent = ""; this._controls(r);
+      r.pending = true; r.localError = false; r.el.error.textContent = ""; r.el["output-status"].textContent = ""; this._controls(r);
       const valid = () => this._current(r) && r.document === doc && id === r.opSerial;
       const action = Promise.resolve().then(() => valid() ? fn(valid) : undefined).then(() => {
         if (valid()) { after?.(); this._state(r, r.service.snapshot()); } return valid();
@@ -400,6 +513,39 @@
         }
       });
       r.action = action; return action;
+    }
+    _finish(r) {
+      if (r.dirty || r.draftDirty || r.mode === "edit" || r.state.documentError) return Promise.resolve(false);
+      return this._action(r, async valid => {
+        const service = r.service, attachmentID = r.attachmentID;
+        const fields = ["identity", "source", "approvedHash", "signature", "documentRevision", "translated", "chineseAttachmentID"];
+        const expected = fields.map(field => r.state[field]);
+        const key = () => {
+          const config = this.runtime.config();
+          return JSON.stringify([service.identity, service.sourceHash, configKey(config), config.oxrBaseURL, config.pythonPath]);
+        };
+        const safe = () => !r.dirty && !r.draftDirty && r.mode !== "edit" && !r.state.documentError &&
+          !r.state.busy && !r.state.importIntent && Boolean(r.state.translated) && !this._changed(r, this.runtime.config());
+        if (!safe()) throw new Error("原文、配置或输出状态不可用，请先检查当前任务。");
+        const confirmed = key(), regenerate = Boolean(r.state.chineseAttachmentID);
+        const message = regenerate
+          ? "重新生成中文 PDF？使用已通过校对的现有译文，不重新翻译、不请求模型。将新增独立中文 PDF 附件并更新当前映射，不删除或覆盖已有附件。"
+          : "生成并保存中文 PDF？使用已通过校对的现有译文，将新增独立中文 PDF 附件，不请求模型。";
+        if (!r.window.confirm(`${message}\n生成前将通过受控图片后端和任务缓存自动下载原文中缺失的图片；图片准备失败将停止，不生成缺图 PDF。`)) return;
+        if (!valid()) return;
+        if (r.service !== service || r.attachmentID !== attachmentID || fields.some((field, i) => r.state[field] !== expected[i]) ||
+            key() !== confirmed || !safe()) {
+          throw new Error("任务、原文、配置或附件状态已在确认期间改变，未生成 PDF；请重新检查并确认。");
+        }
+        await service.finish(r.window, { regenerate });
+      });
+    }
+    _export(r) {
+      let saved = false;
+      return this._action(r, async () => { saved = await r.service.export(r.window); }, () => {
+        r.localError = true; r.el.error.textContent = "";
+        r.el["output-status"].textContent = saved ? "中文 Markdown 已导出。" : "已取消 Markdown 导出，未保存文件。";
+      });
     }
     _parse(r) {
       let parsed = false;
@@ -425,28 +571,45 @@
         }
       });
     }
-    _translate(r) {
-      if (r.mode === "edit" || r.dirty || r.draftDirty || r.state.documentError) return Promise.resolve(false);
+    _retrySegment(r) {
+      if (r.mode === "edit" || r.dirty || r.state.documentError) return Promise.resolve(false);
       return this._action(r, async valid => {
-        const config = this.runtime.config(), source = r.state.source;
+        const id = r.state.currentID, config = this.runtime.config(), source = r.state.source, approvedHash = r.state.approvedHash;
+        if (!id || !approvedHash || this._changed(r, config)) throw new Error("原文或模型配置已改变，请先确认当前全文稿后再重译。");
+        const discard = r.draftDirty ? "\n当前未保存修正将丢弃。" : "";
+        if (!r.window.confirm(`重新翻译 ${id}？\n从本段已确认原文重新开始，不复用该段旧草稿；其他段落不变。\n地址：${address(config.endpoint)}\n模型：${String(config.model || "未配置")}\n会产生翻译和独立校对费用；全部段落通过后自动尝试生成并保存中文 PDF；生成前通过受控图片后端和任务缓存自动下载原文中缺失的图片，失败则停止输出。${discard}`)) return;
+        if (!valid()) return;
+        if (r.state.currentID !== id || r.state.approvedHash !== approvedHash || r.state.source !== source || configKey(this.runtime.config()) !== configKey(config)) {
+          throw new Error("段落、原文或模型配置已在确认期间改变，未开始重译。");
+        }
+        r.draftDirty = false; r.el["repair-feedback"].textContent = "";
+        await r.service.retrySegment(id, { consent: true });
+        if (valid() && r.service.snapshot().translated) await r.service.finish(r.window);
+      });
+    }
+    _translate(r) {
+      if (r.mode === "edit" || r.dirty || r.state.documentError) return Promise.resolve(false);
+      return this._action(r, async valid => {
+        const config = this.runtime.config(), source = r.state.source, concurrency = r.state.concurrency || 5, discardDraft = r.draftDirty;
         if (config.provider !== "deepseek") throw new Error("请在现有翻译服务设置中选择 DeepSeek，未发送任何内容。");
         const changed = this._changed(r, config);
         const plan = modules.FulltextMarkdown.createPlan?.(source);
         const references = plan ? `\n已识别并保留 ${plan.referenceCount} 条参考文献。若遗漏，请先将参考文献节标题改为 ## References 再确认。` : "";
         if (r.state.translated && !changed) return;
-        const reset = r.state.approvedHash && changed ? "\n原文或配置已改变，确认会重置旧检查点及译文。" : "\n未改变的原文与配置会保留已有检查点。";
-        if (!r.window.confirm(`确认 Markdown 并向 DeepSeek 发送正文？\n地址：${address(config.endpoint)}\n模型：${String(config.model || "未配置")}\n每段会产生翻译和独立校对请求；格式失败可能重试并产生费用。全部通过后自动生成并保存独立中文 PDF 附件。${references}${reset}`)) return;
+        const reset = r.state.protocolChanged ? "\n翻译协议已更新：旧译文和草稿不再续用，确认后会全部重新翻译；原 PDF、解析原稿和已有附件不删除。"
+          : r.state.approvedHash && changed ? "\n原文或配置已改变，确认会重置旧检查点及译文。" : "\n未改变的原文与配置会保留已有检查点。";
+        if (!r.window.confirm(`确认 Markdown 并向 DeepSeek 发送正文？\n地址：${address(config.endpoint)}\n模型：${String(config.model || "未配置")}\n并发：${concurrency} 段；某段失败后停止派发，已发出的段落收尾保存后暂停。\n新翻译的段落会产生翻译和独立校对请求；格式失败可能重试并产生费用。有效已保存草稿继续校对，无效草稿会从原文重译。全部通过后自动生成并保存独立中文 PDF 附件；生成前通过受控图片后端和任务缓存自动下载原文中缺失的图片，失败则停止输出。${references}${reset}${discardDraft ? "\n当前未保存修正将丢弃；本次只使用有效的已保存草稿。" : ""}`)) return;
         if (!valid()) return;
         const unchanged = () => {
-          if (configKey(this.runtime.config()) !== configKey(config) || r.state.source !== source) {
-            throw new Error("原文或 DeepSeek 配置已在确认期间改变，未开始翻译；请重新检查并确认检查点。");
+          if (configKey(this.runtime.config()) !== configKey(config) || r.state.source !== source || (r.state.concurrency || 5) !== concurrency) {
+            throw new Error("原文、并发数或 DeepSeek 配置已在确认期间改变，未开始翻译；请重新检查并确认检查点。");
           }
         };
         unchanged();
         await r.service.confirm(source);
         if (!valid()) return;
         unchanged();
-        r.dirty = false;
+        r.dirty = false; r.draftDirty = false; r.el["repair-feedback"].textContent = "";
         await r.service.translate({ consent: true });
         if (valid() && r.service.snapshot().translated) await r.service.finish(r.window);
       });

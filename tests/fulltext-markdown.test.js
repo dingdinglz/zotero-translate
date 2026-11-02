@@ -13,12 +13,14 @@ function roundtrip(source) {
   for (const segment of plan.segments) {
     if (!segment.translatable) continue;
     const prepared = JSON.parse(JSON.stringify(M.prepareSegment(segment)));
-    translations[segment.id] = M.restoreTranslation(prepared, prepared.text);
+    translations[segment.id] = M.restoreTranslation(prepared, prepared.units);
     assert.equal(M.validateRestored(segment, translations[segment.id]), segment.source);
   }
   assert.equal(M.assemble(plan, translations), source);
   return plan;
 }
+function request(prepared) { return JSON.stringify({ source: prepared.units, context: prepared.context }); }
+function translate(prepared, change) { return prepared.units.map(({ id, text }) => ({ id, text: change(text) })); }
 function segment(source) {
   const plan = M.createPlan(source);
   assert.equal(plan.segments.length, 1);
@@ -138,13 +140,13 @@ test("headings, lists and body blockquotes translate; code, citations, formulas,
   const source = "> Evidence [1], [2–4], [7, 9-11] with $x<y$ and \\(z_1\\).\n> **Quoted English** is body text.\n";
   const s = segment(source);
   const p = M.prepareSegment(s);
-  for (const literal of ["[1]", "[2–4]", "[7, 9-11]", "$x<y$", "\\(z_1\\)", "**", "> "]) assert.ok(!p.text.includes(literal));
-  const translated = M.restoreTranslation(p, p.text.replace("Evidence", "证据").replace("Quoted English", "引用的英文"));
+  for (const literal of ["[1]", "[2–4]", "[7, 9-11]", "$x<y$", "\\(z_1\\)", "**", "> "]) assert.ok(!request(p).includes(literal));
+  const translated = M.restoreTranslation(p, translate(p, text => text.replace("Evidence", "证据").replace("Quoted English", "引用的英文")));
   assert.match(translated, /^> 证据 \[1\]/u);
   assert.match(translated, /\*\*引用的英文\*\*/u);
   roundtrip("1. First **bold** point\n2. Second `const a = \"<script>\";` point\n  - Nested point\n- [x] Complete\n");
   const links = segment("See [the paper](https://example.invalid/a_(b) \"Title\"), https://example.invalid/q?a=1 and <https://example.invalid/>.\n");
-  assert.doesNotMatch(M.prepareSegment(links).text, /https:|Title/u);
+  assert.doesNotMatch(request(M.prepareSegment(links)), /https:|Title/u);
   roundtrip(links.source);
 });
 
@@ -160,19 +162,19 @@ test("numeric and multilingual reference sections preserve complete entries unti
   assert.equal(setext.referenceCount, 2);
 });
 
-test("images and arbitrarily large base64 payload never enter model text", () => {
+test("images and arbitrarily large base64 payload never enter model request", () => {
   const large = `data:image/png;base64,${"A".repeat(200000)}`;
   const source = `Figure description ![plot](${large}) and conclusion.\n`;
   const s = segment(source), p = M.prepareSegment(s);
-  assert.ok(p.text.length < 500);
-  assert.doesNotMatch(p.text, /data:image|AAAA/u);
-  assert.equal(M.restoreTranslation(p, p.text), source);
+  assert.ok(request(p).length < 500);
+  assert.doesNotMatch(request(p), /data:image|AAAA|plot/u);
+  assert.equal(M.restoreTranslation(p, p.units), source);
   const html = segment(`<table><tr><td>Image</td><td><img src="${png}" alt="plot"></td></tr></table>\n`);
-  assert.doesNotMatch(M.prepareSegment(html).text, /base64|iVBOR/u);
+  assert.doesNotMatch(request(M.prepareSegment(html)), /base64|iVBOR|plot/u);
   roundtrip(`![plot](${png})\n`);
 });
 
-test("model input cap counts masked text, not raw resources; Unicode UTF-8 cap is explicit", () => {
+test("model input cap counts prose, not raw resources; Unicode UTF-8 cap is explicit", () => {
   assert.equal(M.MAX_SOURCE_BYTES, 128 * 1024 * 1024);
   assert.throws(() => M.createPlan("a".repeat(M.MAX_SEGMENT_LENGTH + 1)), /上限/u);
   assert.throws(() => M.createPlan("汉".repeat(Math.floor(M.MAX_SOURCE_BYTES / 3) + 1)), /128 MiB/u);
@@ -180,19 +182,40 @@ test("model input cap counts masked text, not raw resources; Unicode UTF-8 cap i
   assert.throws(() => M.createPlan("bad\u0000text"), /控制字符/u);
 });
 
-test("128000-unit input boundary counts UTF-16 and protected markers without truncation", () => {
+test("128000-unit input boundary counts summed prose UTF-16 without truncation", () => {
   assert.equal(M.MAX_SEGMENT_LENGTH, 128000);
   for (const source of ["a".repeat(128000), "汉".repeat(128000), "𠮷".repeat(64000)]) {
     const plan = M.createPlan(source);
     assert.equal(plan.segments.length, 1);
     const prepared = M.prepareSegment(plan.segments[0]);
-    assert.equal(prepared.text.length, 128000);
-    assert.equal(M.restoreTranslation(prepared, prepared.text), source);
+    assert.equal(prepared.units[0].text.length, 128000);
+    assert.equal(M.restoreTranslation(prepared, prepared.units), source);
     assert.throws(() => M.createPlan(source + "a"), /插件单块输入上限 128000.*未截断/u);
+    roundtrip(source + " \r\n"); // Protected whitespace does not consume the prose budget.
   }
-  const source = "a".repeat(127999) + " ";
-  assert.equal(source.length, 128000);
-  assert.throws(() => M.createPlan(source), /输入上限/u); // The protected space expands to a marker.
+  const source = "a".repeat(64000) + "$x$" + "b".repeat(64000);
+  roundtrip(source);
+  assert.throws(() => M.createPlan(source + "c"), /输入上限/u);
+});
+
+test("large internal whitespace and ASCII runs complete without quadratic backtracking", () => {
+  const { spawnSync } = require("node:child_process");
+  const child = spawnSync(process.execPath, ["-e", `
+    const assert = require("node:assert/strict");
+    const M = require(${JSON.stringify(require.resolve("../plugin/content/fulltext-markdown.js"))});
+    for (const source of ["a".repeat(128000), "a" + " ".repeat(127998) + "b", "a" + "\\t".repeat(127998) + "b"]) {
+      const plan = M.createPlan(source);
+      const prepared = M.prepareSegment(plan.segments[0]);
+      assert.equal(prepared.units[0].text, source);
+      assert.equal(M.restoreTranslation(prepared, prepared.units), source);
+    }
+    const source = "a" + " ".repeat(100000) + "b \\t";
+    const prepared = M.prepareSegment(M.createPlan(source).segments[0]);
+    assert.equal(prepared.parts.at(-1).value, " \\t");
+    assert.equal(M.restoreTranslation(prepared, prepared.units), source);
+  `], { timeout: 8000, encoding: "utf8" });
+  assert.equal(child.error, undefined, String(child.error));
+  assert.equal(child.status, 0, child.stderr);
 });
 
 test("linear URL search preserves embedded scheme and special-prefix protection", () => {
@@ -208,29 +231,112 @@ test("linear URL search preserves embedded scheme and special-prefix protection"
     ["before a://host/path www.example.test", "a://host/path"]
   ]) {
     const source = `Prose ${body}`, prepared = M.prepareSegment(segment(source));
-    assert.equal(prepared.tokens.find(token => token.kind === "url").value, url);
-    assert.equal(M.restoreTranslation(prepared, prepared.text), source);
+    assert.equal(prepared.parts.find(part => part.kind === "url").value, url);
+    assert.ok(!request(prepared).includes(url));
+    assert.equal(M.restoreTranslation(prepared, prepared.units), source);
   }
 });
 
 test("large HTML tables keep their full skeleton and stable segment identities", () => {
   const source = `<table>${"<tr><td>Long cell content [1] $x$</td><td>Value</td></tr>".repeat(120)}</table>`;
   const plan = M.createPlan(source), s = plan.segments[0], prepared = M.prepareSegment(s);
-  assert.ok(prepared.text.length > 16000 && prepared.text.length < 128000);
+  assert.equal(prepared.units.length, 240);
+  assert.ok(request(prepared).length > 16000);
   assert.equal(plan.segments.length, 1);
   assert.equal(s.id, "s000001");
-  const translated = prepared.text.replaceAll("Long cell content", "长单元格正文");
+  const translated = translate(prepared, text => text.replaceAll("Long cell content", "长单元格正文"));
   assert.equal(M.restoreTranslation(prepared, translated), source.replaceAll("Long cell content", "长单元格正文"));
-  assert.throws(() => M.restoreTranslation(prepared, translated.replace(prepared.tokens[0].marker, "")), /占位符/u);
+  assert.throws(() => M.restoreTranslation(prepared, translated.slice(1)), /单元/u);
 });
 
 test("expanded translations have an independent 256000-unit bound including on checkpoint reload", () => {
   assert.equal(M.MAX_TRANSLATION_LENGTH, 256000);
   const s = segment("a".repeat(128000)), prepared = M.prepareSegment(s), translation = "译".repeat(256000);
-  assert.equal(M.restoreTranslation(prepared, translation), translation);
+  assert.equal(M.restoreTranslation(prepared, [{ id: "t0", text: translation }]), translation);
   assert.equal(M.validateRestored(s, translation), translation);
-  assert.throws(() => M.restoreTranslation(prepared, translation + "文"), /输出上限/u);
+  assert.throws(() => M.restoreTranslation(prepared, [{ id: "t0", text: translation + "文" }]), /输出上限/u);
   assert.throws(() => M.validateRestored(s, translation + "文"), /输出上限/u);
+  const split = segment("First $x$ second\r\n"), p = M.prepareSegment(split);
+  const units = [{ id: "t0", text: "𠮷".repeat(64000) }, { id: "t1", text: "译".repeat(128000) }];
+  const restored = units[0].text + " $x$ " + units[1].text + "\r\n";
+  assert.equal(M.restoreTranslation(p, units), restored);
+  assert.equal(M.validateRestored(split, restored), restored);
+  units[1].text += "文";
+  assert.throws(() => M.restoreTranslation(p, units), /输出上限/u);
+  assert.throws(() => M.validateRestored(split, restored.replace("\r\n", "文\r\n")), /输出上限/u);
+});
+
+test("text and context count limits are inclusive and never silently split", () => {
+  assert.equal(M.MAX_TEXT_PARTS, 4096);
+  assert.equal(M.MAX_CONTEXT_PARTS, 16384);
+  const source = "a$x$".repeat(M.MAX_TEXT_PARTS);
+  const p = M.prepareSegment(segment(source));
+  assert.equal(p.units.length, M.MAX_TEXT_PARTS);
+  assert.equal(p.units.at(-1).id, "t4095");
+  assert.equal(M.restoreTranslation(p, p.units), source);
+  assert.throws(() => M.createPlan(source + "a"), /正文单元数量.*未拆分或截断/u);
+  const structures = "*".repeat(M.MAX_CONTEXT_PARTS - 1) + "Text";
+  const q = M.prepareSegment({ id: "context-limit", source: structures, translatable: true });
+  assert.equal(q.context.length, M.MAX_CONTEXT_PARTS);
+  assert.equal(M.restoreTranslation(q, q.units), structures);
+  assert.throws(() => M.prepareSegment({ id: "context-limit", source: "*" + structures, translatable: true }), /上下文数量.*未拆分或截断/u);
+});
+
+test("request and response envelopes cover escaped prose and bounded metadata only", () => {
+  assert.equal(M.MAX_RESPONSE_LENGTH, 6 * M.MAX_TRANSLATION_LENGTH + 128 * M.MAX_TEXT_PARTS + 64);
+  const inputLimit = 6 * M.MAX_SEGMENT_LENGTH + 128 * M.MAX_CONTEXT_PARTS + 64;
+  const escapeUnicode = value => JSON.stringify(value).replace(/[\u0080-\uffff]/gu, ch => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  const texts = Array.from({ length: 4096 }, (_, i) => "汉".repeat(i < 1024 ? 32 : 31));
+  const p = M.prepareSegment(segment(texts.join("$secret$")));
+  assert.equal(p.units.reduce((sum, unit) => sum + unit.text.length, 0), M.MAX_SEGMENT_LENGTH);
+  const encodedRequest = escapeUnicode({ source: p.units, context: p.context });
+  assert.ok(encodedRequest.length > 6 * M.MAX_SEGMENT_LENGTH);
+  assert.ok(encodedRequest.length <= inputLimit);
+  assert.doesNotMatch(encodedRequest, /secret/u);
+  const translations = translate(p, text => text.repeat(2));
+  const encodedResponse = escapeUnicode({ translations });
+  assert.ok(encodedResponse.length > 6 * M.MAX_TRANSLATION_LENGTH);
+  assert.ok(encodedResponse.length <= M.MAX_RESPONSE_LENGTH);
+  assert.equal(M.restoreTranslation(p, JSON.parse(encodedResponse).translations), texts.map(text => text.repeat(2)).join("$secret$"));
+  const quoted = M.prepareSegment(segment('A"B\tC'.repeat(20000)));
+  assert.ok(request(quoted).includes('\\"'));
+  assert.ok(request(quoted).includes('\\t'));
+  assert.ok(request(quoted).length <= inputLimit);
+});
+
+test("all protected kinds stay local while request context carries only ordered types", () => {
+  const source = '# Heading\r\nText [42] $secretFormula$ `secretCode` \\* &amp; ![secretAlt](https://secret-image.invalid/x) [Label](https://secret-link.invalid/x) https://secret-url.invalid/x <span title="secretTitle">Body</span> <code>secretHTMLCode</code> <!-- secretComment -->\r\n[ref]: https://secret-definition.invalid/x\r\n';
+  const p = M.prepareSegment({ id: "all-kinds", source, translatable: true });
+  const kinds = new Set(p.parts.filter(part => part.kind !== "text").map(part => part.kind));
+  assert.deepEqual([...kinds].sort(), ["structure", "newline", "space", "citation", "math", "code", "escape", "entity", "image", "destination", "url", "html", "html-code", "comment", "definition"].sort());
+  let index = 0;
+  assert.deepEqual(p.context, p.parts.map(part => part.kind === "text" ? { id: `t${index++}` } : { protected: part.kind }));
+  assert.deepEqual(p.units.map(unit => unit.text), p.parts.filter(part => part.kind === "text").map(part => part.value));
+  assert.doesNotMatch(request(p), /secret|\[42\]|&amp;|https:/u);
+  assert.equal(p.parts.map(part => part.value).join(""), source);
+  assert.equal(M.restoreTranslation(p, p.units), source);
+});
+
+test("formula between phrases supplies positional context but no formula value to the model", () => {
+  const p = M.prepareSegment(segment("Given $secret_x=7$ we obtain a result.\r\n"));
+  assert.deepEqual(p.units, [{ id: "t0", text: "Given" }, { id: "t1", text: "we obtain a result." }]);
+  assert.deepEqual(p.context, [{ id: "t0" }, { protected: "space" }, { protected: "math" },
+    { protected: "space" }, { id: "t1" }, { protected: "newline" }]);
+  assert.doesNotMatch(request(p), /secret|=7|\$/u);
+  assert.equal(M.restoreTranslation(p, [{ id: "t0", text: "给定" }, { id: "t1", text: "我们得到一个结果。" }]), "给定 $secret_x=7$ 我们得到一个结果。\r\n");
+});
+
+test("numbered screenshot-style paragraphs accept marker-free Chinese and restore exact prefixes and CRLF", () => {
+  const source = "435. This approach preserves the structure of the original document.\r\n436) The next paragraph describes the experimental results.\r\n";
+  const p = M.prepareSegment(segment(source));
+  const response = [{ id: "t0", text: "此方法保留原始文档的结构。" }, { id: "t1", text: "下一段介绍实验结果。" }];
+  assert.deepEqual(p.context, [{ protected: "structure" }, { id: "t0" }, { protected: "newline" },
+    { protected: "structure" }, { id: "t1" }, { protected: "newline" }]);
+  assert.doesNotMatch(request(p), /435|436|SPT_|\\r|\\n/u);
+  assert.doesNotMatch(JSON.stringify(response), /435|436|SPT_|\\r|\\n/u);
+  const expected = "435. 此方法保留原始文档的结构。\r\n436) 下一段介绍实验结果。\r\n";
+  assert.equal(M.restoreTranslation(p, response), expected);
+  assert.equal(M.validateRestored(segment(source), expected), expected);
 });
 
 test("uncertain or unclosed structure fails explicitly and never truncates", () => {
@@ -240,38 +346,100 @@ test("uncertain or unclosed structure fails explicitly and never truncates", () 
   assert.throws(() => M.createPlan("<table><tr><td>A</td></tr></table> trailing prose"), /先分行/u);
 });
 
-test("protected markers are deterministic across restarts, serializable and collision checked", () => {
-  const s = segment("Text ⟦SPT_deadbeef_0⟧ and [1].\n");
+test("version 2 units are deterministic, contiguous and serializable without marker metadata", () => {
+  const s = segment("Text [1] and $x$.\n");
   const a = M.prepareSegment(s), b = M.prepareSegment(s);
-  assert.equal(a.prefix, b.prefix);
-  assert.equal(a.text, b.text);
-  assert.equal(a.text, M.prepareSegment({ ...s, id: "another-id" }).text);
-  assert.ok(!s.source.includes(a.prefix));
-  assert.equal(M.restoreTranslation(JSON.parse(JSON.stringify(a)), a.text), s.source);
-  assert.throws(() => M.restoreTranslation(a, a.text + "⟦SPT_broken"), /占位符/u);
+  assert.deepEqual(a, b);
+  assert.equal(a.version, 2);
+  assert.deepEqual(Object.keys(a), ["version", "id", "source", "parts", "units", "context"]);
+  assert.deepEqual(a.units.map(unit => unit.id), ["t0", "t1", "t2"]);
+  assert.deepEqual(a.units, M.prepareSegment({ ...s, id: "another-id" }).units);
+  assert.equal(M.restoreTranslation(JSON.parse(JSON.stringify(a)), a.units), s.source);
+  assert.throws(() => M.restoreTranslation({ ...a, version: 1 }, a.units), /元数据/u);
 });
 
-test("missing, duplicated, extra and reordered tokens are rejected", () => {
+test("Chinese word order around a formula can leave one prose part as punctuation", () => {
+  const s = segment(". The sampling of $C$ follows a multi-scale patching protocol.\n");
+  const p = M.prepareSegment(s);
+  const translated = [{ id: "t0", text: "。" }, { id: "t1", text: "的采样遵循多尺度分块协议。" }];
+  const expected = "。 $C$ 的采样遵循多尺度分块协议。\n";
+  assert.equal(M.restoreTranslation(p, translated), expected);
+  assert.equal(M.validateRestored(s, expected), expected);
+  assert.equal(M.assemble(M.createPlan(s.source), { [s.id]: expected }), expected);
+});
+
+test("the reported twelve-part masking example accepts punctuation-only t5 without changing synthetic formulas", () => {
+  const source = [
+    "Multi-scale masking. To break the interpolation shortcuts inherent in autocorrelated longitudinal sequences, we employ an aggressive masking strategy. From the full sequence of",
+    "embeddings, we sample a sparse context set", "of size", "approximately 12.5% of the weekly horizon",
+    "to serve as input to the temporal encoder", ". The sampling of",
+    "follows a multi-scale patching protocol designed to capture dynamics across different temporal reslutions. For each training sample, we randomly draw a patch size",
+    ", corresponding to random patches of 5, 20, 60-minutes, respectively. We then partition the index set",
+    "into", "non-overlapping contiguous patches; and randomly sample", "patches to form the context set. The target set is then", ". This"
+  ];
+  const translated = [
+    "多尺度掩码。为打破自相关纵向序列中固有的插值捷径，我们采用一种激进的掩码策略。从完整的",
+    "嵌入序列中，我们采样一个稀疏上下文集", "其大小为", "约为每周时间范围的12.5%",
+    "作为时间编码器的输入", "。",
+    "的采样遵循多尺度分块协议，旨在捕捉不同时间分辨率下的动态。对于每个训练样本，我们随机抽取一个块大小",
+    "，分别对应5、20、60分钟的随机块。随后我们将索引集", "划分为", "个不重叠的连续块；并随机采样",
+    "个块以构成上下文集。目标集则为", "。这一"
+  ];
+  const assemble = texts => texts.map((text, i) => text + (i < texts.length - 1 ? ` $p_{${i}}$ ` : "\n")).join("");
+  const s = segment(assemble(source)), p = M.prepareSegment(s);
+  assert.deepEqual(p.units.map(unit => unit.text), source);
+  assert.equal(M.restoreTranslation(p, translated.map((text, i) => ({ id: `t${i}`, text }))), assemble(translated));
+});
+
+test("punctuation-only parts never excuse missing IDs, empty text, new structures or a wholly nontextual translation", () => {
+  const s = segment("The sampling of $C$ follows a protocol.\n"), p = M.prepareSegment(s);
+  const parts = text => [{ id: "t0", text }, { id: "t1", text: "的采样遵循协议。" }];
+  for (const text of ["", " ", "\u00a0", "$new$", "[1]", "https://example.invalid", "<b>正文</b>"]) {
+    assert.throws(() => M.restoreTranslation(p, parts(text)), text);
+  }
+  assert.throws(() => M.restoreTranslation(p, parts("。").slice(1)), /单元/u);
+  assert.throws(() => M.restoreTranslation(p, parts("。").reverse()), /单元/u);
+  const punctuation = [{ id: "t0", text: "。" }, { id: "t1", text: "！" }];
+  assert.throws(() => M.restoreTranslation(p, punctuation), /正文内容缺失/u);
+  assert.throws(() => M.validateRestored(s, "。 $C$ ！\n"), /正文内容缺失/u);
+});
+
+test("missing, duplicated, extra and reordered unit IDs are rejected", () => {
   const p = M.prepareSegment(segment("Text [1] and $x$.\n"));
-  const first = p.tokens[0].marker, second = p.tokens[1].marker;
   for (const response of [
-    p.text.replace(first, ""), p.text + first, p.text + "⟦SPT_ffffffff_999⟧",
-    p.text.replace(first, "TEMP").replace(second, first).replace("TEMP", second)
-  ]) assert.throws(() => M.restoreTranslation(p, response), /占位符/u);
+    p.units.slice(1), [...p.units, p.units[0]], [...p.units, { id: "t99", text: "extra" }],
+    [p.units[1], p.units[0], p.units[2]], [p.units[0], p.units[0], p.units[2]],
+    p.units.map((unit, index) => index ? unit : { ...unit, id: "t01" }),
+    p.units.map((unit, index) => index ? unit : { ...unit, id: "t99" })
+  ]) assert.throws(() => M.restoreTranslation(p, response), /单元/u);
 });
 
 test("restoration rejects explanation, code wrappers, active HTML, extra resources and line damage", () => {
   const p = M.prepareSegment(segment("A paragraph [1].\n"));
-  for (const response of [
-    `Here is the translation: ${p.text}`, `译文：${p.text}`, `\`\`\`markdown\n${p.text}\n\`\`\``,
-    p.text.replace("A paragraph", "<script>alert(1)</script>"),
-    p.text.replace("A paragraph", "![x](https://tracking.invalid/image.png)"),
-    p.text.replace("A paragraph", "<img src=x onerror=alert(1)>"),
-    p.text.replace("A paragraph", "line\nline"),
-    p.text.replace("A paragraph", "https://unexpected.invalid"),
-    p.text.replace("A paragraph", "")
-  ]) assert.throws(() => M.restoreTranslation(p, response));
-  assert.throws(() => M.restoreTranslation(p, "x".repeat(M.MAX_TRANSLATION_LENGTH + 1)), /上限/u);
+  for (const text of [
+    "Here is the translation: A paragraph", "译文：一段正文", "```markdown\n一段正文\n```",
+    "<script>alert(1)</script>", "![x](https://tracking.invalid/image.png)",
+    "<img src=x onerror=alert(1)>", "line\nline", "line\rline", "https://unexpected.invalid",
+    "www.example.invalid", "file:///secret", "data:image/png;base64,AAAA", "mailto:a@example.invalid",
+    "$new$", "[999]", "`code`", "# Heading", "1. List", "<b>New</b>", "&amp;", "**bold**",
+    "", "   ", "...", "😀"
+  ]) assert.throws(() => M.restoreTranslation(p, [{ id: "t0", text }, ...p.units.slice(1)]), text);
+  assert.throws(() => M.restoreTranslation(p, [{ id: "t0", text: "x".repeat(M.MAX_TRANSLATION_LENGTH + 1) }, ...p.units.slice(1)]), /上限/u);
+});
+
+test("unit response types, exact keys and Unicode are checked before reconstruction", () => {
+  const p = M.prepareSegment(segment("Text"));
+  for (const response of [null, {}, "Text", { translations: p.units }, [null], [[]], ["Text"],
+    [{ text: "正文" }], [{ id: "t0" }], [{ id: 0, text: "正文" }], [{ id: "t0", text: null }],
+    [{ id: "t0", text: 1 }], [{ id: "t0", text: ["正文"] }], [{ id: "t0", text: {} }],
+    [{ id: "t0", text: "正文", protected: "math" }], [{ id: "t0", text: "正文", value: "$changed$" }],
+    [{ id: "t0", text: "正文", [Symbol("extra")]: true }], new Array(1)]) {
+    assert.throws(() => M.restoreTranslation(p, response), /单元/u);
+  }
+  for (const text of ["bad\ud800", "\udfffbad", "\ud800x\udc00", "正文\u0000", "正文\u000b"]) {
+    assert.throws(() => M.restoreTranslation(p, [{ id: "t0", text }]), /Unicode|控制字符/u);
+  }
+  assert.equal(M.restoreTranslation(p, [{ text: "正文𠮷😀e\u0301", id: "t0" }]), "正文𠮷😀e\u0301");
 });
 
 test("checkpoint validation rechecks protected content and exact table/list/heading skeleton", () => {
@@ -303,9 +471,18 @@ test("assemble requires every translatable segment and ignores injected protecte
 });
 
 test("tampered serializable preparation does not bypass validation", () => {
-  const p = M.prepareSegment(segment("Text [1]\n"));
-  p.tokens.find(t => t.kind === "citation").value = "[999]";
-  assert.throws(() => M.restoreTranslation(p, p.text), /保护内容/u);
+  const original = M.prepareSegment(segment("Text [1]\n"));
+  for (const tamper of [
+    p => { p.parts.find(part => part.kind === "citation").value = "[999]"; },
+    p => { p.parts[0].kind = "image"; },
+    p => { p.units[0].text = "different"; },
+    p => { p.units[0].id = "t99"; },
+    p => { p.context[0] = { protected: "image" }; },
+    p => { p.context.push({ protected: "newline" }); }
+  ]) {
+    const p = JSON.parse(JSON.stringify(original)); tamper(p);
+    assert.throws(() => M.restoreTranslation(p, original.units), /保护内容/u);
+  }
 });
 
 test("safe DOM has normal heading levels, lists, nested list, code, quote and hard line break", () => {
@@ -501,7 +678,7 @@ test("OXR page comments are protected independently and do not swallow following
   const translated = {};
   for (const s of plan.segments.filter(s => s.translatable)) {
     const p = M.prepareSegment(s);
-    translated[s.id] = M.restoreTranslation(p, p.text.replaceAll("body", "正文").replaceAll("Body", "正文"));
+    translated[s.id] = M.restoreTranslation(p, translate(p, text => text.replaceAll("body", "正文").replaceAll("Body", "正文")));
   }
   assert.match(M.assemble(plan, translated), /<!-- PDF pages 1-20 -->\n正文 to translate/u);
   assert.doesNotMatch(render(source).root.textContent, /PDF pages|page comment/u);
@@ -511,8 +688,8 @@ test("HTML code is protected and remote image/link destinations do not prevent c
   roundtrip("<pre>const x = 1;\n\nconst y = 2;</pre>\n\nBody\n");
   const source = '<table><tr><td>English <code>x = "$x";</code></td><td><img src="https://example.invalid/x.png"><a href="file:///private">Link label</a></td></tr></table>\n';
   const s = segment(source), p = M.prepareSegment(s);
-  assert.doesNotMatch(p.text, /\$x|https:|file:/u);
-  const translated = M.restoreTranslation(p, p.text.replace("English", "中文").replace("Link label", "链接标签"));
+  assert.doesNotMatch(request(p), /\$x|https:|file:/u);
+  const translated = M.restoreTranslation(p, translate(p, text => text.replace("English", "中文").replace("Link label", "链接标签")));
   assert.match(translated, /<code>x = "\$x";<\/code>/u);
   const { nodes, root } = render(translated);
   assert.ok(nodes.some(n => n.localName === "table"));
@@ -520,17 +697,28 @@ test("HTML code is protected and remote image/link destinations do not prevent c
   assert.match(root.textContent, /<img src="https:/u);
 });
 
-test("deterministic marker collision is resolved without modifying source", () => {
+test("ordinary marker-like source roundtrips without reserved protocol syntax or hashing", () => {
   const code = fs.readFileSync(require.resolve("../plugin/content/fulltext-markdown.js"), "utf8");
-  const scope = { SmartPaperTranslatorModules: { Logic: { sha256Hex: () => "a".repeat(64) } } };
+  const scope = {};
   vm.runInNewContext(code, scope);
   const api = scope.SmartPaperTranslatorModules.FulltextMarkdown;
-  const source = `Text ⟦SPT_${"a".repeat(24)}_0⟧ [1]`;
-  const s = { id: "test", source, translatable: true };
-  const a = api.prepareSegment(s), b = api.prepareSegment(s);
-  assert.equal(a.prefix, `⟦SPT_${"a".repeat(24)}_0_`);
-  assert.equal(a.text, b.text);
-  assert.equal(api.restoreTranslation(a, a.text), source);
+  for (const source of ["Text ⟦SPT_deadbeef_0⟧ [1]", "Text ⟦SPT_broken", "Text t0 t1"]) {
+    const s = { id: "test", source, translatable: true };
+    const a = api.prepareSegment(s), b = api.prepareSegment(s);
+    assert.equal(JSON.stringify(a), JSON.stringify(b));
+    assert.equal(api.restoreTranslation(a, a.units), source);
+  }
+});
+
+test("Unicode whitespace around protected structures remains local, never an empty prose unit", () => {
+  for (const space of ["\u00a0", "\u2009", "\u3000", "\ufeff"]) {
+    const source = `${space}A $x$${space}$y$ B${space}`;
+    const prepared = M.prepareSegment(segment(source));
+    assert.deepEqual(prepared.units, [{ id: "t0", text: "A" }, { id: "t1", text: "B" }]);
+    assert.equal(M.restoreTranslation(prepared, prepared.units), source);
+    assert.equal(M.restoreTranslation(prepared, [{ id: "t0", text: "甲" }, { id: "t1", text: "乙" }]),
+      `${space}甲 $x$${space}$y$ 乙${space}`);
+  }
 });
 
 test("print CSS is static A4 Chinese typography without external resources", () => {

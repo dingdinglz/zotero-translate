@@ -53,7 +53,7 @@ class Service {
   constructor(id, calls) {
     this.attachmentID = id; this.title = `Paper ${id}`; this.calls = calls; this.listeners = new Set();
     this.state = { stage: "new", source: "", translated: "", pageCount: 0, busy: false, error: "", draft: "",
-      editingReady: true, documentRevision: "rev1", sourceChanged: false };
+      editingReady: true, documentRevision: "rev1", sourceChanged: false, concurrency: 5 };
   }
   snapshot() { return { ...this.state }; }
   emit(patch) { Object.assign(this.state, patch); for (const fn of this.listeners) fn(this.snapshot()); }
@@ -75,13 +75,22 @@ class Service {
     this.pages[page - 1] = source.slice(0, block.start) + text + source.slice(block.end);
     this.calls.push("editBlock"); this.emit({ source: this.pages.join("\n\n"), documentRevision: `${revision}+`, sourceChanged: true });
   }
+  async setConcurrency(value) {
+    assert.ok(Number.isInteger(value) && value >= 1 && value <= 8);
+    this.calls.push(`concurrency:${value}`); this.emit({ concurrency: value });
+  }
+  async selectRepairSegment(id) {
+    this.calls.push(`repair:${id}`); this.emit({ currentID: id, draft: this.repairs[id], currentSource: `Source ${id}` });
+  }
   async translate(options) { assert.equal(options.consent, true); this.calls.push("translate"); }
   async pause() { this.calls.push(`pause:${this.attachmentID}`); }
   getPageMarkdown(page) { return this.pages?.[page - 1] ?? (page <= this.state.pageCount ? `# OCR page ${page}` : null); }
   async preview(page, original) { this.calls.push(`preview:${page}:${original}`); return { dataURI: "data:image/png;base64,YQ==", page, pageCount: this.state.pageCount || 2 }; }
+  getRepairContext(id) { this.calls.push(`context:${id}`); return { id, source: '{"translations":[{"id":"t0","text":"Source"}]}' }; }
+  async retrySegment(id, options) { assert.equal(options.consent, true); this.calls.push(`retry:${id}`); }
   async setDraft(value) { this.calls.push(`draft:${value}`); this.emit({ draft: value }); }
   async finish(win) { assert.equal(win.closed, false); this.calls.push("finish"); this.emit({ chineseAttachmentID: 42, stage: "complete" }); }
-  async export() { this.calls.push("export"); }
+  async export() { this.calls.push("export"); return true; }
 }
 function setup() {
   const calls = [], services = new Map(), wins = [], owner = new Win("chrome://zotero/content/zoteroPane.xhtml");
@@ -116,6 +125,210 @@ test("open is local; same task focuses; explicit upload and translation confirma
   r.window.confirmResult = true; click(r, "confirm"); await tick();
   assert.ok(h.calls.indexOf("confirm") < h.calls.indexOf("translate"));
   assert.match(r.window.confirmations.at(-1), /deepseek-chat[\s\S]*翻译和独立校对/);
+  await h.ui.shutdown();
+});
+
+test("translation progress counts only committed segments and does not redraw the original preview", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1), renders = h.renders();
+  assert.equal(r.el["translation-percent"].textContent, "待确认");
+  assert.equal(r.el["translation-meter"].hidden, true);
+  const p = { concurrency: 5, total: 80, completed: 24, translating: 3, reviewing: 2, saving: 0, pending: 51, failed: 0, draining: false };
+  s.emit({ stage: "translating", busy: true, approvedHash: "hash", total: 80, completed: 24, translationProgress: p });
+  assert.equal(r.el["translation-percent"].textContent, "30%");
+  assert.equal(r.el["translation-meter"].value, 24); assert.equal(r.el["translation-meter"].max, 80);
+  assert.equal(r.el["translation-meter"].getAttribute("aria-valuetext"), "已通过并保存 24 / 80 段");
+  assert.match(r.el["translation-detail"].textContent, /翻译中 3.*校对中 2.*待处理 51/u);
+  s.emit({ translationProgress: { ...p, translating: 0, reviewing: 4, saving: 1 } });
+  assert.equal(r.el["translation-percent"].textContent, "30%");
+  assert.match(r.el["translation-detail"].textContent, /保存中 1/u);
+  assert.equal(h.renders(), renders);
+  s.emit({ completed: 998, total: 999, translationProgress: { ...p, total: 999, completed: 998 } });
+  assert.equal(r.el["translation-percent"].textContent, "99%");
+  s.emit({ stage: "exporting", translationProgress: { ...p, total: 80, completed: 80, translating: 0, reviewing: 0, pending: 0 } });
+  assert.equal(r.el["translation-percent"].textContent, "100%");
+  assert.match(r.el.status.textContent, /正在生成并保存 PDF/u);
+  assert.match(r.el["translation-note"].textContent, /PDF.*另行/u);
+  await h.ui.shutdown();
+});
+
+test("translation meter distinguishes drain pause empty and changed-source states", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  const p = { total: 10, completed: 4, translating: 0, reviewing: 2, saving: 0, failed: 1, pending: 3, draining: true };
+  s.emit({ stage: "translating", busy: true, approvedHash: "hash", translationProgress: p });
+  assert.match(r.el["translation-note"].textContent, /已停止派发.*收尾/u);
+  assert.equal(r.el["translation-percent"].textContent, "40%"); assert.equal(r.el.pause.disabled, false);
+  s.emit({ stage: "paused", busy: false, translationProgress: { ...p, reviewing: 0, pending: 5, draining: false } });
+  assert.equal(r.el["translation-percent"].textContent, "40%"); assert.equal(r.el.concurrency.disabled, false);
+  s.emit({ sourceChanged: true });
+  assert.equal(r.el["translation-meter"].hidden, true); assert.equal(r.el["translation-percent"].textContent, "待确认");
+  assert.match(r.el["translation-note"].textContent, /旧进度不适用/u);
+  s.emit({ sourceChanged: false, translationProgress: { total: 0, completed: 0 } });
+  assert.equal(r.el["translation-meter"].hidden, true); assert.equal(r.el["translation-percent"].textContent, "无需翻译");
+  assert.ok(!r.el["translation-count"].textContent.includes("0 / 0"));
+  await h.ui.shutdown();
+});
+
+test("native concurrency selection is local per task, locked while busy and restored on failure", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  assert.equal(r.el.concurrency.tag, "select");
+  assert.deepEqual(r.el.concurrency.children.map(option => option.value), ["1", "2", "3", "4", "5", "6", "7", "8"]);
+  assert.equal(r.el.concurrency.value, "5");
+  r.el.concurrency.value = "8"; r.el.concurrency.dispatchEvent({ type: "change" }); await tick();
+  assert.equal(s.state.concurrency, 8); assert.equal(r.el.concurrency.value, "8");
+  assert.ok(!h.calls.includes("translate"));
+  s.emit({ busy: true }); r.el.concurrency.value = "2"; r.el.concurrency.dispatchEvent({ type: "change" });
+  assert.equal(r.el.concurrency.value, "8"); assert.ok(!h.calls.includes("concurrency:2"));
+  s.emit({ busy: false }); s.setConcurrency = async () => { throw new Error("disk failed"); };
+  r.el.concurrency.value = "3"; r.el.concurrency.dispatchEvent({ type: "change" }); await tick();
+  assert.equal(r.el.concurrency.value, "8"); assert.match(r.el.error.textContent, /disk failed/u);
+  await h.ui.open(h.owner, 2); assert.equal(h.record().el.concurrency.value, "5");
+  const count = h.calls.length; r.el.concurrency.dispatchEvent({ type: "change" }); await tick();
+  assert.equal(h.calls.length, count);
+  await h.ui.shutdown();
+});
+
+test("multiple repair drafts switch explicitly, protect unsaved text and keep error messages safe", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  s.repairs = { s1: "First draft", s2: "Second draft" };
+  s.emit({ stage: "paused", approvedHash: "hash", error: "failed", currentID: "s1", currentSource: "Source s1", draft: s.repairs.s1,
+    repairSegments: [{ id: "s1", error: "first failure" }, { id: "s2", error: "sk-privateSecret" }] });
+  assert.equal(r.el["repair-label"].hidden, false);
+  assert.equal(r.el["repair-select"].value, "s1");
+  edit(r, "draft", "Unsaved first"); r.window.confirmResult = false;
+  r.el["repair-select"].value = "s2"; r.el["repair-select"].dispatchEvent({ type: "change" }); await tick();
+  assert.equal(r.el["repair-select"].value, "s1"); assert.equal(r.el.draft.value, "Unsaved first");
+  assert.ok(!h.calls.includes("repair:s2"));
+  r.window.confirmResult = true;
+  r.el["repair-select"].value = "s2"; r.el["repair-select"].dispatchEvent({ type: "change" }); await tick();
+  assert.equal(r.el.draft.value, "Second draft"); assert.equal(r.draftDirty, false);
+  assert.equal(r.el.current.textContent, "Source s2");
+  assert.doesNotMatch(r.el["repair-error"].textContent, /privateSecret/u);
+  edit(r, "draft", "Keep second"); s.selectRepairSegment = async () => { throw new Error("save failed"); };
+  r.el["repair-select"].value = "s1"; r.el["repair-select"].dispatchEvent({ type: "change" }); await tick();
+  assert.equal(r.el.draft.value, "Keep second"); assert.equal(r.draftDirty, true);
+  assert.equal(r.el["repair-select"].value, "s2");
+  s.emit({ busy: true }); assert.equal(r.el["repair-select"].disabled, true);
+  await h.ui.shutdown();
+});
+
+test("reopened drain checkpoints expose saved repair drafts even without a global error", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  s.emit({ stage: "paused", approvedHash: "hash", busy: false, error: "", currentID: "s1", draft: "Preserved draft",
+    currentSource: "First paragraph", repairSegments: [{ id: "s1", error: "review failed" }] });
+  assert.equal(r.el.repair.hidden, false);
+  assert.equal(r.el.draft.value, "Preserved draft");
+  assert.equal(r.el["repair-error"].textContent, "review failed");
+  edit(r, "draft", "Repaired draft"); click(r, "save-draft"); await tick();
+  assert.ok(h.calls.includes("draft:Repaired draft")); assert.ok(!h.calls.includes("translate"));
+  s.emit({ busy: true }); assert.equal(r.el.repair.hidden, true);
+  s.emit({ busy: false, currentID: "", draft: "", repairSegments: [] }); assert.equal(r.el.repair.hidden, true);
+  await h.ui.shutdown();
+});
+
+test("translation consent discloses concurrency and rejects a changed value during confirmation", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  r.window.confirm = text => { r.window.confirmations.push(text); s.emit({ concurrency: 2 }); return true; };
+  click(r, "confirm"); await tick();
+  assert.match(r.window.confirmations.at(-1), /并发：5 段.*停止派发/u);
+  assert.ok(!h.calls.includes("translate")); assert.ok(!h.calls.includes("confirm"));
+  assert.match(r.el.error.textContent, /并发数.*改变/u);
+  await h.ui.shutdown();
+});
+
+test("advanced repair is optional and lazily exposes source parts as inert JSON", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  s.emit({ stage: "paused", error: "正文片段缺失、新增、重复或乱序", approvedHash: "hash", config: { ...config },
+    currentID: "s1", draft: "bad", currentSource: "1. Source", repairSegments: [{ id: "s1", error: "正文片段缺失" }] });
+  assert.equal(r.el["repair-advanced"].open, false);
+  assert.ok(!h.calls.includes("context:s1"));
+  assert.match(r.el["repair-error"].textContent, /可直接重译/u);
+  r.el["repair-advanced"].open = true; r.el["repair-advanced"].dispatchEvent({ type: "toggle" });
+  assert.equal(r.el["protected-source"].textContent, '{"translations":[{"id":"t0","text":"Source"}]}');
+  assert.match(r.el["repair-advanced"].textContent, /仅修改 JSON 中的 text/u);
+  assert.doesNotMatch(r.el["repair-advanced"].textContent, /⟦SPT_/u);
+  s.emit({ completed: 1 }); assert.equal(h.calls.filter(call => call === "context:s1").length, 1);
+  r.el["repair-advanced"].open = false; r.el["repair-advanced"].dispatchEvent({ type: "toggle" });
+  assert.equal(r.el["protected-source"].textContent, "");
+  await h.ui.shutdown();
+});
+
+test("protocol changes show reconfirmation and never reuse old completion progress", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  s.emit({ protocolChanged: true, stage: "review", approvedHash: "hash", config: { ...config }, currentID: "", draft: "",
+    translationProgress: { total: 4, completed: 0 } });
+  assert.equal(r.el["translation-percent"].textContent, "待确认");
+  assert.equal(r.el["translation-meter"].hidden, true);
+  assert.match(r.el["translation-note"].textContent, /旧译文和草稿不再续用/u);
+  assert.equal(r.el.finish.disabled, true); assert.equal(r.el.export.disabled, true);
+  r.window.confirmResult = false; click(r, "confirm"); await tick();
+  assert.match(r.window.confirmations.at(-1), /翻译协议已更新.*全部重新翻译/u);
+  assert.ok(!h.calls.includes("confirm")); assert.ok(!h.calls.includes("translate"));
+  assert.ok(!h.calls.includes("parse"));
+  await h.ui.shutdown();
+});
+
+test("failed draft saving never blocks discard or a separately confirmed single-segment retry", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  s.emit({ stage: "paused", error: "正文片段缺失", approvedHash: "hash", config: { ...config }, currentID: "s1", draft: "old draft" });
+  s.setDraft = async () => { throw new Error("正文片段缺失"); };
+  edit(r, "draft", "unsaved invalid"); click(r, "save-draft"); await tick();
+  assert.equal(r.draftDirty, true); assert.equal(r.el["retry-segment"].disabled, false); assert.equal(r.el.confirm.disabled, false);
+  r.window.confirmResult = false; click(r, "retry-segment"); await tick();
+  assert.equal(r.el.draft.value, "unsaved invalid"); assert.equal(r.draftDirty, true); assert.ok(!h.calls.includes("retry:s1"));
+  r.window.confirmResult = true; click(r, "retry-segment"); await tick();
+  assert.match(r.window.confirmations.at(-1), /原文.*重译|重新翻译/u);
+  assert.match(r.window.confirmations.at(-1), /未保存.*丢弃|丢弃.*未保存/u);
+  assert.ok(h.calls.includes("retry:s1")); assert.equal(r.draftDirty, false);
+  assert.ok(!h.calls.includes("confirm")); assert.ok(!h.calls.includes("translate"));
+  edit(r, "draft", "another unsaved edit"); const calls = h.calls.length;
+  click(r, "discard-draft"); assert.equal(r.el.draft.value, "old draft"); assert.equal(r.draftDirty, false);
+  assert.equal(h.calls.length, calls);
+  await h.ui.shutdown();
+});
+
+test("continue can discard unsaved repair only after consent and saved drafts still need review", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  s.emit({ stage: "paused", error: "正文片段缺失", approvedHash: "hash", config: { ...config }, currentID: "s1", draft: "Saved draft" });
+  edit(r, "draft", "Unsaveable draft"); r.window.confirmResult = false;
+  click(r, "continue-pending"); await tick();
+  assert.equal(r.draftDirty, true); assert.equal(r.el.draft.value, "Unsaveable draft"); assert.ok(!h.calls.includes("translate"));
+  r.window.confirmResult = true; click(r, "continue-pending"); await tick();
+  assert.match(r.window.confirmations.at(-1), /未保存修正将丢弃/u);
+  assert.ok(h.calls.includes("confirm")); assert.ok(h.calls.includes("translate")); assert.equal(r.draftDirty, false);
+  edit(r, "draft", "Valid manual draft"); click(r, "save-draft"); await tick();
+  assert.match(r.el["repair-feedback"].textContent, /草稿已保存.*尚未计入完成.*校对/u);
+  assert.equal(h.calls.filter(call => call === "translate").length, 1);
+  await h.ui.shutdown();
+});
+
+test("single retry rejects changed confirmation targets and late close without discarding edits or sending", async () => {
+  for (const change of ["config", "segment", "close"]) {
+    const h = setup(), r = await review(h), s = h.services.get(1);
+    s.emit({ stage: "paused", approvedHash: "hash", config: { ...config }, currentID: "s1", draft: "Stored" });
+    edit(r, "draft", "Unsaved");
+    r.window.confirm = () => {
+      if (change === "config") h.runtime.config = () => ({ ...config, model: "different" });
+      if (change === "segment") s.emit({ currentID: "s2" });
+      if (change === "close") r.window.closed = true;
+      return true;
+    };
+    click(r, "retry-segment"); await tick();
+    assert.ok(!h.calls.some(call => call.startsWith("retry:")));
+    assert.equal(r.draftDirty, true); assert.equal(r.el.draft.value, "Unsaved");
+    await h.ui.shutdown();
+  }
+});
+
+test("single retry cannot bypass changed source or busy state and only finishes when all paragraphs are complete", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  s.emit({ stage: "paused", approvedHash: "hash", config: { ...config }, currentID: "s1", draft: "Stored", sourceChanged: true });
+  assert.equal(r.el["retry-segment"].disabled, true); click(r, "retry-segment"); await tick();
+  assert.ok(!h.calls.includes("retry:s1"));
+  s.emit({ sourceChanged: false, busy: true }); assert.equal(r.el["retry-segment"].disabled, true);
+  s.emit({ busy: false }); click(r, "retry-segment"); await tick();
+  assert.ok(h.calls.includes("retry:s1")); assert.ok(!h.calls.includes("finish"));
+  s.retrySegment = async (id, options) => { assert.equal(id, "s1"); assert.equal(options.consent, true); s.emit({ translated: "All paragraphs", currentID: "" }); };
+  click(r, "retry-segment"); await tick(); assert.ok(h.calls.includes("finish"));
   await h.ui.shutdown();
 });
 
@@ -266,6 +479,133 @@ test("a confirmed live translation automatically saves PDF, but reopening does n
   await h.ui.shutdown();
 });
 
+test("Markdown success or cancellation replaces the stale PDF error without resetting saved task state", async () => {
+  for (const exported of [true, false]) {
+    const h = setup(), r = await review(h), s = h.services.get(1);
+    const oldError = "全文任务失败";
+    s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", stage: "paused", error: oldError });
+    s.export = async () => { h.calls.push("export"); return exported; };
+    click(r, "export"); await tick();
+    assert.equal(r.el.error.textContent, "");
+    assert.match(r.el["output-status"].textContent, exported ? /Markdown 已导出/u : /已取消.*未保存/u);
+    assert.equal(s.snapshot().error, oldError); assert.equal(s.snapshot().translated, "# 中文");
+    s.emit({ completed: 1 }); assert.equal(r.el.error.textContent, "");
+    assert.ok(!h.calls.includes("translate")); assert.ok(!h.calls.includes("finish"));
+    await h.ui.shutdown();
+  }
+});
+
+test("real Markdown write errors remain visible and do not retain an earlier success notice", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", stage: "paused", error: "Old PDF failure" });
+  click(r, "export"); await tick();
+  assert.match(r.el["output-status"].textContent, /已导出/u);
+  s.export = async () => { throw new Error("写入 Markdown 文件失败 [0x80070057]：权限不足"); };
+  click(r, "export"); await tick();
+  assert.equal(r.el["output-status"].textContent, "");
+  assert.match(r.el.error.textContent, /写入 Markdown.*0x80070057/u);
+  assert.doesNotMatch(r.el.error.textContent, /Old PDF failure/u);
+  await h.ui.shutdown();
+});
+
+test("Markdown export finishing after its window closes cannot publish a result", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1); let release;
+  s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", stage: "paused", error: "Old PDF failure" });
+  s.export = () => new Promise(resolve => { release = resolve; });
+  click(r, "export"); await tick();
+  const prior = r.el["output-status"].textContent;
+  r.window.closed = true; release(true); await tick();
+  assert.equal(r.el["output-status"].textContent, prior);
+  await h.ui.shutdown();
+});
+
+test("manual first output and regeneration require image consent and never retranslate", async () => {
+  for (const oldID of [null, 42]) {
+    const h = setup(), r = await review(h), s = h.services.get(1); let output;
+    s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", chineseAttachmentID: oldID, stage: "complete" });
+    s.finish = async (owner, options) => { output = options; assert.equal(owner, r.window); h.calls.push("finish"); };
+    assert.equal(r.el.finish.textContent, oldID ? "重新生成中文 PDF" : "生成并保存中文 PDF");
+    assert.equal(r.el.finish.disabled, false);
+    r.window.confirmResult = false; click(r, "finish"); await tick();
+    assert.equal(output, undefined); assert.ok(!h.calls.includes("finish"));
+    assert.match(r.window.confirmations.at(-1), /自动下载.*缺失.*图片/u);
+    assert.match(r.window.confirmations.at(-1), /受控.*缓存/u);
+    if (oldID) {
+      assert.match(r.window.confirmations.at(-1), /新.*附件/u);
+      assert.match(r.window.confirmations.at(-1), /不.*重新翻译/u);
+      assert.match(r.window.confirmations.at(-1), /不.*删除.*已有/u);
+    }
+    r.window.confirmResult = true; click(r, "finish"); await tick();
+    assert.deepEqual(output, { regenerate: Boolean(oldID) });
+    assert.ok(!h.calls.includes("translate")); assert.ok(!h.calls.includes("confirm"));
+    await h.ui.shutdown();
+  }
+});
+
+test("regeneration rejects task, source, approval, configuration and ID changes during confirmation", async () => {
+  const changes = [
+    (h, r, s) => s.emit({ source: "Changed source" }),
+    (h, r, s) => s.emit({ approvedHash: "new-hash" }),
+    (h, r, s) => s.emit({ chineseAttachmentID: 99 }),
+    (h, r, s) => s.emit({ translated: "Changed translation" }),
+    (h, r, s) => s.emit({ identity: "another task" }),
+    (h, r, s) => s.emit({ busy: true }),
+    (h, r, s) => s.emit({ importIntent: true }),
+    (h, r) => { r.attachmentID = 2; },
+    (h, r) => { r.dirty = true; },
+    (h, r) => { r.draftDirty = true; },
+    h => { h.runtime.config = () => ({ ...config, model: "changed" }); },
+    h => { h.runtime.config = () => ({ ...config, oxrBaseURL: "https://changed.test/api" }); }
+  ];
+  for (const change of changes) {
+    const h = setup(), r = await review(h), s = h.services.get(1);
+    s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", chineseAttachmentID: 42, stage: "complete" });
+    r.window.confirm = () => { change(h, r, s); return true; };
+    click(r, "finish"); await tick();
+    assert.ok(!h.calls.includes("finish")); assert.match(r.el.error.textContent, /确认期间.*改变/u);
+    await h.ui.shutdown();
+  }
+});
+
+test("regeneration controls retain dirty, busy, source, protocol and configuration guards", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  const completed = { approvedHash: "hash", config: { ...config }, translated: "# 中文", chineseAttachmentID: 42, stage: "complete",
+    busy: false, importIntent: false, documentError: "", sourceChanged: false, protocolChanged: false };
+  for (const patch of [{ busy: true }, { importIntent: true }, { sourceChanged: true }, { protocolChanged: true },
+    { documentError: "invalid" }, { translated: "" }, { config: { ...config, model: "other" } }]) {
+    s.emit({ ...completed, ...patch }); assert.equal(r.el.finish.disabled, true);
+    click(r, "finish"); await tick(); assert.ok(!h.calls.includes("finish"));
+  }
+  s.emit(completed);
+  for (const patch of [{ dirty: true }, { draftDirty: true }, { mode: "edit" }, { stopping: true }]) {
+    Object.assign(r, { dirty: false, draftDirty: false, mode: "page", stopping: false }, patch);
+    h.ui._controls(r); assert.equal(r.el.finish.disabled, true);
+    click(r, "finish"); await tick(); assert.ok(!h.calls.includes("finish"));
+  }
+  Object.assign(r, { dirty: false, draftDirty: false, mode: "page", stopping: false });
+  h.ui._controls(r); assert.equal(r.el.finish.disabled, false);
+  await h.ui.shutdown();
+});
+
+test("closing during regeneration confirmation cannot start output", async () => {
+  const h = setup(), r = await review(h), s = h.services.get(1);
+  s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", chineseAttachmentID: 42 });
+  r.window.confirm = () => { r.window.closed = true; return true; };
+  click(r, "finish"); await tick(); assert.ok(!h.calls.includes("finish"));
+  await h.ui.shutdown();
+});
+
+test("translation and retry consent disclose controlled missing-image downloads for automatic output", async () => {
+  for (const action of ["confirm", "retry-segment"]) {
+    const h = setup(), r = await review(h), s = h.services.get(1);
+    s.emit({ approvedHash: "hash", config: { ...config }, currentID: "s1" });
+    r.window.confirmResult = false; click(r, action); await tick();
+    assert.match(r.window.confirmations.at(-1), /自动下载.*缺失.*图片/u);
+    assert.match(r.window.confirmations.at(-1), /受控.*缓存/u);
+    await h.ui.shutdown();
+  }
+});
+
 test("completed tasks never auto-import or reset; explicit finish/export/version and reset disclosure", async () => {
   const h = setup(), r = await review(h), s = h.services.get(1);
   s.emit({ approvedHash: "hash", config: { ...config }, translated: "# 中文", stage: "translated" });
@@ -288,9 +628,9 @@ test("masked draft is saved explicitly; invalid corrections stay editable and ne
   s.emit({ stage: "paused", error: "校对失败 sk-secret123", currentID: "s1", currentSource: "Original paragraph", draft: "bad __TOKEN__" });
   assert.equal(r.el.repair.hidden, false); assert.equal(r.el.current.textContent, "Original paragraph");
   assert.ok(!r.el.error.textContent.includes("sk-secret123"));
-  edit(r, "draft", "fixed __TOKEN__"); assert.equal(r.el.confirm.disabled, true);
-  s.setDraft = async () => { throw new Error("占位符被修改"); };
-  click(r, "save-draft"); await tick(); assert.match(r.el.error.textContent, /占位符被修改/);
+  edit(r, "draft", "fixed __TOKEN__"); assert.equal(r.el.confirm.disabled, false);
+  s.setDraft = async () => { throw new Error("正文片段 ID 被修改"); };
+  click(r, "save-draft"); await tick(); assert.match(r.el.error.textContent, /正文片段 ID 被修改/);
   assert.equal(r.el.draft.value, "fixed __TOKEN__"); assert.ok(!h.calls.includes("translate"));
   s.setDraft = Service.prototype.setDraft;
   click(r, "save-draft"); await tick(); assert.ok(h.calls.includes("draft:fixed __TOKEN__"));

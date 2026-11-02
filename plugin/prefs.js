@@ -16,7 +16,7 @@ pref("extensions.smart-paper-translator.abstractPrompt", "请将以下论文摘�
 pref("extensions.smart-paper-translator.fulltextPythonPath", "");
 pref("extensions.smart-paper-translator.fulltextOXRBaseURL", "https://free-oxr.somark.ai/api/v1");
 pref("extensions.smart-paper-translator.fulltextTranslationPrompt", "将论文正文准确翻译成简体中文。保留术语含义，不增删信息。参考文献与受保护内容不翻译。");
-pref("extensions.smart-paper-translator.fulltextReviewPrompt", "逐句核对原文与译文，修正漏译、误译和多余解释；只保留准确的简体中文译文，严格保持原有 Markdown 结构和全部占位符。");
+pref("extensions.smart-paper-translator.fulltextReviewPrompt", "逐句核对各正文片段的原文与译文，修正漏译、误译和多余解释；保持片段 ID 和顺序，只修改 text 中的正文。");
 pref("extensions.smart-paper-translator.codexNodePath", "");
 pref("extensions.smart-paper-translator.codexNpxCliPath", "");
 pref("extensions.smart-paper-translator.codexExecutablePath", "");

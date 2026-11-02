@@ -20,6 +20,80 @@
     hash.init(hash.SHA256); hash.update(bytes, bytes.length);
     return Array.from(hash.finish(false), c => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
   }
+  function outputError(stage, error) {
+    const result = error?.result;
+    const code = Number.isInteger(result) ? ` [0x${(result >>> 0).toString(16).padStart(8, "0")}]` : "";
+    const detail = String(error?.message || error || "未知错误")
+      .replace(/(?:Bearer\s+|sk-)[A-Za-z0-9_.-]+/giu, "[已隐藏密钥]")
+      .replace(/([?&](?:key|api_key|token|access_token)=)[^\s&#]+/giu, "$1[已隐藏]")
+      .slice(0, 900);
+    return new Error(`${stage}失败${code}：${detail}`);
+  }
+  function installPrintHost(owner, sourceContext, assertCurrent) {
+    assertCurrent();
+    const document = owner.document, printInterface = global.Ci?.nsIBrowserDOMWindow;
+    if (!printInterface || typeof printInterface.OPEN_PRINT_BROWSER !== "number" ||
+        typeof global.ChromeUtils?.generateQI !== "function" || typeof document.createXULElement !== "function") {
+      throw new Error("当前 Zotero 缺少独立 PDF 打印宿主接口。");
+    }
+    if (owner.browserDOMWindow != null) throw new Error("此窗口已有打印宿主，未覆盖；请等待当前打印结束或重新打开全文窗口。");
+    const clones = new Map();
+    let active = true, claimed = false, installed, closeError;
+    const deny = () => { throw new Error("打印宿主拒绝了非本次打印、导航或重复克隆请求。"); };
+    const removeClone = browser => {
+      let failure;
+      try { browser.removeEventListener("DOMWindowClose", clones.get(browser)); } catch (error) { failure = error; }
+      try { browser.remove(); clones.delete(browser); } catch (error) { failure = failure || error; }
+      if (failure) throw failure;
+    };
+    const dispose = () => {
+      active = false;
+      let failure = closeError;
+      for (const browser of [...clones.keys()]) {
+        try { removeClone(browser); } catch (error) { failure = failure || error; }
+      }
+      try {
+        if (installed && owner.browserDOMWindow === installed) owner.browserDOMWindow = null;
+      } catch (error) { failure = failure || error; }
+      if (failure) throw new Error("自有 PDF 打印宿主或克隆节点清理失败，请关闭此全文窗口后重试。");
+    };
+    const createClone = (info, where) => {
+      if (!active) return deny();
+      assertCurrent();
+      if (owner.document !== document || owner.browserDOMWindow !== installed ||
+          where !== printInterface.OPEN_PRINT_BROWSER || info?.parent !== sourceContext ||
+          info.isForWindowDotPrint || claimed) return deny();
+      claimed = true;
+      const browser = document.createXULElement("browser");
+      const onClose = event => {
+        if (!event.isTrusted || !clones.has(browser)) return;
+        event.preventDefault(); event.stopPropagation();
+        try { removeClone(browser); } catch (error) { closeError = error; }
+      };
+      clones.set(browser, onClose);
+      browser.openWindowInfo = info;
+      browser.setAttribute("type", "content"); browser.style.visibility = "collapse";
+      browser.addEventListener("DOMWindowClose", onClose);
+      document.documentElement.append(browser);
+      const context = browser.browsingContext;
+      if (!context?.isContent || context === sourceContext || context === owner.browsingContext) {
+        throw new Error("无法创建独立的内容打印克隆。");
+      }
+      return browser;
+    };
+    const bridge = {
+      QueryInterface: global.ChromeUtils.generateQI(["nsIBrowserDOMWindow"]),
+      createContentWindow(_uri, info, where) { return createClone(info, where).browsingContext; },
+      createContentWindowInFrame(_uri, params, where) { return createClone(params?.openWindowInfo, where); },
+      openURI: deny, openURIInFrame: deny,
+      canClose() { return true; }, get tabCount() { return 1; }
+    };
+    try {
+      owner.browserDOMWindow = bridge; installed = owner.browserDOMWindow;
+      if (!installed) throw new Error("无法启用独立 PDF 打印宿主。");
+    } catch (error) { dispose(); throw error; }
+    return { dispose };
+  }
   function native(path, message = "全文任务文件路径无效：需要本机绝对路径。") {
     const result = modules.ACP.toNativeAbsolutePath(path);
     if (!result) throw new Error(message);
@@ -373,7 +447,7 @@
           if (this.stopped || !options.isCurrent()) throw new Error("任务已暂停，未发送模型请求。");
           return this.apiClient.complete({ ...options, apiKey: key });
         },
-        createPDF: (owner, markdown, registerCancel) => this.printPDF(owner, markdown, taskRoot, registerCancel),
+        createPDF: (owner, markdown, registerCancel) => this.printPDF(owner, markdown, taskRoot, registerCancel, () => this.imageCacheFor(service)),
         importPDF: async () => {
           await verifySource();
           const file = global.PathUtils.join(taskRoot, "translated.pdf"); await boundedRead(file, MAX_FILE);
@@ -387,17 +461,7 @@
           }
           return chinese.id;
         },
-        exportMarkdown: async (owner, markdown) => {
-          const { FilePicker } = global.ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
-          const picker = new FilePicker(); picker.init(owner, "导出中文 Markdown", picker.modeSave);
-          picker.defaultString = "translated.md"; picker.appendFilter("Markdown", "*.md");
-          const result = await picker.show();
-          if (owner.closed || ![picker.returnOK, picker.returnReplace].includes(result)) return false;
-          const path = native(picker.file, "Markdown 导出路径无效：请选择本机绝对文件路径。");
-          if (path === sourcePath) throw new Error("不能覆盖原始 PDF。");
-          checkPath(path, "regular", true); checkPath(path + ".spt-tmp", "regular", true);
-          await global.IOUtils.writeUTF8(path, markdown, { tmpPath: path + ".spt-tmp" }); return true;
-        }
+        exportMarkdown: (owner, markdown) => this.exportMarkdown(owner, markdown, sourcePath)
       });
       this.taskRoots.set(service, taskRoot);
       service.attachmentID = id; service.title = parent.getField("title") || item.getField("title") || "论文全文翻译";
@@ -405,9 +469,27 @@
       if (this.stopped) { await service.shutdown(); throw new Error("插件已退出。"); }
       return service;
     }
-    async printPDF(owner, markdown, taskRoot, registerCancel) {
-      if (owner.closed) throw new Error("确认窗口已经关闭。");
-      const doc = owner.document.implementation.createHTMLDocument("中文译文");
+    async exportMarkdown(owner, markdown, sourcePath) {
+      let stage = "打开 Markdown 保存窗口";
+      try {
+        if (this.stopped || owner.closed) throw new Error("确认窗口已经关闭或插件已退出。");
+        const { FilePicker } = global.ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
+        const picker = new FilePicker(); picker.init(owner, "导出中文 Markdown", picker.modeSave);
+        picker.defaultString = "translated.md"; picker.appendFilter("Markdown", "*.md");
+        const result = await picker.show();
+        if (this.stopped || owner.closed || ![picker.returnOK, picker.returnReplace].includes(result)) return false;
+        stage = "检查 Markdown 保存路径";
+        const path = native(picker.file, "Markdown 导出路径无效：请选择本机绝对文件路径。");
+        if (path === sourcePath) throw new Error("不能覆盖原始 PDF。");
+        checkPath(path, "regular", true); checkPath(path + ".spt-tmp", "regular", true);
+        stage = "写入 Markdown 文件";
+        await global.IOUtils.writeUTF8(path, markdown, { tmpPath: path + ".spt-tmp" }); return true;
+      } catch (error) { throw outputError(stage, error); }
+    }
+    async printPDF(owner, markdown, taskRoot, registerCancel, getImageCache) {
+      if (owner.closed || this.stopped) throw new Error("确认窗口已经关闭或插件已退出。");
+      const ownerDocument = owner.document;
+      const doc = ownerDocument.implementation.createHTMLDocument("中文译文");
       const meta = doc.createElement("meta"); meta.setAttribute("http-equiv", "Content-Security-Policy");
       meta.setAttribute("content", "default-src 'none'; script-src 'none'; connect-src 'none'; img-src data:; style-src 'unsafe-inline'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'");
       doc.head.append(meta);
@@ -417,39 +499,97 @@
       const renderDocument = { defaultView: { DOMParser: owner.DOMParser },
         createElement: doc.createElement.bind(doc), createElementNS: doc.createElementNS.bind(doc),
         createTextNode: doc.createTextNode.bind(doc), importNode: doc.importNode.bind(doc) };
-      modules.FulltextMarkdown.renderMarkdown(renderDocument, doc.body, markdown);
-      const html = "<!doctype html>" + new owner.XMLSerializer().serializeToString(doc.documentElement);
       const frame = owner.document.createElementNS("http://www.w3.org/1999/xhtml", "iframe");
+      frame.setAttribute("mozframetype", "content");
       frame.setAttribute("sandbox", ""); frame.setAttribute("aria-hidden", "true");
       frame.style.cssText = "position:fixed;left:-10000px;top:0;width:794px;height:1123px;border:0";
       const output = global.PathUtils.join(taskRoot, "translated.pdf");
       const printID = global.Services.uuid.generateUUID().toString().replace(/[^a-f0-9-]/giu, "");
       const temporary = global.PathUtils.join(taskRoot, `print-${printID}.pdf`);
       checkPath(temporary, "regular", true); checkPath(output, "regular", true);
-      let timer, cancelled = false, rejectCancellation;
+      let timer, onLoad, printDocument, printContext, printHost, imageCache, active = true, cancelled = false, rejectCancellation;
       const cancellation = new Promise((_, reject) => { rejectCancellation = reject; });
       // Attach a rejection handler before registration, which may synchronously cancel.
       cancellation.catch(() => {});
       const unregister = registerCancel?.(() => {
-        cancelled = true; frame.remove(); rejectCancellation(new Error("PDF 导出已暂停，Markdown 已保留。"));
+        cancelled = true;
+        try { imageCache?.cancel(); } catch (_) {}
+        try { frame.remove(); } finally { rejectCancellation(new Error("PDF 导出已暂停，Markdown 已保留。")); }
       });
-      const current = () => { if (cancelled || owner.closed) throw new Error("PDF 导出已暂停。"); };
+      const current = () => {
+        if (!active || cancelled || owner.closed || this.stopped) throw new Error("PDF 导出已暂停。");
+        if (owner.document !== ownerDocument) throw new Error("确认窗口文档已经改变，未继续生成 PDF。");
+        if (printDocument && (!frame.isConnected || frame.ownerDocument !== owner.document ||
+            frame.contentDocument !== printDocument || frame.browsingContext !== printContext ||
+            !printContext.isContent || printDocument.documentURI !== "about:blank")) {
+          throw new Error("打印文档或上下文已改变，未继续生成或保存 PDF。");
+        }
+      };
+      let stage = "准备 PDF 图片";
       try {
         current();
+        const images = new Map();
+        modules.FulltextMarkdown.renderMarkdown(renderDocument, doc.body, markdown, {
+          onRemoteImage: (uri, commit) => {
+            if (!images.has(uri)) {
+              if (images.size >= 128) throw new Error("PDF 图片引用超过 128 个，未生成不完整 PDF。");
+              images.set(uri, []);
+            }
+            images.get(uri).push(commit);
+          }
+        });
+        if (images.size) {
+          current();
+          const cache = getImageCache?.();
+          if (!cache || typeof cache.resolve !== "function" || typeof cache.cancel !== "function") {
+            throw new Error("图片缓存不可用，未生成缺图 PDF。");
+          }
+          imageCache = cache;
+          const isCurrent = () => { try { current(); return true; } catch (_) { return false; } };
+          for (const [uri, commits] of images) {
+            current();
+            const dataURI = await Promise.race([cancellation, imageCache.resolve(uri, { isCurrent })]);
+            current();
+            for (const commit of commits) { current(); commit(dataURI); }
+          }
+        }
+        current(); stage = "加载隔离打印文档";
         await Promise.race([cancellation, new Promise((resolve, reject) => {
-          timer = global.setTimeout(() => reject(new Error("静态打印文档加载超时。")), 30000);
-          // Gecko chrome hosts must opt in to content-domain load events on this owned frame.
-          frame.addEventListener("load", () => { if (frame.contentDocument?.documentURI === "about:srcdoc") resolve(); }, true, true);
-          frame.srcdoc = html; owner.document.documentElement.append(frame);
+          timer = global.setTimeout(() => reject(new Error("静态打印文档加载超时，未收到匹配的内容文档加载事件。")), 30000);
+          onLoad = event => {
+            if (!active || cancelled || printDocument || !event?.isTrusted) return;
+            try {
+              current();
+              const content = frame.contentDocument;
+              if (!content) throw new Error("无法读取本机隔离打印文档；Markdown 已保留。");
+              if ((event.originalTarget || event.target) !== content ||
+                  content.documentURI !== "about:blank" || content.readyState !== "complete") return;
+              const context = frame.browsingContext;
+              if (!frame.isConnected || frame.ownerDocument !== owner.document) throw new Error("打印框架已经失效。");
+              if (!context?.isContent || context === owner.browsingContext || typeof context.print !== "function") {
+                throw new Error("当前 Zotero 不支持此安全内容 PDF 打印方式；Markdown 已保留。");
+              }
+              printDocument = content; printContext = context; resolve();
+            } catch (error) { reject(error); }
+          };
+          frame.addEventListener("load", onLoad, true, true);
+          frame.src = "about:blank"; owner.document.documentElement.append(frame);
         })]);
         global.clearTimeout(timer); current();
-        if (owner.closed || !frame.browsingContext?.print) throw new Error("当前 Zotero 不支持此安全 PDF 导出方式；Markdown 已保留。");
+        stage = "装载安全打印内容";
+        if (!printDocument.head || !printDocument.body) throw new Error("隔离打印文档缺少正文结构。");
+        printDocument.head.append(printDocument.importNode(meta, true));
+        for (const child of Array.from(doc.head.childNodes)) {
+          if (child !== meta) printDocument.head.append(printDocument.importNode(child, true));
+        }
+        printDocument.body.replaceChildren();
+        for (const child of Array.from(doc.body.childNodes)) printDocument.body.append(printDocument.importNode(child, true));
+        current(); stage = "准备 PDF 字体和图片";
         const ready = async () => {
-          const content = frame.contentDocument;
-          if (!content) throw new Error("无法核对隔离打印文档。");
-          await content.fonts?.ready;
-          for (const image of Array.from(content.images || [])) {
+          await printDocument.fonts?.ready; current();
+          for (const image of Array.from(printDocument.images || [])) {
             if (typeof image.decode === "function") await image.decode();
+            current();
             if (!image.complete || !image.naturalWidth || !image.naturalHeight) throw new Error("文档图片解码失败，未生成不完整 PDF。");
           }
         };
@@ -457,25 +597,44 @@
           timer = global.setTimeout(() => reject(new Error("中文字体或图片加载超时。")), 30000);
         })]);
         global.clearTimeout(timer); current();
+        stage = "配置 PDF 打印参数";
         const settings = global.Cc["@mozilla.org/gfx/printsettings-service;1"].getService(global.Ci.nsIPrintSettingsService).createNewPrintSettings();
-        Object.assign(settings, { isInitializedFromPrinter: true, isInitializedFromPrefs: true,
+        Object.assign(settings, { printerName: "Mozilla Save to PDF",
           outputFormat: global.Ci.nsIPrintSettings.kOutputFormatPDF, outputDestination: global.Ci.nsIPrintSettings.kOutputDestinationFile,
-          printerName: "", printSilent: true, toFileName: temporary,
+          printSilent: true, toFileName: temporary,
           paperSizeUnit: global.Ci.nsIPrintSettings.kPaperSizeInches, paperWidth: 8.2677, paperHeight: 11.6929,
           marginTop: 0.55, marginBottom: 0.55, marginLeft: 0.55, marginRight: 0.55,
           unwriteableMarginTop: 0, unwriteableMarginBottom: 0, unwriteableMarginLeft: 0, unwriteableMarginRight: 0,
           printBGColors: true, printBGImages: true, scaling: 1, shrinkToFit: true,
           headerStrCenter: "", headerStrLeft: "", headerStrRight: "", footerStrCenter: "", footerStrLeft: "", footerStrRight: "" });
-        await Promise.race([cancellation, frame.browsingContext.print(settings), new Promise((_, reject) => {
+        settings.isInitializedFromPrinter = true; settings.isInitializedFromPrefs = true;
+        current(); stage = "准备原生打印宿主";
+        printHost = installPrintHost(owner, printContext, current);
+        current(); stage = "执行原生 PDF 打印";
+        await Promise.race([cancellation, printContext.print(settings), new Promise((_, reject) => {
           timer = global.setTimeout(() => reject(new Error("PDF 导出超时，Markdown 已保留。")), 90000);
         })]);
         global.clearTimeout(timer); current();
-        const pdf = await boundedRead(temporary, MAX_FILE);
+        stage = "清理原生打印宿主";
+        printHost.dispose(); printHost = null; current();
+        stage = "校验生成的 PDF";
+        const pdf = await boundedRead(temporary, MAX_FILE); current();
         if (new TextDecoder().decode(pdf.slice(0, 5)) !== "%PDF-" || pdf.length < 100) throw new Error("导出的 PDF 无效。");
-        const validationRoot = await directory(global.PathUtils.join(taskRoot, "pdf-check"));
+        const validationRoot = await directory(global.PathUtils.join(taskRoot, "pdf-check")); current();
         await this.python("preview", { sourcePath: temporary, outputDir: validationRoot, page: 1 }, { registerCancel });
-        current(); await global.IOUtils.move(temporary, output, { noOverwrite: false });
-      } finally { global.clearTimeout(timer); unregister?.(); frame.remove(); }
+        current(); stage = "保存生成的 PDF";
+        await global.IOUtils.move(temporary, output, { noOverwrite: false });
+      } catch (error) { throw outputError(stage, error); }
+      finally {
+        active = false; global.clearTimeout(timer);
+        let cleanupError;
+        for (const cleanup of [() => imageCache?.cancel(), () => printHost?.dispose(),
+          () => { if (onLoad) frame.removeEventListener("load", onLoad, true); },
+          () => frame.remove(), () => unregister?.()]) {
+          try { cleanup(); } catch (error) { cleanupError = cleanupError || error; }
+        }
+        if (cleanupError) throw outputError("清理 PDF 打印资源", cleanupError);
+      }
     }
     async shutdown() {
       this.stopped = true;

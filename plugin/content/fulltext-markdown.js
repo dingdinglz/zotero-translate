@@ -5,13 +5,18 @@
   const MAX_SOURCE_BYTES = 128 * 1024 * 1024;
   const MAX_SEGMENT_LENGTH = 128000;
   const MAX_TRANSLATION_LENGTH = 256000;
+  const MAX_TEXT_PARTS = 4096;
+  const MAX_CONTEXT_PARTS = 16384;
+  const MAX_RESPONSE_LENGTH = 6 * MAX_TRANSLATION_LENGTH + 128 * MAX_TEXT_PARTS + 64;
+  const MAX_REQUEST_LENGTH = 6 * MAX_SEGMENT_LENGTH + 128 * MAX_CONTEXT_PARTS + 64;
   const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
   const MAX_TOTAL_IMAGE_BYTES = 64 * 1024 * 1024;
   const MAX_IMAGE_PIXELS = 40 * 1024 * 1024;
   const MAX_NODES = 100000;
-  // Pure, synchronous helpers. The host owns serial requests, checkpoints and printing.
-  // Send only prepareSegment(...).text to the model. tokens/source are LOCAL metadata;
-  // they intentionally contain the original resources and must not be sent to a provider.
+  // Pure, synchronous helpers. The host owns requests, checkpoints and printing.
+  // Send only { source: prepared.units, context: prepared.context } to the model.
+  // prepared.source/parts are LOCAL metadata containing protected original resources;
+  // never send the whole preparation. Responses contain only ordered { id, text } units.
   // This is a conservative Markdown subset, not a repairing CommonMark parser. Unknown
   // HTML stays literal; ambiguous delimiters/oversized structures fail without truncation.
   // Structural validation cannot prove semantic fidelity or identify arbitrary prose
@@ -310,8 +315,6 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
         const prefix = rest.match(/^[ \t]*(?:(?:>[ \t]*)+)?(?:(?:#{1,6}|[-+*]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?/u)?.[0];
         if (prefix) { add("structure", prefix); i += prefix.length; continue; }
       }
-      const literalMarker = rest.match(/^⟦SPT_[^⟧\r\n]*⟧/u);
-      if (literalMarker) { add("literal-marker", literalMarker[0]); i += literalMarker[0].length; continue; }
       const newline = rest.match(/^(?:\r\n|\r|\n)/u);
       if (newline) { add("newline", newline[0]); i += newline[0].length; continue; }
       const math = mathAt(source, i);
@@ -359,7 +362,7 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
       if (entity) { add("entity", entity[0]); i += entity[0].length; continue; }
       if ("*_~|#[]()<>!".includes(source[i])) { add("structure", source[i++]); continue; }
       // Collect prose in runs rather than quadratic per-character concatenation.
-      const text = rest.match(/^[^\r\n\\`$<\[!*_~|#\]()>&⟦]+/u)?.[0];
+      const text = rest.match(/^[^\r\n\\`$<\[!*_~|#\]()>&]+/u)?.[0];
       if (text) {
         // Stop before URLs even when they occur in the middle of a prose run.
         const urlIndex = urlStart(text);
@@ -371,8 +374,10 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
     const result = [];
     for (const part of parts) {
       if (part.kind !== "text") { result.push(part); continue; }
-      const leading = part.value.match(/^[ \t]+/u)?.[0] || "";
-      const trailing = part.value.slice(leading.length).match(/[ \t]+$/u)?.[0] || "";
+      const leading = part.value.match(/^\s+/u)?.[0] || "";
+      let end = part.value.length;
+      while (end > leading.length && /\s/u.test(part.value[end - 1])) end--;
+      const trailing = part.value.slice(end);
       if (leading) result.push({ kind: "space", value: leading });
       const value = part.value.slice(leading.length, part.value.length - trailing.length);
       if (value) result.push({ kind: "text", value });
@@ -420,29 +425,24 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
     return { segments, referenceCount };
   }
 
-  function sourceMarker(source) {
-    const Logic = modules.Logic || (typeof require === "function" ? require("./logic.js") : null);
-    if (typeof Logic?.sha256Hex !== "function") fail("SHA-256 模块不可用，请先加载 Logic");
-    const digest = Logic.sha256Hex(source).slice(0, 24);
-    let value = digest;
-    // Deterministic for resumed masked drafts. No random, process or session state.
-    for (let collision = 0; source.includes(`⟦SPT_${value}_`); collision++) value = `${digest}_${collision}`;
-    return value;
-  }
   function prepareSegment(segment) {
     if (!segment || typeof segment.id !== "string" || !segment.translatable) fail("只能准备可翻译段落");
     checkSource(segment.source);
     const parts = lex(segment.source);
-    const prefix = `⟦SPT_${sourceMarker(segment.source)}_`;
-    const tokens = [];
-    const text = parts.map(part => {
-      if (part.kind === "text") return part.value;
-      const marker = `${prefix}${tokens.length}⟧`;
-      tokens.push({ marker, kind: part.kind, value: part.value });
-      return marker;
-    }).join("");
-    if (text.length > MAX_SEGMENT_LENGTH) fail(`段落 ${segment.id} 超过插件单块输入上限 ${MAX_SEGMENT_LENGTH} UTF-16 单元，请手动拆分结构，未截断`);
-    return { version: 1, id: segment.id, text, prefix, tokens, source: segment.source };
+    if (parts.length > MAX_CONTEXT_PARTS) fail("段落上下文数量超过上限，未拆分或截断");
+    const units = [], context = [];
+    let proseLength = 0;
+    for (const part of parts) {
+      if (part.kind !== "text") { context.push({ protected: part.kind }); continue; }
+      if (units.length >= MAX_TEXT_PARTS) fail("段落正文单元数量超过上限，未拆分或截断");
+      proseLength += part.value.length;
+      if (proseLength > MAX_SEGMENT_LENGTH) fail(`段落 ${segment.id} 超过插件单块输入上限 ${MAX_SEGMENT_LENGTH} UTF-16 单元，请手动拆分结构，未截断`);
+      const id = `t${units.length}`;
+      units.push({ id, text: part.value });
+      context.push({ id });
+    }
+    if (JSON.stringify({ source: units, context }).length > MAX_REQUEST_LENGTH) fail("段落请求 JSON 超过上限，未截断");
+    return { version: 2, id: segment.id, source: segment.source, parts, units, context };
   }
   function explanation(text) {
     return /^(?:here(?:'s| is| are)\b|(?:the )?(?:translated (?:text|version)|translation|explanation)\s*[:：]|(?:以下是|下面是|这是)(?:翻译|译文|校对)|(?:译文|翻译结果|说明)\s*[:：])/iu.test(text.trim());
@@ -454,10 +454,11 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
     for (let i = 0; i < a.length; i++) {
       if (a[i].kind !== b[i].kind || (a[i].kind !== "text" && a[i].value !== b[i].value)) fail("保护内容或格式骨架改变（标签、链接、公式、引文、列表或换行）");
       if (a[i].kind === "text") {
-        if (/[\p{L}\p{N}]/u.test(a[i].value) && !/[\p{L}\p{N}]/u.test(b[i].value)) fail("正文内容缺失");
         if (!explanation(a[i].value) && explanation(b[i].value)) fail("拒绝解释性输出，请仅返回译文");
       }
     }
+    if (a.some(part => part.kind === "text" && /[\p{L}\p{N}]/u.test(part.value)) &&
+        !b.some(part => part.kind === "text" && /[\p{L}\p{N}]/u.test(part.value))) fail("正文内容缺失");
   }
   function validateRestored(segment, translatedSource) {
     if (!segment || typeof segment.source !== "string") fail("无效段落");
@@ -466,35 +467,39 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
       if (translatedSource !== segment.source) fail("保护段落必须逐字保留");
       return translatedSource;
     }
-    const prepared = prepareSegment(segment);
-    // Resource-heavy source is permitted; unprotected translated prose remains bounded.
-    const originalParts = lex(segment.source);
+    prepareSegment(segment);
+    // Resource-heavy source is permitted; only translated prose counts toward this cap.
     const translatedParts = lex(translatedSource);
     const proseLength = translatedParts.reduce((sum, part) => sum + (part.kind === "text" ? part.value.length : 0), 0);
-    const protectedLength = prepared.text.length - originalParts.reduce((sum, part) => sum + (part.kind === "text" ? part.value.length : 0), 0);
-    if (proseLength + protectedLength > MAX_TRANSLATION_LENGTH) fail("译文段落超过插件单块输出上限，未截断");
+    if (proseLength > MAX_TRANSLATION_LENGTH) fail("译文段落超过插件单块输出上限，未截断");
     compareParts(segment.source, translatedSource);
     return translatedSource;
   }
-  function restoreTranslation(prepared, responseText) {
-    assertString(responseText);
-    if (!prepared || prepared.version !== 1 || !Array.isArray(prepared.tokens) || typeof prepared.prefix !== "string") fail("无效保护元数据");
-    if (responseText.length > MAX_TRANSLATION_LENGTH) fail("模型输出超过插件单块输出上限，未截断");
-    checkSource(responseText);
-    const expected = prepared.tokens.map(token => token.marker);
-    const found = responseText.match(/⟦SPT_[^⟧\r\n]*⟧/gu) || [];
-    if (found.length !== expected.length || found.some((marker, index) => marker !== expected[index]) || responseText.replace(/⟦SPT_[^⟧\r\n]*⟧/gu, "").includes("⟦SPT_")) fail("占位符缺失、新增、重复或乱序");
-    let result = "";
-    let offset = 0;
-    for (const token of prepared.tokens) {
-      const index = responseText.indexOf(token.marker, offset);
-      if (index < 0) fail("占位符缺失");
-      result += responseText.slice(offset, index) + token.value;
-      offset = index + token.marker.length;
+  function restoreTranslation(prepared, translationsArray) {
+    if (!prepared || prepared.version !== 2 || !Array.isArray(prepared.parts) || !Array.isArray(prepared.units) || !Array.isArray(prepared.context)) fail("无效保护元数据");
+    // See fulltext-translation SPEC: local skeleton and response validation.
+    const segment = { id: prepared.id, source: prepared.source, translatable: true };
+    const canonical = prepareSegment(segment);
+    for (const key of ["parts", "units", "context"]) {
+      if (JSON.stringify(prepared[key]) !== JSON.stringify(canonical[key])) fail("保护内容或正文单元元数据改变");
     }
-    result += responseText.slice(offset);
-    // Verify metadata against source as well; persisted preparation is not a trust boundary.
-    return validateRestored({ id: prepared.id, source: prepared.source, translatable: true }, result);
+    if (!Array.isArray(translationsArray) || translationsArray.length !== canonical.units.length) fail("正文单元缺失或新增");
+    let proseLength = 0;
+    const texts = [];
+    for (let i = 0; i < translationsArray.length; i++) {
+      const unit = translationsArray[i];
+      if (!unit || typeof unit !== "object" || Array.isArray(unit) || Reflect.ownKeys(unit).length !== 2 ||
+          !Object.prototype.hasOwnProperty.call(unit, "id") || !Object.prototype.hasOwnProperty.call(unit, "text") ||
+          unit.id !== canonical.units[i].id || typeof unit.text !== "string") fail("正文单元 ID 缺失、新增、重复、乱序或字段无效");
+      proseLength += unit.text.length;
+      if (proseLength > MAX_TRANSLATION_LENGTH) fail("模型输出超过插件单块输出上限，未截断");
+      checkSource(unit.text);
+      if (!unit.text.length) fail("正文内容缺失");
+      texts.push(unit.text);
+    }
+    let index = 0;
+    const result = canonical.parts.map(part => part.kind === "text" ? texts[index++] : part.value).join("");
+    return validateRestored(segment, result);
   }
   function assemble(plan, translations) {
     if (!plan || !Array.isArray(plan.segments) || !translations || typeof translations !== "object") fail("无效计划或译文集合");
@@ -874,7 +879,8 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
   }
 
   modules.FulltextMarkdown = {
-    MAX_SOURCE_BYTES, MAX_SEGMENT_LENGTH, MAX_TRANSLATION_LENGTH, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, MAX_IMAGE_PIXELS,
+    MAX_SOURCE_BYTES, MAX_SEGMENT_LENGTH, MAX_TRANSLATION_LENGTH, MAX_TEXT_PARTS, MAX_CONTEXT_PARTS, MAX_RESPONSE_LENGTH,
+    MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, MAX_IMAGE_PIXELS,
     PRINT_CSS, validateSource: checkSource, editableBlocks, imageInfo, createPlan, prepareSegment, restoreTranslation, validateRestored, assemble, renderMarkdown
   };
   if (typeof module !== "undefined" && module.exports) module.exports = modules.FulltextMarkdown;
