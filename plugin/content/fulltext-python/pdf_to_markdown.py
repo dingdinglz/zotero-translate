@@ -58,6 +58,19 @@ def fail(code):
     raise WorkerError(code)
 
 
+def check_dependency_version(version, minimum, next_major, name):
+    # Release versions may have more than three components (e.g. 1.27.2.3).
+    # Do not silently strip prerelease/local suffixes or unrecognized metadata.
+    if (not isinstance(version, str) or len(version) > 128
+            or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,}", version)):
+        fail(name + "_version_invalid")
+    release = tuple(map(int, version.split(".")))
+    if release < minimum:
+        fail(name + "_version_too_old")
+    if release >= (next_major,):
+        fail(name + "_version_unsupported")
+
+
 def load_dependencies(network=False):
     global pymupdf, requests
     if sys.version_info < (3, 9):
@@ -67,8 +80,7 @@ def load_dependencies(network=False):
     except ImportError:
         fail("pymupdf_missing")
     version = getattr(module, "VersionBind", "")
-    if not re.fullmatch(r"1\.\d+\.\d+", version) or tuple(map(int, version.split("."))) < (1, 24, 4):
-        fail("pymupdf_version")
+    check_dependency_version(version, (1, 24, 4), 2, "pymupdf")
     pymupdf = module
     # Verify the actual local APIs used, not just the distribution version.
     try:
@@ -86,8 +98,7 @@ def load_dependencies(network=False):
         except ImportError:
             fail("requests_missing")
         version = getattr(client, "__version__", "")
-        if not re.fullmatch(r"2\.\d+\.\d+", version) or tuple(map(int, version.split("."))) < (2, 31, 0):
-            fail("requests_version")
+        check_dependency_version(version, (2, 31, 0), 3, "requests")
         requests = client
 
 

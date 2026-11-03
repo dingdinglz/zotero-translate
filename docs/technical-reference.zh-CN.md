@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.67 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.68 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -178,10 +178,18 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.67.xpi
+unzip -t dist/smart-paper-translator-0.1.68.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.68：Python 依赖多段版本校验修复
+
+- 修复 PyMuPDF `1.27.2.3` 被三段式正则拒绝：PyMuPDF/requests 统一接受三段及更多 ASCII 数字段，总长最多128字符，完整整数元组比较。仍要求 Python >=3.9、PyMuPDF >=1.24.4,<2、requests >=2.31,<3；不剥离预发布/开发/本地后缀，不放开未来大版本。
+- 保留本地合成空白 PDF 的渲染、图层、序列化和 shape 能力检查；无法导入、无法识别版本、版本过低、大版本未支持及功能检测失败分别显示有界中文说明和环境设置入口。无依赖下载或环境修改。
+- `npm run check`：899项JavaScript测试、语法和静态检查通过。Python语法检查及显式进度专用模式通过44项无第三方依赖测试、跳过39项PDF/依赖测试；其中新增13项覆盖多段版本、上下界、格式/长度、模拟导入/能力失败和无网络路径。使用现成Python 3.14.3尝试完整套件，因缺PyMuPDF在加载时失败，不能报告完整PDF测试通过。
+- 两次构建字节一致，60文件XPI根目录、CRC、源码字节与SHA256SUMS检查通过。交付：`dist/smart-paper-translator-0.1.68.xpi`，1,439,868字节；SHA-256：`1bb19b8e4afa489607b3a8112352415ea82f1cff0b816e31c2c388e6eab9f8e0`。
+- 未操作Zotero、上传论文、调用真实OXR/模型或验证原生PDF生成/附件导入。`1.27.2.3` 是模拟版本回归，不是安装该版本完成的真实PDF验证；Zotero兼容范围、私有截图白名单、译文协议与既有检查点不变。
 
 ## 0.1.67：预览模式切换重叠修复
 

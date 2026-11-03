@@ -60,6 +60,165 @@ class Response:
         return iter(self.chunks if self.chunks is not None else [self.content])
 
 
+class DependencyVersionTest(unittest.TestCase):
+    """Version/import checks use synthetic modules, including in progress-only runs."""
+
+    def setUp(self):
+        self.pdf = mock.MagicMock(VersionBind="1.27.2.3")
+        self.client = mock.MagicMock(__version__="2.31.0")
+        for patch in (mock.patch.multiple(worker, pymupdf=None, requests=None),
+                      mock.patch.dict(sys.modules, {"pymupdf": self.pdf, "requests": self.client})):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def assert_version_error(self, version, minimum, next_major, name, suffix):
+        with self.assertRaises(worker.WorkerError) as caught:
+            worker.check_dependency_version(version, minimum, next_major, name)
+        self.assertEqual(str(caught.exception), name + "_version_" + suffix)
+
+    def test_accepts_three_four_and_many_numeric_components(self):
+        cases = (
+            ("pymupdf", (1, 24, 4), 2, ("1.24.4", "1.27.2.3", "1.24.4.0", "1.24.4.0.0.0.1")),
+            ("requests", (2, 31, 0), 3, ("2.31.0", "2.31.0.1", "2.31.0.0.0.0.1")),
+        )
+        for name, minimum, next_major, versions in cases:
+            for version in versions:
+                with self.subTest(name=name, version=version):
+                    worker.check_dependency_version(version, minimum, next_major, name)
+
+    def test_compares_numeric_tuples_not_strings(self):
+        for version in ("1.24.10", "1.100.0", "01.024.004.000", "1.24.4.10"):
+            with self.subTest(version=version):
+                worker.check_dependency_version(version, (1, 24, 4), 2, "pymupdf")
+        for version in ("1.9.99", "1.24.3.999", "1.23.999999"):
+            with self.subTest(version=version):
+                self.assert_version_error(version, (1, 24, 4), 2, "pymupdf", "too_old")
+
+    def test_rejects_old_and_unsupported_major_versions(self):
+        for name, minimum, next_major, old, new in (
+            ("pymupdf", (1, 24, 4), 2, ("0.99.99", "1.24.3"), ("2.0.0", "2.0.0.0", "10.0.0")),
+            ("requests", (2, 31, 0), 3, ("1.99.99", "2.30.999"), ("3.0.0", "3.0.0.0", "10.0.0")),
+        ):
+            for suffix, versions in (("too_old", old), ("unsupported", new)):
+                for version in versions:
+                    with self.subTest(name=name, version=version):
+                        self.assert_version_error(version, minimum, next_major, name, suffix)
+
+    def test_rejects_suffixes_without_stripping_them(self):
+        for suffix in ("a1", "b2", "rc1", ".dev0", ".post1", "+local", "-release", " (build 1)"):
+            with self.subTest(suffix=suffix):
+                self.assert_version_error("1.27.2.3" + suffix, (1, 24, 4), 2, "pymupdf", "invalid")
+
+    def test_rejects_unicode_and_malformed_releases(self):
+        for version in ("", "1", "1.27", "v1.27.2", ".1.27.2", "1.27.2.", "1..27.2",
+                        "1.27.-2", "+1.27.2", " 1.27.2", "1.27.2 ", "1.27.2\n",
+                        "1.27.2\x00", "1,27,2", "1.27.2/3", "１.27.2", "1.٢٧.2",
+                        "1.27.²", "1．27．2", "1.27.2\u200b"):
+            with self.subTest(version=version):
+                self.assert_version_error(version, (1, 24, 4), 2, "pymupdf", "invalid")
+
+    def test_enforces_128_character_limit(self):
+        for version in ("1.24.4" + ".0" * 61, "1.24." + "9" * 123):
+            with self.subTest(version=version):
+                self.assertEqual(len(version), 128)
+                worker.check_dependency_version(version, (1, 24, 4), 2, "pymupdf")
+                self.assert_version_error(version + "0", (1, 24, 4), 2, "pymupdf", "invalid")
+        self.assert_version_error("1.24." + "9" * 5000, (1, 24, 4), 2, "pymupdf", "invalid")
+
+    def test_rejects_non_string_versions(self):
+        for version in (None, True, 1272, 1.272, b"1.27.2", (1, 27, 2), [1, 27, 2],
+                        {"version": "1.27.2"}, object()):
+            with self.subTest(version=version):
+                self.assert_version_error(version, (1, 24, 4), 2, "pymupdf", "invalid")
+
+    def test_load_dependencies_accepts_versions_and_checks_pdf_capabilities(self):
+        for pdf_version, requests_version in (("1.24.4", "2.31.0"), ("1.27.2.3", "2.32.3.1"),
+                                              ("1.27.2.3.0.1", "2.31.0.0.0.1")):
+            with self.subTest(pdf=pdf_version, requests=requests_version):
+                self.pdf.reset_mock()
+                self.pdf.VersionBind = pdf_version
+                self.client.__version__ = requests_version
+                worker.load_dependencies(network=True)
+                self.assertIs(worker.pymupdf, self.pdf)
+                self.assertIs(worker.requests, self.client)
+                self.pdf.open.assert_called_once_with()
+                document = self.pdf.open.return_value.__enter__.return_value
+                document.new_page.assert_called_once_with(width=72, height=72)
+                self.pdf.Matrix.assert_called_once_with(1, 1)
+                page = document.new_page.return_value
+                page.get_pixmap.assert_called_once_with(matrix=self.pdf.Matrix.return_value,
+                                                       colorspace=self.pdf.csRGB, alpha=False)
+                document.add_ocg.assert_called_once_with("Capability check")
+                document.tobytes.assert_called_once_with(garbage=4, deflate=True, no_new_id=True)
+                page.new_shape.assert_called_once_with()
+                self.pdf.open.return_value.__exit__.assert_called_once()
+
+    def test_load_dependencies_enforces_both_library_version_ranges(self):
+        for name, attribute, module, cases in (
+            ("pymupdf", "VersionBind", self.pdf,
+             (("1.24.3", "too_old"), ("2.0.0", "unsupported"), ("1.27.2.3rc1", "invalid"))),
+            ("requests", "__version__", self.client,
+             (("2.30.999", "too_old"), ("3.0.0", "unsupported"), ("2.31.0+local", "invalid"))),
+        ):
+            for version, suffix in cases:
+                with self.subTest(name=name, version=version), mock.patch.object(module, attribute, version):
+                    with self.assertRaises(worker.WorkerError) as caught:
+                        worker.load_dependencies(network=True)
+                    self.assertEqual(str(caught.exception), name + "_version_" + suffix)
+
+    def test_load_dependencies_rejects_missing_version_attributes(self):
+        for name, attribute, module in (("pymupdf", "VersionBind", self.pdf),
+                                        ("requests", "__version__", self.client)):
+            with self.subTest(name=name):
+                version = getattr(module, attribute)
+                delattr(module, attribute)
+                try:
+                    with self.assertRaises(worker.WorkerError) as caught:
+                        worker.load_dependencies(network=True)
+                    self.assertEqual(str(caught.exception), name + "_version_invalid")
+                finally:
+                    setattr(module, attribute, version)
+
+    def test_load_dependencies_reports_import_failures(self):
+        for name in ("pymupdf", "requests"):
+            with self.subTest(name=name), mock.patch.dict(sys.modules, {name: None}):
+                with self.assertRaises(worker.WorkerError) as caught:
+                    worker.load_dependencies(network=True)
+                self.assertEqual(str(caught.exception), name + "_missing")
+
+    def test_load_dependencies_checks_capabilities_after_four_part_version(self):
+        document = self.pdf.open.return_value.__enter__.return_value
+        page = document.new_page.return_value
+        for method in (self.pdf.open, document.new_page, page.get_pixmap,
+                       document.add_ocg, document.tobytes, page.new_shape):
+            with self.subTest(method=method), mock.patch.object(method, "side_effect", ValueError("SECRET")):
+                with self.assertRaises(worker.WorkerError) as caught:
+                    worker.load_dependencies(network=True)
+                self.assertEqual(str(caught.exception), "pymupdf_capability")
+                self.assertIs(worker.pymupdf, self.pdf)
+                self.assertIsNone(worker.requests)
+
+    def test_load_dependencies_without_network_never_imports_requests(self):
+        import builtins
+        original = builtins.__import__
+        imports = []
+
+        def guarded(name, *args, **kwargs):
+            imports.append(name)
+            if name == "requests":
+                raise AssertionError("Requests must not be imported")
+            return original(name, *args, **kwargs)
+
+        with mock.patch.dict(sys.modules, {"requests": None}), \
+                mock.patch("builtins.__import__", side_effect=guarded):
+            worker.load_dependencies(network=False)
+        self.assertIn("pymupdf", imports)
+        self.assertNotIn("requests", imports)
+        self.assertIs(worker.pymupdf, self.pdf)
+        self.assertIsNone(worker.requests)
+        self.pdf.open.assert_called_once_with()
+
+
 @unittest.skipIf(PROGRESS_ONLY, "Explicit progress-only run; PDF/dependency suite not selected")
 class WorkerTest(unittest.TestCase):
     def setUp(self):
