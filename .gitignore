@@ -3,3 +3,4 @@ node_modules/
 *.xpi
 *.zip
 .DS_Store
+.pi/
