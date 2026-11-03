@@ -6,6 +6,18 @@
   const MAX_FILE = 256 * 1024 * 1024;
   const MAX_TEXT = 128 * 1024 * 1024;
   const PYTHON_SETUP = "请到“设置 → Smart Paper Translator → 论文全文翻译”选择已有的 Python 环境，并点击“检测本地依赖”。";
+  const DEPENDENCY_ERRORS = new Map([
+    ["python_version", "Python 版本过低，需要 Python 3.9 或更高版本。"],
+    ["pymupdf_missing", "所选 Python 环境未安装 PyMuPDF，或无法导入该依赖。"],
+    ["requests_missing", "所选 Python 环境未安装 requests，或无法导入该依赖。"],
+    ["pymupdf_version_invalid", "无法识别 PyMuPDF 版本号，需要三段或更多数字段的正式版本。"],
+    ["requests_version_invalid", "无法识别 requests 版本号，需要三段或更多数字段的正式版本。"],
+    ["pymupdf_version_too_old", "PyMuPDF 版本过低，需要 >=1.24.4 且 <2。"],
+    ["requests_version_too_old", "requests 版本过低，需要 >=2.31 且 <3。"],
+    ["pymupdf_version_unsupported", "PyMuPDF 大版本尚未支持，需要 >=1.24.4 且 <2。"],
+    ["requests_version_unsupported", "requests 大版本尚未支持，需要 >=2.31 且 <3。"],
+    ["pymupdf_capability", "PyMuPDF 本地 PDF 功能检测失败；版本号符合要求，但所需功能不可用。"]
+  ]);
   function validateOXRURL(value) {
     let url;
     try { url = new URL(String(value)); } catch (_) { throw new Error("OXR API 地址无效。"); }
@@ -260,7 +272,11 @@
       const [exit] = await Promise.all([process.wait(), read(process.stdout, true), read(process.stderr, false)]);
       if (reason) throw new Error(reason);
       if (!terminal) throw new Error("Python 未返回有效结果，请检查所选环境及依赖。");
-      if (exit.exitCode !== 0 || result?.ok !== true) throw new Error(String(result?.error || "Python 转换失败，请检查依赖、PDF 和 API 地址。").slice(0, 500));
+      if (exit.exitCode !== 0 || result?.ok !== true) {
+        const message = DEPENDENCY_ERRORS.get(result?.error);
+        throw new Error(message ? message + PYTHON_SETUP
+          : String(result?.error || "Python 转换失败，请检查依赖、PDF 和 API 地址。").slice(0, 500));
+      }
       return result;
     } finally { timers.clearTimeout(timer); unregister?.(); }
   }

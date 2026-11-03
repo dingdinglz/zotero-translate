@@ -19,6 +19,30 @@ test("Python collector accepts exactly one successful JSON result and checks exi
   await assert.rejects(collectProcess(processMock('{"ok":true}', 1), { timeoutMS: 1000 }), /失败/u);
   await assert.rejects(collectProcess(processMock("log\n{\"ok\":true}"), { timeoutMS: 1000 }), /有效结果/u);
 });
+test("Python dependency failures distinguish installation, version and capability problems", async () => {
+  for (const [code, message] of [
+    ["python_version", /Python 版本过低.*3\.9/u],
+    ["pymupdf_missing", /未安装 PyMuPDF/u],
+    ["requests_missing", /未安装 requests/u],
+    ["pymupdf_version_invalid", /无法识别 PyMuPDF 版本号/u],
+    ["requests_version_invalid", /无法识别 requests 版本号/u],
+    ["pymupdf_version_too_old", /PyMuPDF 版本过低.*1\.24\.4/u],
+    ["requests_version_too_old", /requests 版本过低.*2\.31/u],
+    ["pymupdf_version_unsupported", /PyMuPDF 大版本尚未支持/u],
+    ["requests_version_unsupported", /requests 大版本尚未支持/u],
+    ["pymupdf_capability", /本地 PDF 功能检测失败/u]
+  ]) {
+    await assert.rejects(collectProcess(processMock(JSON.stringify({ ok: false, error: code }), 1), { timeoutMS: 1000 }), error => {
+      assert.match(error.message, message);
+      assert.match(error.message, /设置.*论文全文翻译.*检测本地依赖/u);
+      return true;
+    });
+  }
+  await assert.rejects(collectProcess(processMock('{"ok":false,"error":"invalid_cache"}', 1), { timeoutMS: 1000 }), /invalid_cache/u);
+  // A successful result still reports the exact dependency version without truncating components.
+  const result = { ok: true, python: "3.13.9", pymupdf: "1.27.2.3", requests: "2.32.5.1" };
+  assert.deepEqual(await collectProcess(processMock(JSON.stringify(result)), { timeoutMS: 1000 }), result);
+});
 test("Python collector bounds output and kills on cancellation", async () => {
   const oversized = processMock("x".repeat(65537));
   await assert.rejects(collectProcess(oversized, { timeoutMS: 1000 }), /超限/u); assert.ok(oversized.killed);
