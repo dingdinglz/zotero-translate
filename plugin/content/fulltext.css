@@ -110,6 +110,21 @@ textarea, input { caret-color: var(--accent); }
 #spt-fulltext-empty-preview h2 { color: var(--ink); margin-bottom: 8px; }
 #spt-fulltext-empty-preview p + p { margin-top: 16px; font-size: 12px; }
 #spt-fulltext-mdbar h2 { flex: 1 1 100%; }
+#spt-fulltext-markdown-check { flex: none; border-block: 1px solid var(--line); padding-block: 6px; }
+#spt-fulltext-markdown-check-summary { color: var(--ink); font-weight: 600; }
+#spt-fulltext-markdown-check[data-errors="true"] > summary { color: var(--error); }
+#spt-fulltext-markdown-check-note { margin-block: 6px; color: var(--muted); font-size: 12px; }
+#spt-fulltext-markdown-issues { max-height: 24vh; overflow: auto; margin: 0; padding-inline-start: 24px; scrollbar-color: var(--control-line) var(--subtle); }
+.spt-markdown-issue { padding-block: 10px; padding-inline-end: 4px; border-top: 1px solid var(--line); }
+.spt-markdown-issue::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
+.spt-markdown-issue-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.spt-markdown-issue-heading strong { flex: 1 1 180px; overflow-wrap: anywhere; }
+.spt-markdown-issue-heading button { flex: none; }
+.spt-markdown-issue-location { color: var(--muted); font-size: 12px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.spt-markdown-issue pre { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -moz-user-select: text; margin-block: 6px 0; font: 12px/1.6 ui-monospace, monospace; }
+#spt-fulltext-markdown-check-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding-top: 8px; }
+#spt-fulltext-issues-range { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+#spt-fulltext-check-markdown { margin-inline-start: auto; }
 #spt-fulltext-md-note, #spt-fulltext-md-status, #spt-fulltext-block-help, #spt-fulltext-image-statusbar { color: var(--muted); font-size: 12px; }
 #spt-fulltext-image-statusbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 #spt-fulltext-rendered { flex: 1 1 120px; min-height: 100px; overflow: auto; overflow-wrap: anywhere; font-size: 14px; line-height: 1.75; padding: 6px 2px; }

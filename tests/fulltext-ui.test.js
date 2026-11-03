@@ -1351,6 +1351,136 @@ test("repair and source views are exclusive; locating exact source and switching
   assert.ok(!h.calls.some(call => call.startsWith("draft:")));
 });
 
+async function sourceIssueHarness(pages) {
+  const h = setup(); await h.ui.open(h.owner, 1);
+  const r = h.record(), s = r.service;
+  global.SmartPaperTranslatorModules.FulltextMarkdown = Markdown;
+  s.pages = pages.slice(); s.diagnosticCalls = 0;
+  s.getMarkdownDiagnostics = () => {
+    s.diagnosticCalls++;
+    const report = Markdown.diagnose(s.state.source);
+    let offset = 0;
+    const ranges = s.pages.map((text, i) => { const range = { page: i + 1, start: offset, end: offset + text.length }; offset += text.length + 2; return range; });
+    return { ...report, issues: report.issues.map(issue => {
+      const page = s.state.editingReady && !s.state.documentError && s.pages.join("\n\n") === s.state.source
+        ? ranges.find(range => range.start <= issue.start && range.end > issue.start) : null;
+      return { ...issue, page: page?.page || null, endPage: page?.page || null, pageStart: page?.start ?? null };
+    }) };
+  };
+  s.emit({ source: s.pages.join("\n\n"), pageCount: pages.length, stage: "review" });
+  return { ...h, r, s };
+}
+
+test("source Markdown issues appear before confirmation, with reasons, excerpts and exact navigation", async () => {
+  const h = await sourceIssueHarness(["# First\n\nNormal.", "# Second\n\nBad [link](broken\n\nAnother ![image](broken"]);
+  const { r, s } = h;
+  assert.equal(r.el["markdown-check"].hidden, false); assert.equal(r.el["markdown-check"].open, true);
+  assert.match(r.el["markdown-check-summary"].textContent, /2 处/u);
+  assert.match(r.el["markdown-issues"].textContent, /链接或图片括号未闭合/u);
+  assert.match(r.el["markdown-issues"].textContent, /原文第 2 页/u);
+  assert.match(r.el["markdown-issues"].textContent, /Bad \[link\]/u);
+  assert.ok(!h.calls.some(call => ["translate", "confirm", "parse", "editBlock"].includes(call)));
+  const checks = s.diagnosticCalls;
+  s.emit({ completed: 1 }); s.emit({ completed: 2 });
+  assert.equal(s.diagnosticCalls, checks, "progress must not rescan or rebuild diagnostics");
+  r.issueButtons[0].button.dispatchEvent({ type: "click" }); await tick();
+  assert.equal(r.page, 2); assert.equal(r.mode, "edit");
+  assert.equal(r.el.source.value, "Bad [link](broken\n"); assert.equal(r.editing.index, 1);
+  assert.equal(r.document.activeElement, r.el.source);
+  assert.match(r.el["md-status"].textContent, /已定位全文第/u);
+  assert.ok(!h.calls.includes("translate"));
+  edit(r, "source", "Bad [link](https://example.com)\n"); click(r, "save"); await tick();
+  assert.match(r.el["markdown-check-summary"].textContent, /1 处/u);
+  assert.match(r.el["markdown-issues"].textContent, /Another/u);
+  assert.ok(!r.el["markdown-issues"].textContent.includes("Bad [link]"));
+  r.issueButtons[0].button.dispatchEvent({ type: "click" }); await tick();
+  edit(r, "source", "Another image description."); click(r, "save"); await tick();
+  assert.match(r.el["markdown-check-summary"].textContent, /未发现语法问题/u);
+  assert.equal(r.el["markdown-issues"].children.length, 0);
+  assert.equal(r.state.sourceChanged, true);
+  await h.ui.shutdown();
+});
+
+test("source issue navigation protects unsaved edits and rejects old issue callbacks", async () => {
+  const h = await sourceIssueHarness(["Bad [first\n\nBad [second"]), { r, s } = h;
+  r.issueButtons[0].button.dispatchEvent({ type: "click" }); await tick();
+  edit(r, "source", "My unsaved edit"); r.window.confirmResult = false;
+  const calls = h.calls.length, old = r.issueButtons[1].button;
+  old.dispatchEvent({ type: "click" }); await tick();
+  assert.equal(h.calls.length, calls); assert.equal(r.el.source.value, "My unsaved edit"); assert.equal(r.dirty, true);
+  r.window.confirmResult = true; old.dispatchEvent({ type: "click" }); await tick();
+  assert.equal(r.el.source.value, "Bad [second"); assert.equal(r.dirty, false);
+  click(r, "cancel");
+  s.pages = ["Different [source"]; s.emit({ source: s.pages[0], documentRevision: "new-revision" });
+  const newCalls = h.calls.length; old.dispatchEvent({ type: "click" }); await tick();
+  assert.equal(h.calls.length, newCalls); assert.equal(r.mode, "page");
+  await h.ui.shutdown();
+});
+
+test("source issue navigation refuses unavailable mappings, busy, corrupt and uncertain-import states", async () => {
+  const h = await sourceIssueHarness(["Bad [link"]), { r, s } = h;
+  for (const patch of [{ editingReady: false }, { editingReady: true, busy: true, stage: "translating" },
+    { busy: false, documentError: "damaged" }, { documentError: "", importIntent: true }]) {
+    s.emit(patch); assert.equal(r.issueButtons[0].button.disabled, true);
+    const calls = h.calls.length; r.issueButtons[0].button.dispatchEvent({ type: "click" }); await tick();
+    assert.equal(h.calls.length, calls); assert.equal(r.mode, "page");
+  }
+  s.emit({ importIntent: false, editingReady: false });
+  assert.match(r.el["markdown-check-note"].textContent, /没有可靠页码映射/u);
+  assert.doesNotMatch(r.el["markdown-issues"].textContent, /原文第 1 页/u);
+  assert.ok(!h.calls.includes("migrate"));
+  await h.ui.shutdown();
+});
+
+test("issue jumps ignore superseded PDF previews and close, and keep the source editable fallback exact", async () => {
+  const h = await sourceIssueHarness(["# Good\n\n```\nunclosed", "Second [bad"]), { r, s } = h;
+  const original = s.preview.bind(s), gate = deferred();
+  s.preview = () => gate.promise;
+  r.issueButtons[0].button.dispatchEvent({ type: "click" });
+  assert.equal(r.issueButtons[0].button.disabled, true);
+  s.preview = original; h.ui._navigate(r, 2); await tick();
+  gate.resolve({ page: 1, pageCount: 2, dataURI: "data:image/png;base64,YQ==" }); await tick();
+  assert.equal(r.mode, "page"); assert.equal(r.page, 2);
+  r.issueButtons[0].button.dispatchEvent({ type: "click" }); await tick();
+  assert.equal(r.mode, "edit"); assert.equal(r.el.source.value, s.pages[0]);
+  assert.equal(r.editing.index, 0, "a structural failure uses the existing whole-page fallback editor");
+  click(r, "cancel");
+  const closing = deferred(); s.preview = () => closing.promise;
+  r.issueButtons[0].button.dispatchEvent({ type: "click" });
+  await h.ui.shutdown(); closing.resolve({ page: 1, pageCount: 2, dataURI: "data:image/png;base64,YQ==" }); await tick();
+  assert.equal(r.closed, true); assert.notEqual(r.mode, "edit");
+});
+
+test("source issue jump never opens an editor after PDF preview failure or mapping revalidation failure", async () => {
+  const h = await sourceIssueHarness(["Bad [link"]), { r, s } = h;
+  s.preview = async () => { throw new Error("Preview unavailable"); };
+  r.issueButtons[0].button.dispatchEvent({ type: "click" }); await tick();
+  assert.equal(r.mode, "page"); assert.match(r.el["preview-error"].textContent, /Preview unavailable/);
+  s.getMarkdownDiagnostics = () => ({ issues: [] });
+  const calls = h.calls.length; r.issueButtons[0].button.dispatchEvent({ type: "click" }); await tick();
+  assert.equal(h.calls.length, calls); assert.equal(r.mode, "page");
+  s.getMarkdownDiagnostics = () => { throw new Error("Diagnostic unavailable"); };
+  r.issueButtons[0].button.dispatchEvent({ type: "click" }); await tick();
+  assert.match(r.el.error.textContent, /Diagnostic unavailable/);
+  await h.ui.shutdown();
+});
+
+test("source diagnostics paginate bounded plain-text excerpts, preserve collapse, and explain truncation", async () => {
+  const h = await sourceIssueHarness([Array.from({ length: 201 }, (_, i) => `Paragraph ${i} [broken`).join("\n\n")]), { r, s } = h;
+  assert.equal(r.issueButtons.length, 5);
+  assert.match(r.el["markdown-check-note"].textContent, /前 200 处/u);
+  assert.match(r.el["issues-range"].textContent, /1–5 \/ 200/u);
+  const old = r.issueButtons[0].button;
+  click(r, "issues-next"); assert.match(r.el["issues-range"].textContent, /6–10 \/ 200/u);
+  assert.equal(old.listenerCount, 0); assert.equal(r.document.activeElement, r.el["markdown-check-summary"]);
+  for (let i = 0; i < 38; i++) click(r, "issues-next");
+  assert.match(r.el["issues-range"].textContent, /196–200 \/ 200/u); assert.equal(r.el["issues-next"].disabled, true);
+  r.el["markdown-check"].open = false; const checks = s.diagnosticCalls;
+  s.emit({ completed: 4 }); assert.equal(s.diagnosticCalls, checks); assert.equal(r.el["markdown-check"].open, false);
+  click(r, "check-markdown"); assert.equal(s.diagnosticCalls, checks + 1); assert.equal(r.el["markdown-check"].open, false);
+  const button = r.issueButtons[0].button; await h.ui.shutdown(); assert.equal(button.listenerCount, 0);
+});
+
 test("fixed XHTML has no scripts or remote resources; implementation never injects HTML", () => {
   const xhtml = fs.readFileSync(require.resolve("../plugin/content/fulltext.xhtml"), "utf8");
   assert.match(xhtml, /script-src 'none'/); assert.match(xhtml, /connect-src 'none'/);

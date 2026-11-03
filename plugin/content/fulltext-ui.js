@@ -304,6 +304,18 @@
           if (!this._current(r) || this._active(r) || r.mode === "edit") return;
           r.showRepair = !r.showRepair; this._controls(r);
         }));
+      const diagnostics = node("details", "markdown-check"); diagnostics.hidden = true;
+      diagnostics.append(node("summary", "markdown-check-summary", "Markdown 检查"),
+        node("p", "markdown-check-note"), node("ol", "markdown-issues"));
+      const issueActions = node("div", "markdown-check-actions");
+      issueActions.append(button("issues-previous", "上一组问题", () => this._issuePage(r, -1)),
+        node("span", "issues-range"), button("issues-next", "下一组问题", () => this._issuePage(r, 1)),
+        button("check-markdown", "重新检查", () => {
+          r.diagnosticSource = null; this._controls(r);
+        }));
+      diagnostics.append(issueActions);
+      r.diagnosticCleanups = []; r.issueButtons = []; r.issuePage = 0;
+      r.cleanups.push(() => { for (const cleanup of r.diagnosticCleanups.splice(0)) cleanup(); });
       e.source = node("textarea", "source"); e.source.setAttribute("aria-label", "选中块的 Markdown 源码"); e.source.spellcheck = false;
       listen(e.source, "input", () => {
         if (r.mode !== "edit" || this._active(r)) return;
@@ -316,7 +328,7 @@
       images.append(node("span", "image-status"), button("retry-images", "重试图片", () => this._render(r)));
       e["image-status"].setAttribute("role", "status"); e["retry-images"].hidden = true;
       const blockHelp = node("p", "block-help", "点击选择原文块；聚焦正文后用上下方向键切换，Enter 选择。可拖选复制文字。");
-      right.append(mdbar, node("p", "md-note"), mdStatus, images, e.source, e.rendered, blockHelp);
+      right.append(mdbar, diagnostics, node("p", "md-note"), mdStatus, images, e.source, e.rendered, blockHelp);
       columns.append(left, right);
       e.error = node("p", "error"); e.error.setAttribute("role", "alert");
       const repair = node("section", "repair");
@@ -392,6 +404,107 @@
       const item = r.service.getRepairSummaries?.().find(item => item.id === r.state.currentID);
       if (!item?.page) return;
       r.showRepair = false; this._pane(r, "markdown"); this._navigate(r, item.page);
+    }
+    _diagnostics(r) {
+      const e = r.el, s = r.state, busy = this._active(r);
+      const stale = r.diagnosticSource !== s.source || r.diagnosticRevision !== s.documentRevision ||
+        r.diagnosticDocumentError !== s.documentError || r.diagnosticEditingReady !== s.editingReady;
+      if (!busy && stale && r.service?.getMarkdownDiagnostics && s.source) {
+        try {
+          r.diagnostics = r.service.getMarkdownDiagnostics(); r.diagnosticError = "";
+        } catch (error) {
+          r.diagnostics = { issues: [], limited: false }; r.diagnosticError = safeError(error);
+        }
+        r.diagnosticSource = s.source; r.diagnosticRevision = s.documentRevision;
+        r.diagnosticDocumentError = s.documentError; r.diagnosticEditingReady = s.editingReady;
+        r.issuePage = 0;
+        if (r.diagnostics.issues.length && !r.hadMarkdownIssues) e["markdown-check"].open = true;
+        r.hadMarkdownIssues = Boolean(r.diagnostics.issues.length);
+        this._issueRows(r);
+      }
+      e["markdown-check"].hidden = !s.source || !r.diagnostics || (busy && stale);
+      const locked = busy || r.mode === "edit" || r.locatingIssue;
+      e["check-markdown"].disabled = Boolean(locked);
+      e["issues-previous"].disabled = Boolean(locked || !r.issuePage);
+      e["issues-next"].disabled = Boolean(locked || (r.issuePage + 1) * 5 >= (r.diagnostics?.issues.length || 0));
+      for (const { button, issue } of r.issueButtons || []) {
+        button.disabled = Boolean(busy || r.locatingIssue || !s.editingReady || s.documentError ||
+          (s.importIntent && !s.chineseAttachmentID) || !issue.page);
+        button.title = busy ? "任务运行中，暂停后可修复原文" : "跳到对应原文块并打开编辑器，不发送模型请求";
+      }
+    }
+    _issuePage(r, delta) {
+      if (!this._current(r) || this._active(r) || r.mode === "edit" || r.locatingIssue) return;
+      r.issuePage = Math.max(0, Math.min(Math.ceil((r.diagnostics?.issues.length || 0) / 5) - 1, r.issuePage + delta));
+      this._issueRows(r); this._controls(r);
+      r.el["markdown-check-summary"].focus?.();
+    }
+    _issueRows(r) {
+      const e = r.el, report = r.diagnostics, issues = report.issues;
+      for (const cleanup of r.diagnosticCleanups.splice(0)) cleanup();
+      r.issueButtons = []; e["markdown-issues"].replaceChildren();
+      const create = (tag, text, className) => {
+        const node = r.document.createElementNS("http://www.w3.org/1999/xhtml", tag);
+        if (text) node.textContent = text;
+        if (className) node.setAttribute("class", className);
+        return node;
+      };
+      e["markdown-check-summary"].textContent = r.diagnosticError ? "Markdown 检查未完成"
+        : issues.length ? `Markdown 问题 · ${report.limited ? "至少 " : ""}${issues.length} 处` : "Markdown 检查 · 未发现语法问题";
+      e["markdown-check"].setAttribute("data-errors", String(Boolean(issues.length || r.diagnosticError)));
+      e["markdown-check-note"].textContent = r.diagnosticError || (issues.length
+        ? "每块显示首个问题；保存后自动重查，不会自动改写原文。行号对应已保存的全文。" +
+          (report.limited ? "本次仅列出前 200 处，修复后再检查其余内容。" : "") +
+          (issues.some(issue => !issue.page) ? "部分问题没有可靠页码映射；旧任务须先在当前页确认启用统一编辑稿，缺页时需重新解析。" : "")
+        : "本地语法检查不校对识别内容，也不保证所有排版都正确。保存编辑后会自动重查。");
+      const start = r.issuePage * 5;
+      e["markdown-issues"].setAttribute("start", String(start + 1));
+      for (const issue of issues.slice(start, start + 5)) {
+        const row = create("li", "", "spt-markdown-issue"), heading = create("div", "", "spt-markdown-issue-heading");
+        const location = issue.page ? `原文第 ${issue.page}${issue.endPage > issue.page ? `–${issue.endPage}` : ""} 页 · ` : "";
+        const button = create("button", "定位并编辑"); button.type = "button";
+        button.setAttribute("aria-label", `定位并编辑：${location}全文第 ${issue.line} 行`);
+        heading.append(create("strong", issue.message.replace(/^全文 Markdown：/u, "")), button);
+        row.append(heading, create("p", `${location}全文第 ${issue.line}${issue.endLine > issue.line ? `–${issue.endLine}` : ""} 行`, "spt-markdown-issue-location"),
+          create("pre", issue.excerpt));
+        e["markdown-issues"].append(row);
+        const source = r.diagnosticSource, revision = r.diagnosticRevision;
+        listen(button, "click", () => { if (!button.disabled) void this._locateMarkdownIssue(r, issue, source, revision); }, r.diagnosticCleanups);
+        r.issueButtons.push({ button, issue });
+      }
+      e["issues-range"].textContent = issues.length ? `${start + 1}–${Math.min(start + 5, issues.length)} / ${issues.length}` : "";
+      e["issues-previous"].hidden = e["issues-next"].hidden = e["issues-range"].hidden = issues.length <= 5;
+    }
+    async _locateMarkdownIssue(r, issue, source, revision) {
+      if (!this._current(r) || this._active(r) || r.locatingIssue || r.state.source !== source ||
+          r.state.documentRevision !== revision || !r.state.editingReady || r.state.documentError ||
+          (r.state.importIntent && !r.state.chineseAttachmentID)) return;
+      let fresh;
+      try { fresh = r.service.getMarkdownDiagnostics().issues.find(item => item.start === issue.start && item.end === issue.end && item.message === issue.message); }
+      catch (error) { this._error(r, error); return; }
+      if (!fresh?.page || fresh.page !== issue.page || fresh.pageStart !== issue.pageStart || !this._discard(r)) return;
+      if (!this._current(r) || this._active(r) || r.state.source !== source || r.state.documentRevision !== revision ||
+          !r.state.editingReady || r.state.documentError || (r.state.importIntent && !r.state.chineseAttachmentID)) return;
+      r.locatingIssue = true; r.showRepair = false; this._pane(r, "markdown");
+      r.page = fresh.page; r.mode = "page";
+      try {
+        const preview = this._preview(r), request = r.previewSerial;
+        await preview;
+        if (!this._current(r) || this._active(r) || request !== r.previewSerial || r.previewPending || r.previewInvalid ||
+            r.page !== fresh.page || r.mode !== "page" || r.state.source !== source || r.state.documentRevision !== revision) return;
+        const offset = fresh.start - fresh.pageStart;
+        const block = r.blockNodes.find(item => item.start <= offset && item.end > offset);
+        if (!block) { r.el["md-status"].textContent = "问题位置已改变，请重新检查 Markdown；未打开其他原文块。"; return; }
+        this._select(r, block); await this._edit(r);
+        if (this._current(r) && r.mode === "edit" && r.editing?.revision === revision && r.editing?.index === block.index) {
+          r.el["markdown-check"].open = false;
+          r.el.markdown.scrollTop = 0;
+          r.el.source.focus?.();
+          r.el.source.setSelectionRange?.(Math.max(0, offset - block.start), Math.min(block.source.length, fresh.end - fresh.pageStart - block.start));
+          r.el["md-status"].textContent = `已定位全文第 ${fresh.line} 行：${fresh.message.replace(/^全文 Markdown：/u, "")}。修复后保存，列表会自动更新。`;
+        }
+      } catch (error) { this._error(r, error); }
+      finally { if (this._current(r)) { r.locatingIssue = false; this._controls(r); } }
     }
     _changed(r, config) {
       const old = r.state.config;
@@ -673,7 +786,7 @@
         item.setAttribute("data-state", index < step || (index === 3 && s.chineseAttachmentID && !changed) ? "done" : index === step ? "current" : "waiting");
         if (index === step) item.setAttribute("aria-current", "step"); else item.removeAttribute("aria-current");
       }
-      this._pane(r, r.pane); this._repairReference(r);
+      this._pane(r, r.pane); this._repairReference(r); this._diagnostics(r);
     }
     _error(r, error) { if (this._current(r)) { r.localError = true; r.el.error.textContent = safeError(error); this._controls(r); } }
     _action(r, fn, after) {

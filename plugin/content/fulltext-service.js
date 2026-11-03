@@ -68,6 +68,7 @@
       this.cancelled = false; this.previewSerial = 0; this.previewCancellers = new Set(); this.previews = new Set();
       this.source = ""; this.plan = null; this.translated = ""; this.pageMap = null; this.pagePreviewError = "";
       this.documentPages = null; this.documentError = ""; this.approvedSourceBinding = null;
+      this.markdownDiagnosticsCache = null;
       this.parseProgress = null; this.parseStartedAt = null; this.parseNotifyTimer = null;
       this.translationJobs = new Map(); this.translationDraining = false; this.translationNotifyTimer = null;
       this.checkpointQueue = Promise.resolve();
@@ -263,6 +264,48 @@
     getPageBlocks(page) {
       const source = this.getPageMarkdown(page);
       return source ? this.markdown.editableBlocks(source) : [];
+    }
+    getMarkdownDiagnostics() {
+      const source = this.source, pages = this.documentPages, revision = this.state.documentFile || null;
+      const documentError = this.documentError, pageCount = this.state.pageCount;
+      const cached = this.markdownDiagnosticsCache;
+      if (cached && cached.source === source && cached.pages === pages && cached.revision === revision &&
+          cached.documentError === documentError && cached.pageCount === pageCount) return copy(cached.result);
+      const diagnostics = this.markdown.diagnose(source);
+      const spans = [];
+      // documentPages is published only after document validation. Legacy OCR
+      // pageMap and approval hashes cannot establish current work-source offsets.
+      if (!documentError && this.completePages(pages, pageCount) &&
+          Array.from(pages).every(page => typeof page === "string") && pages.join("\n\n") === source) {
+        let offset = 0;
+        for (const page of pages) {
+          spans.push({ start: offset, end: offset + page.length });
+          offset += page.length + 2;
+        }
+      }
+      const pageAt = position => {
+        let low = 0, high = spans.length;
+        while (low < high) {
+          const middle = (low + high) >>> 1;
+          if (spans[middle].end <= position) low = middle + 1;
+          else high = middle;
+        }
+        return low < spans.length && spans[low].start <= position ? low + 1 : null;
+      };
+      const issues = diagnostics.issues.map(issue => {
+        let start = issue.start, end = issue.end;
+        // Keep the exact block bounds; ignore boundary whitespace only when
+        // assigning pages so the join separator never becomes a guessed page.
+        while (start < end && /\s/u.test(source[start])) start++;
+        while (end > start && /\s/u.test(source[end - 1])) end--;
+        let page = start < end ? pageAt(start) : null;
+        let endPage = start < end ? pageAt(end - 1) : null;
+        if (page === null || endPage === null) page = endPage = null;
+        return { ...issue, page, endPage, pageStart: page === null ? null : spans[page - 1].start };
+      });
+      const result = { issues, limited: diagnostics.limited, revision };
+      this.markdownDiagnosticsCache = { source, pages, revision, documentError, pageCount, result };
+      return copy(result);
     }
     sourceChanged() {
       return Boolean(this.state.approvedHash && this.state.documentSourceHash && this.state.documentSourceHash !== this.state.approvedHash);

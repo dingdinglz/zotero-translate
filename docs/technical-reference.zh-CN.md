@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.68 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.69 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -178,10 +178,20 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.68.xpi
+unzip -t dist/smart-paper-translator-0.1.69.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.69：原稿 Markdown 问题列表与定位编辑
+
+- 识别原文区新增可折叠的问题列表：显示原因、原文摘要、全文行号和可靠的原文页码；每块首错、前200处明确截限、每组5条。解析后、重开或保存编辑后空闲时自动重查，不随翻译进度重复扫描；可手动重查。语法检查复用渲染器的行内边界，通过私有无输出检查器处理列表、引用、强调和HTML代码标签，不创建真实DOM、不加载MathML、不解码或请求图片。
+- “定位并编辑”只接受当前统一稿的精确偏移，不要求先批准翻译；旧批准稿、重复文字和独立识别页不能用来猜测位置。复核原稿/修订/PDF预览后打开对应块，结构损坏沿用整页源码回退；编辑器获得焦点，问题列表收起以留出空间。保留未保存修改的丢弃确认、迟到拒绝、原子保存和导入不确定门控。修复不会自动改写其他内容、上传或请求模型，修改后仍需重新确认翻译。
+- `npm run check`：916项JavaScript测试全部通过（Markdown/服务/UI合计226项），JS语法、静态检查和差异空白检查通过。新增回归涵盖多处错误、结构尾部、CRLF/Unicode/重复文字、列表/HTML渲染漏报、页映射、分页、重查、未保存编辑、预览失败及关闭/导航竞态。Impeccable机械检查无发现。
+- 使用真实UI/CSS与合成数据在Chromium检查1100px宽窗及620/390px窄窗，浅/深主题、问题列表、定位后的选中源码与保存后数量更新均已检查；未发现页面横向溢出。这不是Gecko/Zotero原生验证。只读核对本机元数据为Zotero10.0.7；未修改API兼容范围、截图白名单、协议2或既有检查点。平台依据仍为[Zotero10开发文档](https://www.zotero.org/support/dev/zotero_10_for_developers)与[官方插件样例](https://github.com/zotero/make-it-red)，本次无新增Zotero私有API。
+- Python未修改。默认`python3`为3.8.13，不满足测试最低版本，首次进度专用测试失败；改用现成`/opt/homebrew/bin/python3.13`（3.13.12），通过44项无第三方依赖测试、明确跳过39项PDF/依赖测试。完整套件因缺PyMuPDF在加载时失败；未安装或修改依赖。
+- 两次XPI构建字节一致，60文件根目录、CRC、源码字节及SHA256SUMS检查通过。交付：`dist/smart-paper-translator-0.1.69.xpi`，1,443,962字节；SHA-256：`4c59e8143b749523fdc262875eb968cf127d0fa6b39d5db5744a0146fdfad64a`。
+- 未操控Zotero、安装插件、读取用户真实出错稿、上传PDF、请求真实OXR/模型或验证原生PDF/附件导入。语法检查不保证语义正确或全部输出能力可用；没有可靠页映射的旧稿只显示片段和行号，须走原有确认迁移或重新解析流程，不能直接跳转。
 
 ## 0.1.68：Python 依赖多段版本校验修复
 

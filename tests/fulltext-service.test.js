@@ -86,6 +86,137 @@ function withPageMap(x, pages = ["# Page one", "Second $x$"]) {
   return x;
 }
 
+async function diagnosticPages(pages) {
+  const x = setup({ markdown: Markdown });
+  x.service.convert = async () => { x.files.set("source.md", "Raw [legacy issue"); return { pageCount: pages.length }; };
+  withPageMap(x, pages); await x.service.parse({ consent: true });
+  return x;
+}
+
+test("Markdown diagnostics map exact current page offsets before confirmation without using repeated text search", async () => {
+  const pages = ["# Title\r\n\r\n😀 Repeat [bad", "😀 Repeat [bad"];
+  const x = await diagnosticPages(pages), result = x.service.getMarkdownDiagnostics();
+  assert.equal(x.service.state.approvedHash, undefined);
+  assert.equal(x.service.plan, null);
+  assert.equal(result.revision, x.service.state.documentFile);
+  assert.equal(result.limited, false);
+  assert.deepEqual(result.issues, Markdown.diagnose(x.service.source).issues.map((issue, index) => ({
+    ...issue, page: index + 1, endPage: index + 1, pageStart: index ? pages[0].length + 2 : 0
+  })));
+  assert.deepEqual(result.issues.map(({ line, endLine }) => [line, endLine]), [[3, 3], [5, 5]]);
+  assert.equal(x.service.source.slice(result.issues[1].start), pages[1]);
+  const loaded = new FulltextService({ ...x.args, sourceHash: x.service.sourceHash }); await loaded.load();
+  assert.deepEqual(loaded.getMarkdownDiagnostics(), result);
+});
+
+test("Markdown diagnostics follow real saved edits and retain current locations while old approval is stale", async () => {
+  const x = await diagnosticPages(["First.\n\nSecond.", "Final."]);
+  await x.service.confirm(x.service.source);
+  const approved = x.service.state.approvedHash, revision = x.service.state.documentFile;
+  assert.deepEqual(x.service.getMarkdownDiagnostics(), { issues: [], limited: false, revision });
+  await x.service.editBlock({ page: 1, index: 1, revision, text: "Second [bad" });
+  const result = x.service.getMarkdownDiagnostics();
+  assert.notEqual(result.revision, revision);
+  assert.equal(x.service.state.approvedHash, approved);
+  assert.equal(x.service.sourceChanged(), true);
+  assert.deepEqual(result.issues.map(({ start, page, endPage, pageStart }) => ({ start, page, endPage, pageStart })), [
+    { start: "First.\n\n".length, page: 1, endPage: 1, pageStart: 0 }
+  ]);
+  await x.service.editBlock({ page: 1, index: 1, revision: result.revision, text: "Second repaired." });
+  assert.deepEqual(x.service.getMarkdownDiagnostics().issues, []);
+  assert.equal(x.service.state.approvedHash, approved);
+});
+
+test("Markdown diagnostic locations handle empty pages and cross-page structural tails without mapping separator bytes", async () => {
+  const pages = ["", "First [bad\r\n", "", "Good.\n\n<table><tr><td>unclosed", "tail\n\n", ""];
+  const x = await diagnosticPages(pages), result = x.service.getMarkdownDiagnostics();
+  const pageFourStart = pages.slice(0, 3).reduce((total, page) => total + page.length + 2, 0);
+  assert.deepEqual(result.issues.map(({ page, endPage, pageStart }) => [page, endPage, pageStart]), [[2, 2, 2], [4, 5, pageFourStart]]);
+  assert.equal(result.issues[1].start, pageFourStart + "Good.\n\n".length);
+  assert.equal(result.issues[1].end, x.service.source.length);
+  assert.match(result.issues[1].message, /表格未闭合/u);
+});
+
+test("Markdown diagnostics fail page mapping closed for legacy, damaged, incomplete and mismatched current documents", async () => {
+  for (const mutate of [
+    service => { service.documentPages = null; },
+    service => { service.documentError = "Damaged document"; },
+    service => { service.documentPages = ["First [bad", null]; },
+    service => { service.documentPages = ["First [bad"]; },
+    service => { service.documentPages = ["First [bad", "Wrong."]; },
+    service => { service.documentPages = new Array(2); },
+    service => { service.state.pageCount = 3; }
+  ]) {
+    const x = await diagnosticPages(["First [bad", "Second [bad"]);
+    assert.equal(x.service.getMarkdownDiagnostics().issues[0].page, 1);
+    mutate(x.service);
+    const files = [...x.files], result = x.service.getMarkdownDiagnostics();
+    assert.equal(result.issues.length, 2);
+    assert.ok(result.issues.every(issue => issue.page === null && issue.endPage === null && issue.pageStart === null));
+    assert.deepEqual([...x.files], files);
+  }
+  const legacy = await diagnosticPages(["First [bad", "Second [bad"]);
+  delete legacy.service.state.documentFile; delete legacy.service.state.documentSourceHash;
+  await legacy.service.save();
+  const files = [...legacy.files];
+  const loaded = new FulltextService({ ...legacy.args, sourceHash: legacy.service.sourceHash }); await loaded.load();
+  assert.ok(loaded.pageMap);
+  assert.equal(loaded.documentPages, null);
+  const result = loaded.getMarkdownDiagnostics();
+  assert.equal(result.revision, null);
+  assert.equal(result.issues.length, 1);
+  assert.equal(result.issues[0].excerpt, "Raw [legacy issue");
+  assert.equal(result.issues[0].page, null);
+  assert.deepEqual([...legacy.files], files);
+});
+
+test("Markdown diagnostics cache only current source metadata and return isolated snapshots without IO or progress coupling", async () => {
+  const x = await diagnosticPages(["First [bad", "Second [bad"]);
+  let diagnoses = 0;
+  x.service.markdown = { ...Markdown, diagnose(source) { diagnoses++; return Markdown.diagnose(source); } };
+  const files = [...x.files], calls = x.calls.slice(), state = JSON.stringify(x.service.state);
+  const forbidden = () => assert.fail("diagnostics must not read/write, hash, emit, verify or request");
+  for (const name of ["readJSON", "writeJSON", "readText", "writeText"]) x.service.storage[name] = forbidden;
+  for (const name of ["hash", "verifySource", "getConfig", "convert", "complete", "createPDF", "importPDF", "exportMarkdown", "emit"]) x.service[name] = forbidden;
+  const first = x.service.getMarkdownDiagnostics(), expected = JSON.parse(JSON.stringify(first));
+  first.issues[0].start = 999; first.issues[0].message = "mutated"; first.issues[0].page = 999;
+  first.issues.push({ message: "extra" }); first.revision = "mutated"; first.limited = true;
+  assert.deepEqual(x.service.getMarkdownDiagnostics(), expected);
+  assert.equal(diagnoses, 1);
+  assert.equal(JSON.stringify(x.service.state), state);
+  x.service.state.stage = "translating"; x.service.state.error = "progress";
+  x.service.translationJobs.set("job", { phase: "translating" });
+  x.service.parseProgress = { phase: "complete", elapsedMS: 1 };
+  assert.deepEqual(x.service.getMarkdownDiagnostics(), expected);
+  assert.equal(diagnoses, 1);
+  const snapshot = x.service.snapshot();
+  assert.equal(Object.hasOwn(snapshot, "markdownDiagnosticsCache"), false);
+  assert.equal(Object.hasOwn(snapshot, "markdownDiagnostics"), false);
+  snapshot.source = "mutated snapshot";
+  assert.deepEqual(x.service.getMarkdownDiagnostics(), expected);
+  x.service.source += " changed";
+  assert.equal(x.service.getMarkdownDiagnostics().issues[0].page, null); assert.equal(diagnoses, 2);
+  x.service.documentPages = Object.freeze(["First [bad", "Second [bad changed"]);
+  assert.equal(x.service.getMarkdownDiagnostics().issues[0].page, 1); assert.equal(diagnoses, 3);
+  x.service.state.documentFile = "new-revision";
+  assert.equal(x.service.getMarkdownDiagnostics().revision, "new-revision"); assert.equal(diagnoses, 4);
+  x.service.documentError = "damaged";
+  assert.equal(x.service.getMarkdownDiagnostics().issues[0].page, null); assert.equal(diagnoses, 5);
+  x.service.documentError = "";
+  assert.equal(x.service.getMarkdownDiagnostics().issues[0].page, 1); assert.equal(diagnoses, 6);
+  assert.deepEqual([...x.files], files); assert.deepEqual(x.calls, calls); assert.equal(x.imports(), 0);
+});
+
+test("Markdown diagnostics propagate the bounded issue list without exposing it in progress snapshots", async () => {
+  const x = await diagnosticPages([Array.from({ length: 201 }, () => "[bad").join("\n\n"), ""]);
+  const result = x.service.getMarkdownDiagnostics();
+  assert.equal(result.issues.length, 200); assert.equal(result.limited, true);
+  assert.ok(result.issues.every(issue => issue.page === 1 && issue.endPage === 1 && issue.pageStart === 0));
+  assert.equal(Object.hasOwn(x.service.snapshot(), "issues"), false);
+  const fresh = setup({ markdown: Markdown });
+  assert.deepEqual(fresh.service.getMarkdownDiagnostics(), { issues: [], limited: false, revision: null });
+});
+
 async function repairPages(pages) {
   const x = setup({ markdown: Markdown });
   x.service.convert = async () => { x.files.set("source.md", "Independent OCR source."); return { pageCount: pages.length }; };

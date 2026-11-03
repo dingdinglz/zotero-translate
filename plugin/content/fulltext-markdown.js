@@ -40,7 +40,14 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
 .spt-fulltext-algorithm math { white-space: normal; }
 `;
 
-  function fail(message) { throw new Error(`全文 Markdown：${message}`); }
+  const parserErrors = new WeakSet();
+  function fail(message) {
+    const error = new Error(`全文 Markdown：${message}`);
+    parserErrors.add(error); throw error;
+  }
+  function diagnosticMessage(error) {
+    return parserErrors.has(error) ? error.message : "全文 Markdown：无法解析当前源码结构";
+  }
   function assertString(value) { if (typeof value !== "string") fail("内容必须是字符串"); }
   function checkSource(source) {
     assertString(source);
@@ -128,95 +135,103 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
   function tableDelimiter(line) {
     return line.includes("|") && /^[\s|:\-]+$/u.test(line) && tableCells(line).every(cell => /^:?-{3,}:?$/u.test(cell));
   }
-  function splitBlocks(source) {
+  function splitBlocks(source, { diagnostic = false } = {}) {
     const lines = linesOf(source);
     const blocks = [];
     let i = 0;
     const push = (start, kind, extra = {}) => blocks.push({ source: lines.slice(start, i).join(""), kind, ...extra });
     while (i < lines.length) {
       const start = i;
-      const line = bare(lines[i]);
-      if (!line.trim()) { i++; push(start, "blank"); continue; }
-      const fence = line.match(/^ {0,3}(`{3,}|~{3,})([^\r\n]*)$/u);
-      if (fence) {
-        const close = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}[ \\t]*$`, "u");
+      try {
+        const line = bare(lines[i]);
+        if (!line.trim()) { i++; push(start, "blank"); continue; }
+        const fence = line.match(/^ {0,3}(`{3,}|~{3,})([^\r\n]*)$/u);
+        if (fence) {
+          const close = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}[ \\t]*$`, "u");
+          i++;
+          while (i < lines.length && !close.test(bare(lines[i]))) i++;
+          if (i === lines.length) fail("代码围栏未闭合");
+          i++; push(start, "code"); continue;
+        }
+        if (/^\s*<!--/u.test(line)) {
+          const remaining = lines.slice(i).join("");
+          const commentStart = remaining.indexOf("<!--");
+          const end = commentStart + readTag(remaining, commentStart).length;
+          let consumed = 0;
+          while (i < lines.length && consumed < end) consumed += lines[i++].length;
+          blocks.push({ source: remaining.slice(0, end), kind: "comment" });
+          const tail = remaining.slice(end, consumed);
+          if (tail) { lines[i - 1] = tail; i--; }
+          continue;
+        }
+        const htmlCode = line.match(/^\s*<(pre|code)(?:\s|>)/iu);
+        if (htmlCode) {
+          const remaining = lines.slice(i).join("");
+          const close = new RegExp(`</${htmlCode[1]}\\s*>`, "iu").exec(remaining);
+          if (!close) fail("HTML 代码块未闭合");
+          const end = close.index + close[0].length;
+          let consumed = 0;
+          while (i < lines.length && consumed < end) consumed += lines[i++].length;
+          if (remaining.slice(end, consumed).trim()) fail("HTML 代码块后有同一行正文，请先分行");
+          push(start, "html-code"); continue;
+        }
+        if (/^\s*<table(?:\s|>)/iu.test(line)) {
+          const remaining = lines.slice(i).join("");
+          const end = tableEnd(remaining, remaining.indexOf("<"));
+          let consumed = 0;
+          while (i < lines.length && consumed < end) consumed += lines[i++].length;
+          if (remaining.slice(end, consumed).trim()) fail("HTML 表格结束标签后有同一行正文，请先分行");
+          push(start, "html-table"); continue;
+        }
+        const math = line.trimStart().match(/^(\$\$|\\\[|\\begin\{([A-Za-z*]+)\})/u);
+        if (math) {
+          const opener = math[1];
+          const closer = opener === "$$" ? "$$" : opener === "\\[" ? "\\]" : `\\end{${math[2]}}`;
+          const remaining = lines.slice(i).join("");
+          const end = remaining.indexOf(closer, remaining.indexOf(opener) + opener.length);
+          if (end < 0) fail("数学块未闭合");
+          let consumed = 0;
+          while (i < lines.length && consumed < end + closer.length) consumed += lines[i++].length;
+          if (remaining.slice(end + closer.length, consumed).trim()) fail("数学块后有同一行正文，请先分行");
+          push(start, "math"); continue;
+        }
+        if (line.includes("|") && i + 1 < lines.length && tableDelimiter(bare(lines[i + 1]))) {
+          const columns = tableCells(line).length;
+          if (tableCells(bare(lines[i + 1])).length !== columns) fail("Markdown 表格分隔行列数不一致");
+          i += 2;
+          while (i < lines.length && bare(lines[i]).trim() && bare(lines[i]).includes("|")) {
+            if (tableCells(bare(lines[i])).length !== columns) fail("Markdown 表格列数不一致");
+            i++;
+          }
+          push(start, "markdown-table"); continue;
+        }
+        const heading = headingAt(lines, i);
+        if (heading) { i += heading.length; push(start, "heading", { heading }); continue; }
+        if (/^(?: {4}|\t)/u.test(line) && !/^\s*(?:[-+*]|\d+[.)])[ \t]+/u.test(line)) {
+          i++;
+          while (i < lines.length && (/^(?: {4}|\t)/u.test(lines[i]) || !bare(lines[i]).trim())) i++;
+          push(start, "indented-code"); continue;
+        }
         i++;
-        while (i < lines.length && !close.test(bare(lines[i]))) i++;
-        if (i === lines.length) fail("代码围栏未闭合");
-        i++; push(start, "code"); continue;
-      }
-      if (/^\s*<!--/u.test(line)) {
-        const remaining = lines.slice(i).join("");
-        const commentStart = remaining.indexOf("<!--");
-        const end = commentStart + readTag(remaining, commentStart).length;
-        let consumed = 0;
-        while (i < lines.length && consumed < end) consumed += lines[i++].length;
-        blocks.push({ source: remaining.slice(0, end), kind: "comment" });
-        const tail = remaining.slice(end, consumed);
-        if (tail) { lines[i - 1] = tail; i--; }
-        continue;
-      }
-      const htmlCode = line.match(/^\s*<(pre|code)(?:\s|>)/iu);
-      if (htmlCode) {
-        const remaining = lines.slice(i).join("");
-        const close = new RegExp(`</${htmlCode[1]}\\s*>`, "iu").exec(remaining);
-        if (!close) fail("HTML 代码块未闭合");
-        const end = close.index + close[0].length;
-        let consumed = 0;
-        while (i < lines.length && consumed < end) consumed += lines[i++].length;
-        if (remaining.slice(end, consumed).trim()) fail("HTML 代码块后有同一行正文，请先分行");
-        push(start, "html-code"); continue;
-      }
-      if (/^\s*<table(?:\s|>)/iu.test(line)) {
-        const remaining = lines.slice(i).join("");
-        const end = tableEnd(remaining, remaining.indexOf("<"));
-        let consumed = 0;
-        while (i < lines.length && consumed < end) consumed += lines[i++].length;
-        if (remaining.slice(end, consumed).trim()) fail("HTML 表格结束标签后有同一行正文，请先分行");
-        push(start, "html-table"); continue;
-      }
-      const math = line.trimStart().match(/^(\$\$|\\\[|\\begin\{([A-Za-z*]+)\})/u);
-      if (math) {
-        const opener = math[1];
-        const closer = opener === "$$" ? "$$" : opener === "\\[" ? "\\]" : `\\end{${math[2]}}`;
-        const remaining = lines.slice(i).join("");
-        const end = remaining.indexOf(closer, remaining.indexOf(opener) + opener.length);
-        if (end < 0) fail("数学块未闭合");
-        let consumed = 0;
-        while (i < lines.length && consumed < end + closer.length) consumed += lines[i++].length;
-        if (remaining.slice(end + closer.length, consumed).trim()) fail("数学块后有同一行正文，请先分行");
-        push(start, "math"); continue;
-      }
-      if (line.includes("|") && i + 1 < lines.length && tableDelimiter(bare(lines[i + 1]))) {
-        const columns = tableCells(line).length;
-        if (tableCells(bare(lines[i + 1])).length !== columns) fail("Markdown 表格分隔行列数不一致");
-        i += 2;
-        while (i < lines.length && bare(lines[i]).trim() && bare(lines[i]).includes("|")) {
-          if (tableCells(bare(lines[i])).length !== columns) fail("Markdown 表格列数不一致");
+        while (i < lines.length && bare(lines[i]).trim()) {
+          if (headingAt(lines, i) || (bare(lines[i]).includes("|") && i + 1 < lines.length && tableDelimiter(bare(lines[i + 1]))) || /^ {0,3}(?:`{3,}|~{3,}|<(?:table|pre|code)\b|<!--|\$\$|\\\[|\\begin\{)/iu.test(bare(lines[i]))) break;
           i++;
         }
-        push(start, "markdown-table"); continue;
+        push(start, "paragraph");
+      } catch (error) {
+        if (!diagnostic) throw error;
+        // The failed iteration may already have consumed lines. Keep its whole
+        // uncertain tail, never guess fresh paragraph boundaries inside it.
+        blocks.push({ source: lines.slice(start).join(""), kind: "source", diagnosticMessage: diagnosticMessage(error) });
+        break;
       }
-      const heading = headingAt(lines, i);
-      if (heading) { i += heading.length; push(start, "heading", { heading }); continue; }
-      if (/^(?: {4}|\t)/u.test(line) && !/^\s*(?:[-+*]|\d+[.)])[ \t]+/u.test(line)) {
-        i++;
-        while (i < lines.length && (/^(?: {4}|\t)/u.test(lines[i]) || !bare(lines[i]).trim())) i++;
-        push(start, "indented-code"); continue;
-      }
-      i++;
-      while (i < lines.length && bare(lines[i]).trim()) {
-        if (headingAt(lines, i) || (bare(lines[i]).includes("|") && i + 1 < lines.length && tableDelimiter(bare(lines[i + 1]))) || /^ {0,3}(?:`{3,}|~{3,}|<(?:table|pre|code)\b|<!--|\$\$|\\\[|\\begin\{)/iu.test(bare(lines[i]))) break;
-        i++;
-      }
-      push(start, "paragraph");
     }
     return blocks;
   }
 
-  function rangedBlocks(source) {
+  function rangedBlocks(source, options) {
     let offset = 0, index = 0;
-    return splitBlocks(source).map(block => {
+    return splitBlocks(source, options).map(block => {
       const start = offset; offset += block.source.length;
       return { ...block, start, end: offset, index: ["blank", "comment"].includes(block.kind) ? null : index++ };
     });
@@ -230,6 +245,65 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
       if (strict) throw error;
       return source ? [{ index: 0, start: 0, end: source.length, kind: "source", source }] : [];
     }
+  }
+
+  // A private no-output sink lets diagnostics use the actual renderer's inline
+  // boundaries (lists, quotes, emphasis and HTML cells), without creating DOM,
+  // loading MathML, decoding images or invoking any host callback.
+  const SYNTAX_NODE = Object.freeze({ childNodes: Object.freeze([]), append() {}, replaceChildren() {}, setAttribute() {} });
+  const SYNTAX_DOCUMENT = Object.freeze({ createElementNS: () => SYNTAX_NODE, createTextNode: () => SYNTAX_NODE });
+
+  // Syntax diagnostics deliberately do not build translation plans, validate
+  // semantic content, decode images, render DOM, or enforce model input budgets.
+  function diagnose(source, { limit = 200 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 0) limit = 200;
+    const issues = [];
+    let cursor = 0, lineNumber = 1;
+    const text = typeof source === "string" ? source : "";
+    const lineAt = position => {
+      while (cursor < position) {
+        const ch = text[cursor++];
+        if (ch === "\n" || (ch === "\r" && text[cursor] !== "\n")) lineNumber++;
+      }
+      return lineNumber;
+    };
+    const report = (start, end, message) => {
+      if (issues.length === limit) return false;
+      let prefix = "", offset = start, count = 0;
+      // Only inspect a bounded prefix, even for a huge structural tail.
+      while (offset < end && count++ < 159) {
+        const point = text.codePointAt(offset);
+        prefix += String.fromCodePoint(point); offset += point > 0xffff ? 2 : 1;
+      }
+      const excerpt = prefix.replace(/\s+/gu, " ").trim() + (offset < end ? "…" : "");
+      issues.push({ start, end, message, excerpt, line: lineAt(start), endLine: lineAt(Math.max(start, end - 1)) });
+      return true;
+    };
+    let blocks;
+    try {
+      checkSource(source);
+      blocks = rangedBlocks(source, { diagnostic: true });
+    } catch (error) {
+      return { issues, limited: !report(0, text.length, diagnosticMessage(error)) };
+    }
+    for (const block of blocks) {
+      let message = block.diagnosticMessage;
+      if (!message) {
+        try {
+          if (block.heading) lex(block.heading.title);
+          else if (block.kind === "math") mathAt(block.source, block.source.search(/\S/u));
+          else if (!["blank", "comment", "code", "indented-code", "html-code"].includes(block.kind)) {
+            // A null safeHTMLParts result means inert literal fallback, not an
+            // error. Its lexer still rejects genuinely unclosed delimiters.
+            if (/<\/?[A-Za-z!]/u.test(block.source)) safeHTMLParts(block.source);
+            else lex(block.source);
+          }
+          renderMarkdown(SYNTAX_DOCUMENT, SYNTAX_NODE, block.source);
+        } catch (error) { message = diagnosticMessage(error); }
+      }
+      if (message && !report(block.start, block.end, message)) return { issues, limited: true };
+    }
+    return { issues, limited: false };
   }
 
   function balancedEnd(source, start, open, close) {
@@ -644,7 +718,8 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
   function renderMarkdown(doc, container, source, { imageResolver, onRemoteImage, onBlock } = {}) {
     checkSource(source);
     if (!doc || !container) fail("缺少渲染文档或容器");
-    const MathRenderer = modules.MathRenderer || (typeof require === "function" ? require("./math-renderer.js") : null);
+    const syntaxOnly = doc === SYNTAX_DOCUMENT;
+    const MathRenderer = syntaxOnly ? null : modules.MathRenderer || (typeof require === "function" ? require("./math-renderer.js") : null);
     const root = doc.createElementNS(HTML_NS, "div");
     let nodes = 0;
     let imageBytes = 0;
@@ -655,6 +730,7 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
     const text = (parent, value) => { if (++nodes > MAX_NODES) fail("渲染节点超过上限"); parent.append(doc.createTextNode(value)); };
     const fallback = (parent, value) => { const pre = element("pre"); pre.setAttribute("class", "spt-fulltext-source"); text(pre, value); parent.append(pre); };
     const appendMath = (parent, value, display) => {
+      if (syntaxOnly) return;
       if (!MathRenderer?.appendMath) fail("MathML 渲染器不可用");
       if (++nodes > MAX_NODES) fail("渲染节点超过上限");
       MathRenderer.appendMath(doc, parent, value, display);
@@ -663,6 +739,7 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
       if (nodes > MAX_NODES) fail("MathML 节点超过上限");
     };
     const image = (parent, uri, alt, original) => {
+      if (syntaxOnly) return;
       if (!uri.startsWith("data:")) {
         const resolved = imageResolver?.(uri);
         if (!resolved) {
@@ -881,7 +958,7 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
   modules.FulltextMarkdown = {
     MAX_SOURCE_BYTES, MAX_SEGMENT_LENGTH, MAX_TRANSLATION_LENGTH, MAX_TEXT_PARTS, MAX_CONTEXT_PARTS, MAX_RESPONSE_LENGTH,
     MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, MAX_IMAGE_PIXELS,
-    PRINT_CSS, validateSource: checkSource, editableBlocks, imageInfo, createPlan, prepareSegment, restoreTranslation, validateRestored, assemble, renderMarkdown
+    PRINT_CSS, validateSource: checkSource, editableBlocks, diagnose, imageInfo, createPlan, prepareSegment, restoreTranslation, validateRestored, assemble, renderMarkdown
   };
   if (typeof module !== "undefined" && module.exports) module.exports = modules.FulltextMarkdown;
 })(typeof globalThis !== "undefined" ? globalThis : this);

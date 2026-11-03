@@ -66,6 +66,135 @@ test("IIFE registers FulltextMarkdown without startup, DOM or network side effec
   for (const name of ["createPlan", "prepareSegment", "restoreTranslation", "validateRestored", "assemble", "renderMarkdown"]) assert.equal(typeof M[name], "function");
 });
 
+test("diagnostics report one first inline syntax error per exact block with CRLF-aware lines", () => {
+  const source = "# Broken [title\r\n\r\n😀 Same [open $also\r\n\r\n😀 Same [open $also\r\n\r\nLast `code\r\n";
+  const blocks = M.editableBlocks(source), result = M.diagnose(source);
+  assert.equal(result.limited, false);
+  assert.equal(result.issues.length, 4);
+  result.issues.forEach((issue, index) => {
+    assert.equal(issue.start, blocks[index].start);
+    assert.equal(issue.end, blocks[index].end);
+    assert.equal(issue.line, index * 2 + 1);
+    assert.equal(issue.endLine, index * 2 + 1);
+    assert.match(issue.message, index === 3 ? /行内代码未闭合/u : /括号未闭合/u);
+    assert.equal(issue.excerpt, blocks[index].source.trim());
+    assert.deepEqual(Object.keys(issue).sort(), ["start", "end", "message", "excerpt", "line", "endLine"].sort());
+  });
+  assert.notEqual(result.issues[1].start, result.issues[2].start);
+  const mixed = M.diagnose("ok\r\r[bad\nnext\r\n\r\n$bad");
+  assert.deepEqual(mixed.issues.map(({ line, endLine }) => [line, endLine]), [[3, 4], [6, 6]]);
+});
+
+test("diagnostics retain valid prefixes then one uncertain structural tail without changing strict or editable parsing", () => {
+  for (const tail of ["```js\n[unclosed\n\nLater $bad", "$$\nmath\n\nLater [bad",
+    "<table><tr><td>Text\n\nLater [bad", "<pre>code\n\nLater [bad", "<!-- comment\n\nLater [bad",
+    "| A | B |\n| --- | --- |\n| one |\n\nLater [bad",
+    "<table><tr><td>ok</td></tr></table> trailing\n\nLater [bad"]) {
+    const prefix = "# Valid\n\nFirst [bad\n\nGood.\n\n", source = prefix + tail;
+    const result = M.diagnose(source);
+    assert.equal(result.limited, false);
+    assert.equal(result.issues.length, 2, tail);
+    assert.equal(result.issues[0].start, "# Valid\n\n".length);
+    assert.equal(result.issues[1].start, prefix.length);
+    assert.equal(result.issues[1].end, source.length);
+    assert.equal(source.slice(result.issues[1].start), tail);
+    assert.equal(result.issues[1].line, 7);
+    assert.throws(() => M.editableBlocks(source, { strict: true }));
+    assert.deepEqual(M.editableBlocks(source), [{ index: 0, start: 0, end: source.length, kind: "source", source }]);
+    assert.throws(() => M.createPlan(source));
+  }
+  const source = "<!-- safe -->```\nnot closed";
+  const issue = M.diagnose(source).issues[0];
+  assert.equal(issue.start, "<!-- safe -->".length);
+  assert.equal(issue.end, source.length);
+});
+
+test("diagnostics skip protected literal blocks and allow escaped brackets, valid math and inert HTML fallback", () => {
+  const source = String.raw`# Valid \] and \$ text
+
+Inline \[literal\] and \![literal], \$5, \`[code $\`.
+
+Math $x$ and \(y\), [label](https://example.test), [1].
+
+$$z$$
+
+\begin{align}x &= y\end{align}
+
+~~~algorithm
+[unterminated $literal
+~~~
+
+    [unterminated $literal
+
+<!-- [unterminated $literal -->
+
+<pre>[unterminated $literal</pre>
+
+<widget>Unsupported but inert.</widget>
+
+<b>Unbalanced safe HTML uses literal fallback.
+
+<table><tr><td onclick="no()">Unsupported inert attributes</td></tr></table>`;
+  assert.deepEqual(M.diagnose(source.replace(/\\`/gu, "`")), { issues: [], limited: false });
+  assert.deepEqual(M.diagnose(""), { issues: [], limited: false });
+  assert.deepEqual(M.diagnose("正文".repeat(128001)), { issues: [], limited: false });
+  assert.throws(() => M.prepareSegment({ id: "large", source: "正文".repeat(128001), translatable: true }), /单块输入/u);
+  assert.equal(M.diagnose("## [bad\n\n$x\n\n<p title=\"open").issues.length, 3);
+});
+
+test("diagnostics follow actual inline render boundaries without MathML, DOM, image decoding or requests", () => {
+  for (const source of ['<pre title="unterminated>text</pre>', '<code title="unterminated>text</code>',
+    '- First $unclosed\n- Second $also', '- First [unclosed\n- Second ](https://example.test)',
+    'Before *inside $unclosed* after $also', '> - First $unclosed\n> - Second $also']) {
+    let failure;
+    try { render(source); } catch (error) { failure = error; }
+    assert.ok(failure, source);
+    const result = M.diagnose(source);
+    assert.equal(result.issues.length, 1, source);
+    assert.equal(result.issues[0].message, failure.message, source);
+    assert.equal(result.issues[0].start, 0); assert.equal(result.issues[0].end, source.length);
+  }
+  const code = fs.readFileSync(require.resolve("../plugin/content/fulltext-markdown.js"), "utf8");
+  const unavailable = () => assert.fail("syntax checks must not invoke DOM, MathML, decoding, requests or require");
+  const registry = {};
+  Object.defineProperty(registry, "MathRenderer", { get: unavailable });
+  const scope = { SmartPaperTranslatorModules: registry, require: unavailable, document: { createElementNS: unavailable }, fetch: unavailable, atob: unavailable };
+  vm.runInNewContext(code, scope);
+  const result = registry.FulltextMarkdown.diagnose('- Valid $x$\n- Valid [link](https://example.test)\n\n![image](data:image/png;base64,invalid)\n\n![remote](https://example.test/a.png)');
+  assert.equal(result.issues.length, 0); assert.equal(result.limited, false);
+});
+
+test("diagnostics bound issue count and Unicode excerpts and catch source validation failures locally", () => {
+  const source = Array.from({ length: 202 }, () => "😀".repeat(200) + "[bad").join("\n\n");
+  let scanned = 0;
+  const original = String.prototype.codePointAt;
+  let result;
+  try {
+    String.prototype.codePointAt = function (...args) { scanned++; return original.apply(this, args); };
+    result = M.diagnose(source);
+  } finally { String.prototype.codePointAt = original; }
+  assert.equal(result.issues.length, 200);
+  assert.equal(result.limited, true);
+  assert.ok(scanned <= 200 * 160);
+  for (const issue of result.issues) {
+    assert.equal(issue.excerpt, "😀".repeat(159) + "…");
+    assert.equal(Array.from(issue.excerpt).length, 160);
+    assert.doesNotMatch(issue.excerpt, /[\uD800-\uDFFF]/u);
+  }
+  assert.equal(M.diagnose("[one\n\n[two", { limit: 2 }).limited, false);
+  assert.equal(M.diagnose("[one\n\n[two\n\n[three", { limit: 2 }).limited, true);
+  assert.deepEqual(M.diagnose("[one", { limit: 0 }), { issues: [], limited: true });
+  assert.deepEqual(M.diagnose("valid", { limit: 0 }), { issues: [], limited: false });
+  assert.equal(M.diagnose(source, { limit: -1 }).issues.length, 200);
+  for (const invalid of [null, "\uD800", "\u0000PRIVATE"]) {
+    const result = M.diagnose(invalid);
+    assert.equal(result.issues.length, 1);
+    assert.match(result.issues[0].message, /^全文 Markdown：/u);
+    assert.doesNotMatch(result.issues[0].message, /PRIVATE/u);
+    assert.equal(result.limited, false);
+  }
+});
+
 test("editable blocks carry exact offsets without swallowing whitespace or repeated text", () => {
   const source = "# Title\r\n\r\nSame\r\n\r\nSame\r\n\r\n$$x$$\r\n\r\n| A | B |\r\n| --- | --- |\r\n| x | y |\r\n";
   const blocks = M.editableBlocks(source);
