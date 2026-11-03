@@ -504,12 +504,17 @@
     }
     async printPDF(owner, markdown, taskRoot, registerCancel, getImageCache) {
       if (owner.closed || this.stopped) throw new Error("确认窗口已经关闭或插件已退出。");
+      // Snapshot once before any asynchronous image/font work. Changing typography
+      // affects the next export, not this print or the saved translation checkpoints.
+      const printCSS = modules.FulltextMarkdown.getPrintCSS(
+        this.getPreference(PREFIX + "fulltextPDFFont"),
+        this.getPreference(PREFIX + "fulltextPDFCustomFont") ?? "");
       const ownerDocument = owner.document;
       const doc = ownerDocument.implementation.createHTMLDocument("中文译文");
       const meta = doc.createElement("meta"); meta.setAttribute("http-equiv", "Content-Security-Policy");
       meta.setAttribute("content", "default-src 'none'; script-src 'none'; connect-src 'none'; img-src data:; style-src 'unsafe-inline'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'");
       doc.head.append(meta);
-      const style = doc.createElement("style"); style.textContent = modules.FulltextMarkdown.PRINT_CSS; doc.head.append(style);
+      const style = doc.createElement("style"); style.textContent = printCSS; doc.head.append(style);
       // Inert createHTMLDocument() has no defaultView. Only borrow the owner's XML
       // parser constructor; all rendered nodes are still created/imported in the inert document.
       const renderDocument = { defaultView: { DOMParser: owner.DOMParser },
@@ -595,6 +600,7 @@
         stage = "装载安全打印内容";
         if (!printDocument.head || !printDocument.body) throw new Error("隔离打印文档缺少正文结构。");
         printDocument.head.append(printDocument.importNode(meta, true));
+        printDocument.documentElement.setAttribute("lang", "zh-CN");
         for (const child of Array.from(doc.head.childNodes)) {
           if (child !== meta) printDocument.head.append(printDocument.importNode(child, true));
         }

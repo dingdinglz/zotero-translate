@@ -76,7 +76,7 @@
     </description>
   </groupbox>
 
-  <groupbox id="spt-fulltext-settings" data-search-strings-raw="全文,PDF,Markdown,OXR,Python,校对,参考文献">
+  <groupbox id="spt-fulltext-settings" data-search-strings-raw="全文,PDF,Markdown,OXR,Python,校对,参考文献,字体,苹方,黑体,宋体">
     <label><html:h2>论文全文翻译</html:h2></label>
     <description>解析前确认向 OXR 上传 PDF；确认 Markdown 后才逐段发送给上方 DeepSeek 服务。共用地址、模型和安全保存的密钥，目标固定为简体中文。关闭确认页暂停并保留进度。</description>
     <html:div class="spt-prefs-grid">
@@ -94,11 +94,21 @@
       </html:div>
       <html:label for="spt-fulltext-oxr">OXR API 地址</html:label>
       <html:input id="spt-fulltext-oxr" type="url" preference="extensions.smart-paper-translator.fulltextOXRBaseURL" />
+      <html:label for="spt-fulltext-pdf-font">中文 PDF 字体</html:label>
+      <html:select id="spt-fulltext-pdf-font" preference="extensions.smart-paper-translator.fulltextPDFFont" aria-describedby="spt-fulltext-pdf-font-help">
+        <html:option value="sans">黑体 · 屏幕阅读（默认）</html:option>
+        <html:option value="serif">宋体 · 书刊风格</html:option>
+        <html:option value="custom">自定义本机字体</html:option>
+      </html:select>
+      <html:label for="spt-fulltext-pdf-custom-font">自定义字体名称</html:label>
+      <html:input id="spt-fulltext-pdf-custom-font" type="text" maxlength="128" disabled="disabled" preference="extensions.smart-paper-translator.fulltextPDFCustomFont" placeholder="例如：PingFang SC" aria-describedby="spt-fulltext-pdf-font-help" />
+      <html:p id="spt-fulltext-pdf-font-help" class="spt-fulltext-font-help">黑体优先用苹方 / 微软雅黑；宋体优先用思源宋体 / Noto 宋体，再回退系统宋体。自定义只填一个已安装的字体家族名称（文字、数字、空格、连字符或下划线），不填路径；留空或缺失时回退黑体。不下载字体。</html:p>
       <html:label for="spt-fulltext-prompt">全文翻译提示词</html:label>
       <html:textarea id="spt-fulltext-prompt" rows="4" preference="extensions.smart-paper-translator.fulltextTranslationPrompt"></html:textarea>
       <html:label for="spt-fulltext-review-prompt">逐段校对提示词</html:label>
       <html:textarea id="spt-fulltext-review-prompt" rows="4" preference="extensions.smart-paper-translator.fulltextReviewPrompt"></html:textarea>
     </html:div>
+    <description>PDF 正文 12pt、1.75 倍行距，公式和代码保留专用字体。字体修改仅用于下次生成 PDF，不重译、不改变 Markdown 或已有附件；完成任务可在“更多操作”中重新生成中文 PDF。</description>
     <html:p id="spt-fulltext-status" class="spt-prefs-status" role="status"></html:p>
     <description>需要已安装 PyMuPDF ≥ 1.24.4（1.x）、requests ≥ 2.31（2.x）的 Python ≥ 3.9。不会自动安装依赖。可在终端为所选环境运行：python -m pip install 'PyMuPDF&gt;=1.24.4,&lt;2' 'requests&gt;=2.31,&lt;3'。检测只访问本机，不调用模型或上传论文。</description>
     <description>提示词只填写翻译要求，无需模板变量或输出说明。插件强制结构化响应并保护参考文献条目、引用标记、公式、代码、图片及 Markdown 格式；模型校对不能保证语义绝对正确。</description>

@@ -24,11 +24,15 @@
   const HTML_NS = "http://www.w3.org/1999/xhtml";
   const TAGS = new Set("table thead tbody tfoot tr td th caption colgroup col p div span b strong i em sub sup u s del br code pre ul ol li blockquote h1 h2 h3 h4 h5 h6 img a".split(" "));
   const VOID = new Set(["br", "col", "img"]);
+  const PRINT_SANS = '"PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif';
+  const PRINT_SERIF = '"Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", serif';
   const PRINT_CSS = `@page { size: A4; margin: 18mm 16mm; }
 html { color-scheme: light; background: white; color: #111; }
-body { font-family: "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "SimSun", serif; font-size: 11pt; line-height: 1.65; overflow-wrap: anywhere; }
-h1,h2,h3,h4,h5,h6 { break-after: avoid; line-height: 1.3; }
-p { orphans: 3; widows: 3; } pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+body { margin: 0; font-family: ${PRINT_SANS}; font-size: 12pt; font-weight: 400; line-height: 1.75; overflow-wrap: anywhere; }
+h1,h2,h3,h4,h5,h6 { break-after: avoid; line-height: 1.3; font-weight: 600; }
+h1 { font-size: 22pt; } h2 { font-size: 17pt; } h3 { font-size: 14pt; } h4,h5,h6 { font-size: 12pt; }
+p { margin: 0 0 0.85em; orphans: 3; widows: 3; } pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+math { font-family: math; }
 code,pre { font-family: "Noto Sans Mono", Menlo, monospace; font-size: 9pt; }
 table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 9pt; margin: 1em 0; }
 th,td { border: 0.3mm solid #aaa; padding: 1.5mm; overflow-wrap: anywhere; }
@@ -39,6 +43,18 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
 .spt-fulltext-algorithm { line-height: 1.8; tab-size: 4; }
 .spt-fulltext-algorithm math { white-space: normal; }
 `;
+
+  // Output-only settings: never part of translation signatures or model input.
+  function getPrintCSS(font = "sans", customFont = "") {
+    if (font === "serif") return PRINT_CSS + `\nbody { font-family: ${PRINT_SERIF}; }\n`;
+    if (font !== "custom") return PRINT_CSS;
+    if (typeof customFont !== "string" || customFont.length > 128 ||
+        (customFont && !/^[\p{L}\p{M}\p{N} _-]+$/u.test(customFont))) {
+      throw new Error("PDF 自定义字体无效：请在设置中填写一个本机字体名称（最多128字符，仅文字、数字、空格、连字符或下划线），不要填写路径或 CSS。");
+    }
+    const family = customFont.trim();
+    return family ? PRINT_CSS + `\nbody { font-family: "${family}", ${PRINT_SANS}; }\n` : PRINT_CSS;
+  }
 
   const parserErrors = new WeakSet();
   function fail(message) {
@@ -958,7 +974,7 @@ blockquote { margin-inline: 1em; padding-inline-start: 1em; border-inline-start:
   modules.FulltextMarkdown = {
     MAX_SOURCE_BYTES, MAX_SEGMENT_LENGTH, MAX_TRANSLATION_LENGTH, MAX_TEXT_PARTS, MAX_CONTEXT_PARTS, MAX_RESPONSE_LENGTH,
     MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, MAX_IMAGE_PIXELS,
-    PRINT_CSS, validateSource: checkSource, editableBlocks, diagnose, imageInfo, createPlan, prepareSegment, restoreTranslation, validateRestored, assemble, renderMarkdown
+    PRINT_CSS, getPrintCSS, validateSource: checkSource, editableBlocks, diagnose, imageInfo, createPlan, prepareSegment, restoreTranslation, validateRestored, assemble, renderMarkdown
   };
   if (typeof module !== "undefined" && module.exports) module.exports = modules.FulltextMarkdown;
 })(typeof globalThis !== "undefined" ? globalThis : this);

@@ -214,7 +214,7 @@ const printMarkdown = source => `中文正文\n\n${source}`;
 function printFixture({ failedImage = false, delayed = false, failure = "", manualLoad = false,
   hold = "", context = "content", inaccessible = "", factory = "createContentWindow",
   wrappedBridge = false, existingBridge = null, bridgeFailure = "", cloneContext = "content",
-  autoClone = true, beforeNative = () => {}, afterClone = () => {} } = {}) {
+  autoClone = true, beforeNative = () => {}, afterClone = () => {}, font = "sans", customFont = "" } = {}) {
   const vm = require("node:vm"), fs = require("node:fs");
   const files = new Map([["/data/task/translated.pdf", new TextEncoder().encode("old PDF")]]);
   const dirs = new Set(["/data/task"]), calls = [], assignments = [], timers = new Set();
@@ -236,7 +236,9 @@ function printFixture({ failedImage = false, delayed = false, failure = "", manu
   let frame, cancel, content, initial, loaded, unregistered = 0, serialized = 0;
   let settled = false, contentAccess = inaccessible;
   const csp = "default-src 'none'; script-src 'none'; connect-src 'none'; img-src data:; style-src 'unsafe-inline'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
-  const css = "body { color: black; }";
+  const fontPrefs = { fulltextPDFFont: font, fulltextPDFCustomFont: customFont };
+  let css;
+  try { css = Markdown.getPrintCSS(font, customFont); } catch (_) { /* invalid input must fail in the runtime */ }
   const element = (tag = "div", document = null) => ({ tag, localName: tag, nodeName: tag.toUpperCase(),
     nodeType: tag === "#text" ? 3 : 1, ownerDocument: document, attributes: {}, childNodes: [], style: {},
     get children() { return this.childNodes.filter(node => node.nodeType === 1); },
@@ -477,7 +479,7 @@ function printFixture({ failedImage = false, delayed = false, failure = "", manu
     setTimeout: (fn, ms) => { const timer = { fn, ms }; timers.add(timer); return timer; },
     clearTimeout: timer => timers.delete(timer),
     SmartPaperTranslatorModules: { Constants: { VERSION: "test" }, ACP: { toNativeAbsolutePath: path => path },
-      FulltextMarkdown: { ...Markdown, PRINT_CSS: css, renderMarkdown(doc, body, markdown, options = {}) {
+      FulltextMarkdown: { ...Markdown, renderMarkdown(doc, body, markdown, options = {}) {
         assert.equal(doc.defaultView.DOMParser, XMLParser);
         rendered.push({ markdown, registered });
         Markdown.renderMarkdown(doc, body, markdown, { ...options,
@@ -512,13 +514,15 @@ function printFixture({ failedImage = false, delayed = false, failure = "", manu
       } }
   };
   vm.runInNewContext(fs.readFileSync(require.resolve("../plugin/content/fulltext-runtime.js"), "utf8"), scope);
-  const runtime = new scope.SmartPaperTranslatorModules.FulltextRuntime.FulltextRuntime({});
+  const runtime = new scope.SmartPaperTranslatorModules.FulltextRuntime.FulltextRuntime({
+    getPreference: key => fontPrefs[key.replace("extensions.smart-paper-translator.", "")]
+  });
   runtime.python = async (operation, request) => {
     calls.push([operation, request]);
     if (failure === "validation") throw nativeOutputException();
     await pause("python"); return { pageCount: 1 };
   };
-  return { runtime, owner, calls, files, assignments, imports, insertions, lifecycle, listeners, timers,
+  return { runtime, owner, calls, files, assignments, imports, insertions, lifecycle, listeners, timers, fontPrefs,
     clones, bridgeWrites, bridgeReads, qi, nativeRequests, bridge: () => nativeBridge,
     bridgeValue: () => bridgeValue, rendered, remoteImages, imageCommits, imageSources, inert,
     frame: () => frame, initial: () => initial, loaded: () => loaded, content: () => content,
@@ -558,6 +562,38 @@ test("native print adapter uses isolated settings, supplies XML parser and valid
   assert.ok(x.frame().removed); x.assertCleaned();
   assert.match(new TextDecoder().decode(x.files.get("/data/task/translated.pdf")), /^%PDF-/u);
   assert.equal(x.files.has("/data/task/print-abcd.pdf"), false);
+});
+
+for (const [font, customFont, expected] of [
+  ["sans", "", /body \{ margin: 0; font-family: "PingFang SC"/u],
+  ["serif", "", /body \{ font-family: "Source Han Serif SC"/u],
+  ["custom", "思源黑体", /body \{ font-family: "思源黑体", "PingFang SC"/u]
+]) {
+  test(`PDF ${font} preference reaches cloned print document without changing Markdown`, async () => {
+    const x = printFixture({ font, customFont }); await x.start("中文正文");
+    const doc = x.content();
+    assert.match(doc.head.children.find(node => node.tag === "style").textContent, expected);
+    assert.equal(doc.documentElement.attributes.lang, "zh-CN");
+    assert.equal(x.rendered[0].markdown, "中文正文");
+    x.assertCleaned();
+  });
+}
+
+test("PDF font preference is snapshotted before asynchronous preparation", async () => {
+  const x = printFixture({ hold: "fonts", font: "custom", customFont: "Local Font" });
+  const printing = x.start(); await x.waitFor("fonts", printing);
+  x.fontPrefs.fulltextPDFFont = "serif"; x.fontPrefs.fulltextPDFCustomFont = "Another Font";
+  x.release("fonts"); await printing;
+  assert.match(x.content().head.children.find(node => node.tag === "style").textContent, /"Local Font"/u);
+  x.assertCleaned();
+});
+
+test("invalid PDF custom font fails before resources, image downloads or native printing", async () => {
+  const x = printFixture({ font: "custom", customFont: 'bad";src:url(https://example.test)' });
+  await assert.rejects(x.start(), /PDF 自定义字体无效/u);
+  assert.equal(x.frame(), undefined); assert.deepEqual(x.calls, []);
+  assert.deepEqual(x.rendered, []);
+  assert.equal(new TextDecoder().decode(x.files.get("/data/task/translated.pdf")), "old PDF");
 });
 
 test("failed image decode keeps the previous PDF and never prints", async () => {

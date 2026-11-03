@@ -6,6 +6,29 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const M = require("../plugin/content/fulltext-markdown.js");
 
+test("PDF typography defaults to local sans fonts and explicit readable print sizes", () => {
+  assert.equal(M.getPrintCSS(), M.PRINT_CSS);
+  assert.match(M.PRINT_CSS, /font-family: "PingFang SC", "Microsoft YaHei"/u);
+  assert.match(M.PRINT_CSS, /font-size: 12pt; font-weight: 400; line-height: 1\.75/u);
+  assert.match(M.PRINT_CSS, /math \{ font-family: math; \}/u);
+  assert.match(M.PRINT_CSS, /code,pre \{ font-family: "Noto Sans Mono", Menlo, monospace/u);
+  assert.doesNotMatch(M.PRINT_CSS, /@font-face|@import|url\(/iu);
+  assert.match(M.getPrintCSS("serif"), /body \{ font-family: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC"/u);
+  assert.equal(M.getPrintCSS("unknown", "invalid;"), M.PRINT_CSS);
+  assert.equal(M.getPrintCSS("custom", "   "), M.PRINT_CSS);
+  for (const font of ["PingFang SC", "思源黑体", "Noto Sans CJK SC", "字体-123_Regular"]) {
+    assert.ok(M.getPrintCSS("custom", ` ${font} `).endsWith(`body { font-family: "${font}", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif; }\n`));
+  }
+});
+
+test("PDF font names cannot inject CSS, resources, lists, controls or unbounded text", () => {
+  for (const font of ['a";color:red', "a,b", "url(https://x)", "a\\b", "</style>", "a\nb", "a\u0000", "a\u202e", "\ud800", "x".repeat(129), {}, 42]) {
+    assert.throws(() => M.getPrintCSS("custom", font), /PDF 自定义字体无效/u);
+  }
+  assert.ok(M.getPrintCSS("custom", "x".repeat(128)).includes('"' + "x".repeat(128) + '"'));
+  assert.equal(M.getPrintCSS("sans", 'ignored"'), M.PRINT_CSS);
+});
+
 function roundtrip(source) {
   const plan = M.createPlan(source);
   assert.equal(plan.segments.map(segment => segment.source).join(""), source);
@@ -852,7 +875,7 @@ test("Unicode whitespace around protected structures remains local, never an emp
 
 test("print CSS is static A4 Chinese typography without external resources", () => {
   assert.match(M.PRINT_CSS, /size: A4/u);
-  assert.match(M.PRINT_CSS, /Songti SC/u);
+  assert.match(M.PRINT_CSS, /PingFang SC/u);
   assert.match(M.PRINT_CSS, /table-header-group/u);
   assert.doesNotMatch(M.PRINT_CSS, /url\(|@import|javascript:/iu);
 });

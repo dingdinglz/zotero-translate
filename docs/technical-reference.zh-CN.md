@@ -2,7 +2,7 @@
 
 [English introduction](../README.md) · [中文介绍](../README.zh-CN.md)
 
-本文保留 Smart Paper Translator 0.1.69 测试包的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
+本文保留 Smart Paper Translator 0.1.70 正式版的详细功能、配置、数据边界与开发说明。文末的验证结果是对应版本的历史记录。
 
 Agents 通过 [Agent Client Protocol](https://agentclientprotocol.com/) stdio 连接本机 Codex / Pi / OpenCode，与翻译服务及其 API Key 分开配置。
 
@@ -178,10 +178,22 @@ smart-paper-translator/
 npm run check
 sh scripts/build.sh
 shasum -a 256 -c dist/SHA256SUMS
-unzip -t dist/smart-paper-translator-0.1.69.xpi
+unzip -t dist/smart-paper-translator-0.1.70.xpi
 ```
 
 真实 npx 下载、Codex/Pi/OpenCode 模型用量测试、插件安装和 UI 冒烟测试不属于自动构建；这些操作需要分别明确授权。真实 E2E 应使用合成 PDF，不发送用户论文。
+
+## 0.1.70：中文 PDF 阅读字体与设置
+
+本版按用户要求作为非预发布 Release 发布；正式发布状态不扩大下述验证范围，全文翻译仍保留测试功能标识。
+
+- 旧默认为宋体栈、11pt/1.65。改为本机黑体栈：苹方 → 微软雅黑 → Noto Sans CJK SC → 思源黑体 → 系统sans-serif，正文12pt、400字重、1.75倍行距，标题22/17/14/12pt、600字重，段后0.85em；A4页边距、表格/代码9pt与安全渲染边界保留。MathML单独使用math通用字体。黑体的较均匀笔画和宽松节奏是本轮面向屏幕长文的选择，不是“所有人最舒服”的实验结论；宋体仍供偏好书刊风格的读者选择。排版资料与完整字体栈见[全文SPEC](fulltext-translation/SPEC.md#pdf-typography-0170)。
+- 设置路径：Smart Paper Translator → 论文全文翻译 → 中文 PDF 字体。提供默认黑体、宋体和自定义本机字体；只填一个最多128 UTF-16单元的家族名，Unicode文字/组合标记/数字及ASCII空格/连字符/下划线白名单，拒绝CSS、URL、路径、控制字符和列表。空名称/本机缺失字体回退默认，非法非空名称在创建打印资源前报错；不下载字体。选项切换/偏好恢复同步自定义控件状态并保留输入值，销毁移除监听。
+- 每次PDF开始前同步快照偏好，打印过程中变更仅作用于下次输出；克隆目标文档设置zh-CN。字体不进入模型输入、翻译配置/哈希、Markdown或检查点，协议2不变。已有完成译文通过“更多操作 → 重新生成中文 PDF”明确确认后新增附件，不重译、不删除旧附件。
+- `npm run check`：924项JavaScript测试全部通过，JS语法和静态检查通过；相关Markdown/运行时/设置235项。新增8项回归覆盖默认/宋体/自定义、CSS注入与长度/字符边界、真实样式导入打印文档、异步字体快照、无效配置提前失败、设置恢复与销毁。Impeccable机械扫描无发现，`git diff --check`通过。
+- 合成Chromium对比旧/新打印CSS，包括中英混排、标题、公式、代码及表格；设置片段用真实CSS和控件同步方法检查900px/390px、明暗模式与自定义切换，未发现页面横向溢出。这不是Gecko/Zotero原生PDF导出或字体嵌入验证。只读核对本机Zotero10.0.7的application.ini及omni.ja preferences.js，确认现有preference绑定与syncfrompreference事件；无新增私有API，兼容范围/截图白名单不变。
+- 两次XPI构建字节一致，60文件归档根目录、CRC、运行时源码逐字节匹配与SHA256SUMS检查通过。交付：`dist/smart-paper-translator-0.1.70.xpi`，1,445,304字节；SHA-256：`732f003dbbade44d111b4934ba4653e026d9f60e62b4cbaf62e172d24d3de3f2`。
+- Python未修改，本轮未重跑Python测试。未操作Zotero、安装插件、读取用户论文或实际成品、上传PDF、请求真实OXR/模型或验证原生PDF字体嵌入/附件导入。字体取决于本机安装与字符覆盖，不捆绑字体，也不承诺不同系统输出字形一致。
 
 ## 0.1.69：原稿 Markdown 问题列表与定位编辑
 

@@ -31,6 +31,10 @@
       this._listen("spt-fulltext-refresh", "click", () => this.fulltextAction("refresh"));
       this._listen("spt-fulltext-browse", "click", () => this.fulltextAction("browse"));
       this._listen("spt-fulltext-inspect", "click", () => this.fulltextAction("inspect"));
+      for (const event of ["change", "syncfrompreference"]) {
+        this._listen("spt-fulltext-pdf-font", event, () => this.updatePDFFontControls());
+      }
+      this.updatePDFFontControls();
       this._listen("spt-fulltext-python", "change", () => {
         if (!this.writingBoundValue && !this.fulltextBusy) this.bridge.setFulltextPython?.(this.doc.getElementById("spt-fulltext-python").value);
       });
@@ -104,6 +108,12 @@
         if (this.bridge.listFulltextPythonCandidates) this.fulltextAction("refresh");
       }, 0);
       this.cleanups.push(() => win.clearTimeout(timer));
+    },
+
+    updatePDFFontControls() {
+      if (!this.doc) return;
+      this.doc.getElementById("spt-fulltext-pdf-custom-font").disabled =
+        this.doc.getElementById("spt-fulltext-pdf-font").value !== "custom";
     },
 
     async fulltextAction(action) {

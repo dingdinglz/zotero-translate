@@ -68,6 +68,27 @@ function preferencesFixture() {
   return { manager, bridge, calls, paths, byID, doc, win };
 }
 
+test("PDF font controls bind local prefs, restore custom selection and retain its value", () => {
+  const { manager, byID, calls } = preferencesFixture();
+  const font = byID.get("spt-fulltext-pdf-font"), custom = byID.get("spt-fulltext-pdf-custom-font");
+  assert.equal(font.attrs.preference, "extensions.smart-paper-translator.fulltextPDFFont");
+  assert.equal(custom.attrs.preference, "extensions.smart-paper-translator.fulltextPDFCustomFont");
+  assert.equal(custom.attrs.maxlength, "128"); assert.equal(custom.disabled, true);
+  assert.ok(byID.has(font.attrs["aria-describedby"]));
+  custom.value = "思源黑体";
+  font.value = "custom"; font.dispatchEvent({ type: "syncfrompreference" });
+  assert.equal(custom.disabled, false);
+  font.value = "serif"; font.dispatchEvent({ type: "change" });
+  assert.equal(custom.disabled, true); assert.equal(custom.value, "思源黑体");
+  font.value = "custom"; font.dispatchEvent({ type: "change" });
+  assert.equal(custom.disabled, false); assert.equal(custom.value, "思源黑体");
+  assert.deepEqual(calls, []);
+  manager.destroy(); assert.equal(font.listeners.size, 0);
+  const defaults = fs.readFileSync(path.join(__dirname, "../plugin/prefs.js"), "utf8");
+  assert.match(defaults, /pref\("extensions\.smart-paper-translator\.fulltextPDFFont", "sans"\)/u);
+  assert.match(defaults, /pref\("extensions\.smart-paper-translator\.fulltextPDFCustomFont", ""\)/u);
+});
+
 test("fulltext Python discovery is read-only and late picker results cannot save", async () => {
   const { manager, bridge, byID, calls } = preferencesFixture();
   byID.get("spt-fulltext-python").value = "/manual/python";

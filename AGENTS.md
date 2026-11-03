@@ -16,7 +16,7 @@
 
 - 插件名称：Smart Paper Translator
 - 插件 ID：`smart-paper-translator@zotero.local`
-- 当前版本：`0.1.69`
+- 当前版本：`0.1.70`（正式 Release；全文翻译仍为测试功能，验证边界见下文）
 - 目标平台：macOS Zotero 10.0.4；保留 Zotero 9.0.6 既有支持
 - 0.1.48 另在本机 Zotero 10.0.6 / Gecko 140.17.0 完成非安装式 XPI 解析和模拟后端的独立分支窗口验证；不代表完整插件/真实 Agent 验证，截图精确版本白名单不变。
 - 0.1.49 历史验证为 392 项自动测试及可复现 XPI；当轮因 AX 权限未完成原生解析/UI 验证。
@@ -38,6 +38,7 @@
 - 0.1.65 修复打印未接图片缓存导致图片标记被输出为文字；按用户授权生成前自动补图，验证后嵌入惰性DOM，坏图/缺图/取消停止输出，保持数据图片CSP及原下载限制。完成任务可确认后用现有译文重新生成新附件，不重译、不删除旧附件；导入意图先清旧ID，未调用导入时失败恢复，结果不确定仍阻止重复。通过871项JavaScript测试（运行时155、运行时/服务/UI285）、29项Python进度测试（跳过38）及可复现60文件XPI检查。用户回报0.1.64成品在Zotero打开但缺图；未读取真实成品、运行0.1.65真机验证、请求真实图片/模型、上传PDF或重跑完整Python PDF套件。
 - 0.1.68 修复 Python 依赖版本仅允许三段的误判，支持三段及更多 ASCII 数字段（最多128字符），保留 PyMuPDF >=1.24.4,<2 / requests >=2.31,<3 和实际 PDF 能力检测；无法导入、版本格式、过低、跨大版本及功能失败分别提示，不猜解析后缀、不自动安装。通过899项JavaScript测试、44项无第三方依赖Python测试（跳过39项）及可复现60文件XPI检查。完整Python套件因缺PyMuPDF未能加载；未操作Zotero、请求真实OXR/模型、上传PDF或验证原生PDF/附件导入，1.27.2.3为版本回归样例而非实装验证。
 - 0.1.69 增加原稿Markdown问题列表/行号/精确页码及定位编辑，保存自动重查；私有无输出检查器复用渲染行内边界，每块首错、有界分页且不猜旧稿页码。通过916项JavaScript测试（Markdown/服务/UI226项）、44项Python无第三方依赖测试（跳过39项）及可复现60文件XPI检查；完整Python套件缺PyMuPDF未能加载。合成Chromium宽/窄窗明暗布局与定位保存检查，非Zotero真机。未操作Zotero、上传PDF、调用真实OXR/模型或验证原生PDF/附件导入，未取得用户原始错误稿。协议2和已有检查点不变。
+- 0.1.70 将中文PDF默认改为本机黑体栈（苹方/微软雅黑优先）、12pt/1.75倍行距与显式标题分级；设置提供宋体和有界白名单自定义字体。打印开始快照字体偏好，不进入模型配置/Markdown/检查点，不下载字体、不放宽CSP，既有译文可确认后重新生成新附件。通过924项JavaScript测试、静态检查与可复现60文件XPI检查；合成Chromium排版对比及900/390px设置交互检查，非Zotero真机。Python未修改且未重跑；未上传PDF、调用真实OXR/模型或验证原生PDF字体嵌入/附件导入。协议2及兼容范围不变。
 - 清单兼容范围：Zotero `9.0`–`10.0.*`；私有 PDF.js 截图桥仅开放 `9.0.6` / `10.0.4`
 - 0.1.65 本地修复包（上游 Pre-0.1.65 保持不变）修复 Windows 预览/版面 PDF 以只读描述符 fsync 导致的 worker_failed，以及 DirEntry.stat 的硬链接数为 0 导致普通缓存误报 invalid_cache；保持原子输出及链接拒绝规则。Windows Python 3.13.9 / PyMuPDF 1.28.2 / requests 2.32.5 通过 70 项完整离线 Python 测试，无跳过；未操控 Zotero、上传论文或调用真实 OXR/模型，未验证原生中文 PDF/附件导入。通过 870 项 JavaScript 测试，另 1 项 POSIX 原生 shell 测试在 Windows 明确跳过；JS 语法、静态与可复现 60 文件 XPI 检查通过。
 - 0.1.66 优化全文工作区：阶段主操作、明暗主题、可调双栏/窄窗切换、跳页、失败摘要与可靠原文页定位、焦点恢复及低频读屏播报。模型翻译期间可只读浏览，预览图片下载暂缓；编辑/配置/输出门控不变。仅预览取消不影响模型与检查点；协议2、配置修订及既有译文进度不变。通过897项JavaScript测试、31项Python进度/记录测试（跳过39项）与可复现60文件XPI检查；完整Python套件因缺PyMuPDF未能加载。合成浏览器检查1100/620/390px及明暗布局，非Gecko真机验证。未操作Zotero、上传PDF、调用真实OXR/模型或验证原生PDF/附件导入。
@@ -79,6 +80,7 @@
 - Codex Mermaid 固定使用 XPI 内置 Mermaid `11.16.1`，只在出现 `mermaid` fenced code block 时按窗口延迟加载，不得使用 CDN 或运行时下载。由于 Zotero Item Pane 属于无 `body` 的 XUL 文档，运行时必须留在同窗口的本地 `about:blank` HTML iframe 与专用 Gecko sandbox 中；sandbox 必须以该 HTML 窗口为原型继承只读的 `window`/`document`，不得再次赋值，关闭插件时移除 iframe 并丢弃 sandbox 引用；不得在 Zotero 9.0.6 调用 `Cu.nukeSandbox()`。必须保持 `securityLevel: strict`、`htmlLabels: false`、安全配置锁定、源文本/边数/超时/SVG 大小与节点数上限。返回 SVG 只允许 Mermaid flowchart 生成的本地 `feDropShadow` 滤镜，不得放行其他滤镜原语，并继续拒绝活动元素、HTML、链接和非本地资源引用；结果需写入最长边不超过 4096 像素的固有尺寸并序列化为隔离的数据图片，宽图在侧栏横向滚动，不得作为活动 SVG 注入 Item Pane。解析、超限或安全校验失败时必须保留原始源码。
 - Codex 开发者模式必须默认关闭；关闭时不得采集或保留额外的可复制诊断日志，也不得显示复制入口。开启后仅允许在内存中有界记录当前实时 turn 的工具与思考诊断事件，脱敏常见密钥和用户主目录，不得自动落盘或上传；关闭模式、重建会话和插件退出必须清空。
 - 全文翻译持久契约见 `docs/fulltext-translation/SPEC.md`。任务绑定文库、原 PDF 附件 key 和文件 SHA-256；OXR 上传与 DeepSeek 翻译分别经用户确认。默认 OXR 地址可配置，仅 HTTPS/本机 HTTP，不跟随重定向；Python 使用用户选择的现成环境，固定插件脚本、独立 argv 和隔离模式，不运行 shell、不自动准备依赖。中间版面 PDF 只做本地逐页预览，不预先写文库。确认后的 Markdown 按内容哈希保存，逐段译文检查点原子写入；恢复复核原 PDF、模型/地址/提示词及保护内容，不混用新旧配置。参考文献条目整体保留，正文引用标记、公式、代码、图片/链接地址和 Markdown/HTML 表格结构不能被翻译改写。每段独立翻译、模型校对和程序校验，最多三轮，最终失败停止派发并收尾暂停，不静默缺段。只有全部通过才生成中文 MD/PDF 并导入原论文下的新附件，原 PDF 和批注不变；批注与页码不跨语言同步。关闭确认页暂停并保存进度，远端已提交 OXR 任务可能继续；导入事务结果不确定时阻止重复导入。全文预览/打印只用白名单静态 DOM、本地 KaTeX MathML 和有界签名验证的内嵌图片；DOM 不直接加载远程资源、file 引用或活动 HTML。原文预览及PDF生成前可由独立受控后端自动下载公网 HTTP(S) 图片并缓存，不逐图弹确认；PDF输出先复用任务缓存，再补齐未缓存图片，全部验证/提交惰性DOM后才加载打印frame，DOM仍不可联网。任何缺图/坏图禁止打印及导入，暂停/关闭/失败取消下载并拒绝迟到提交；代码示例和普通链接不下载。Markdown导出不下载图片。已有中文附件的默认finish仍幂等，仅明确确认后重新生成新附件，不重译、不删除旧附件；新导入意图与清空旧附件ID一起保存，导入前失败恢复旧ID，导入结果不确定保留意图并禁重复/重置。Gecko 打印使用独立 settings，不修改全局打印偏好；未通过原生验证不得声称 PDF 导出已验证。
+- 全文PDF字体是输出专用本机偏好`fulltextPDFFont`/`fulltextPDFCustomFont`，默认黑体、可选宋体或一个本机字体家族名；自定义最多128 UTF-16单元，仅Unicode文字/组合标记/数字及ASCII空格、连字符、下划线，拒绝CSS/路径/控制字符/字体列表。空或缺失字体回退黑体，非法非空名称在分配资源前报错，不下载字体或放宽CSP。每次打印开始同步生成CSS快照，字体不进入模型请求/配置哈希/Markdown/检查点；公式math与代码等宽字体独立。更改只影响下次生成，完成任务沿用确认后新增附件流程，不删除旧附件、不重译。设置预设同步恢复自定义控件禁用状态并保留值，关闭移除监听。详见全文SPEC。
 - 全文PDF打印iframe挂载前须设置mozframetype="content"，保留空sandbox和无网络CSP，只打印自有内容frame，不退回chrome顶层或放宽沙箱。禁止顶层内容srcdoc，显式导航about:blank，只在可信、精确Document/URI/complete的load后向现有head先导入CSP，再克隆白名单内容；不使用同步初始空白页或合成元素load，不改父CSP。固定Document/BrowsingContext并在异步后复核，取消/失败清理监听/计时器/frame并拒绝迟到事件。原生打印期间仅给当前确认窗口安装自有nsIBrowserDOMWindow，只接受精确parent/OPEN_PRINT_BROWSER的一个内容克隆；openURI/普通导航/window.print/旧回调拒绝，URI参数不加载。已有非空宿主不覆盖，不使用主窗口宿主或全功能PrintUtils；以安装后读回的接口身份清理，保留他人替换对象。克隆close只清理自己，不关闭确认窗口；监听清理失败仍尝试移除其他资源并明确报错。独立settings使用Mozilla Save to PDF，全部参数设置后再标记初始化，不改全局打印偏好。错误保留有界阶段/nsresult且脱敏，不采集额外日志。Markdown导出用当前确认窗口的FilePicker，关闭/退出后丢弃选择；独立显示成功/取消/失败，不重显旧PDF错误，不为清理提示清空检查点或导入意图。实现依据及未验证边界见全文SPEC。
 - 全文模型翻译默认5路、可调1–8路并按任务保存；每段内部翻译/校对/校验串行。单段最终失败停止派发、在途收尾保存后暂停，手动暂停/关闭立即取消全部在途并等保存/回滚结束。草稿与错误按段隔离，新协议JSON草稿可选择修正；选中未完成段可确认后从原文独立重译，不复用该段失败草稿、不影响其他检查点。继续任务保留有效已保存草稿，无效旧草稿直接重新翻译且不占一次格式重试额度；更改并发不清空已完成结果。检查点写入串行，原子成功且请求序号有效才计入完成；迟到响应/排队提交失效，不允许旧保存覆盖新任务。翻译进度只按已保存通过段/待译总段，不按时间估算，100%不代表PDF导入完成；不改变OXR分块解析。详见全文SPEC。
 - 失败段的手动草稿修正是可选高级能力，不得要求用户修好JSON才能重试。默认提供单段原文重译和继续未完成段落；有未保存修正时先确认丢弃，取消不发请求、不清草稿。“保存草稿”只校验并写本地，仍需模型校对，不直接计入完成；“放弃未保存修改”只恢复本地已保存稿，不写盘不请求模型。原文片段JSON参照只在高级面板展开且空闲时按选中段生成，关闭/换段/忙碌时清理；只修改text，保留所有id和顺序。发起翻译与校对前（含异步准备和读密钥之后）复核当前原稿/模型配置，改变后拒绝继续请求，不按格式错误重试。
@@ -141,7 +143,7 @@ zotero-translate/
 ├── plugin/                           # XPI 的唯一运行时源码根目录
 │   ├── manifest.json                 # 插件清单、ID、版本和兼容范围
 │   ├── bootstrap.js                  # 生命周期入口、分支窗口运行时 chrome 注册与注销
-│   ├── prefs.js                      # 默认偏好设置
+│   ├── prefs.js                      # 默认偏好设置（含输出专用PDF字体）
 │   ├── locale/
 │   │   ├── en-US/smart-paper-translator-codex-chat.ftl   # Agents Item Pane / ACP 设置英文本地化
 │   │   └── zh-CN/smart-paper-translator-codex-chat.ftl   # Agents Item Pane / ACP 设置中文本地化
@@ -156,10 +158,10 @@ zotero-translate/
 │       ├── api.js                    # OpenAI Chat Completions 客户端、逐请求超时与可选截断拒绝、安全错误映射
 │       ├── service.js                # 翻译/摘要、智能标签生成/本地保存、缓存探测、术语删除及在途失效
 │       ├── fulltext-service.js       # 统一稿/正文片段/检查点/导入意图、原稿语法诊断/失败摘要精确页映射与独立预览取消
-│       ├── fulltext-markdown.js      # 无损分段/块偏移/有界语法问题、正文片段/本地骨架恢复、Unicode空白/资源边界、数学/安全DOM与图片
+│       ├── fulltext-markdown.js      # 无损分段/语法诊断/正文骨架、Unicode/资源边界、安全DOM与图片、PDF字体白名单/CSS
 │       ├── fulltext-images.js        # 公网图片/逐跳策略、签名与MIME/缓存校验、取消与任务限额
 │       ├── fulltext-image-network.js # Gecko匿名有界流、DNS/域名Fake-IP准入、重定向截停、取消及无认证交互
-│       ├── fulltext-runtime.js       # Python/依赖分类诊断/附件/图片补齐及取消、空白内容/CSP/自有宿主打印/导出/导入
+│       ├── fulltext-runtime.js       # Python/附件/图片补齐、PDF字体快照/中文语言、空白内容/CSP/自有宿主打印/导出/导入
 │       ├── fulltext-ui.js            # 原稿Markdown问题分页/定位编辑、阶段操作/跳页/原生radio/只读浏览、焦点/响应式及迟到保护
 │       ├── fulltext.xhtml            # 固定本地chrome页面与无网络CSP
 │       ├── fulltext.css              # 明暗主题/可调双栏/窄窗面板、原稿问题列表/阶段/恢复/进度及可访问操作样式
@@ -204,8 +206,8 @@ zotero-translate/
 │       ├── reader.css                # Reader 工具栏/截图、Agents 选区、悬浮面板/悬停删除、缩放和划线弹窗样式
 │       ├── main.js                   # 翻译/三Agent/分支/全文任务组装、窗口清理、路径与FilePicker桥接
 │       ├── preferences.xhtml         # 翻译/全文Python与OXR/公共ACP环境、路径候选、三Agent与开发者模式
-│       ├── preferences.js            # 设置页路径发现、全文本地依赖检测、Tab/思考默认项与迟到隔离
-│       └── preferences.css           # 设置页路径组合控件、分段 Tab、窄布局与诊断样式
+│       ├── preferences.js            # 设置页路径发现、全文本地依赖检测/PDF字体控件同步、Tab/思考默认项与迟到隔离
+│       └── preferences.css           # 设置页路径组合控件、分段Tab、全文字体说明/窄布局与诊断样式
 ├── tests/
 │   ├── helpers.js                    # Zotero、缓存/偏好 mock 与 Gecko Windows 原生路径契约
 │   ├── logic.test.js                 # 模板、术语、URL、签名和论文标识
@@ -242,8 +244,8 @@ zotero-translate/
 │   ├── build_xpi.py                  # 无依赖、可复现的 XPI 打包器
 │   └── validate_static.py            # 清单、XHTML 和安全边界检查
 └── dist/                             # 生成的交付物（历史XPI保留，下列仅当前/上一版），不是运行时源码
-    ├── smart-paper-translator-0.1.68.xpi         # 上一版Python依赖版本校验修复包
-    ├── smart-paper-translator-0.1.69.xpi         # 当前原稿Markdown问题定位修复包
+    ├── smart-paper-translator-0.1.69.xpi         # 上一版原稿Markdown问题定位修复包
+    ├── smart-paper-translator-0.1.70.xpi         # 当前中文PDF默认黑体/可配置字体包
     └── SHA256SUMS
 ```
 

@@ -3,6 +3,12 @@
 }
 
 #spt-fulltext-settings textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; resize: vertical; }
+#spt-fulltext-settings .spt-prefs-grid { grid-template-columns: 110px minmax(0, 1fr); }
+#spt-fulltext-settings .spt-fulltext-font-help { grid-column: 2; margin: 0 0 8px; line-height: 1.5; }
+@media (max-width: 520px) {
+  #spt-fulltext-settings .spt-prefs-grid { grid-template-columns: minmax(0, 1fr); }
+  #spt-fulltext-settings .spt-fulltext-font-help { grid-column: 1; }
+}
 
 #smart-paper-translator-preferences-pane groupbox {
   margin-bottom: 14px;
